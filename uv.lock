@@ -828,7 +828,7 @@ requires-dist = [
     { name = "dnspython", specifier = ">=2.7,<3" },
     { name = "flask", specifier = ">=3.1,<4" },
     { name = "flask-wtf", specifier = ">=1.2,<2" },
-    { name = "gunicorn", specifier = ">=23,<27" },
+    { name = "gunicorn", specifier = ">=25.1,<27" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.15,<3" },
     { name = "pylint", marker = "extra == 'dev'", specifier = ">=3.3,<5" },

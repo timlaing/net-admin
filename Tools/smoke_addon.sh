@@ -48,6 +48,11 @@ else:
     raise SystemExit("Add-on S6 startup failed")
 print("Add-on S6 startup check passed")
 PY
+if docker logs "$name" 2>&1 | grep -q 'Control server error'; then
+  echo "Unexpected Gunicorn control server error" >&2
+  exit 1
+fi
+docker exec "$name" test ! -e /root/.gunicorn/gunicorn.ctl
 docker rm -f "$name" >/dev/null
 # The image CMD needs bashio and the Supervisor; launch gunicorn directly the
 # same way run.sh does, with no configuration so the wizard takes over.
