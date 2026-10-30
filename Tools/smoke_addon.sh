@@ -16,6 +16,39 @@ cleanup() {
 }
 trap cleanup EXIT
 docker volume create "$volume" >/dev/null
+# Exercise the real S6 -> bashio -> run.sh startup chain before the isolated
+# application checks below. Seed the Bashio Supervisor-options cache so this
+# needs no live Supervisor. AppArmor enforcement still needs a Linux HA host.
+docker run -d --name "$name" \
+  --mount "type=volume,source=$volume,target=/config" \
+  --entrypoint /bin/sh -p 127.0.0.1::8099 "$image" -c '
+    mkdir -p /tmp/.bashio
+    printf "%s\n" '\''{"dhcp_backend":"isc","dns_server":"dns.internal","dns_zones":"","dhcp_agent_url":"https://dhcp.internal:8081","radius_agent_url":"https://radius.internal:8082"}'\'' > /tmp/.bashio/addons.self.options.config.cache
+    exec /init /run.sh
+  ' >/dev/null
+port="$(docker port "$name" 8099/tcp | sed 's/.*://')"
+NETADMIN_SMOKE_PORT="$port" python3 - <<'PY'
+import os
+import time
+import urllib.error
+import urllib.request
+
+base = "http://127.0.0.1:" + os.environ["NETADMIN_SMOKE_PORT"]
+for _ in range(30):
+    try:
+        request = urllib.request.Request(
+            base + "/", headers={"X-Ingress-Path": "/api/hassio/ingress/synthetic"}
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            assert "first-run setup" in response.read().decode()
+        break
+    except (OSError, urllib.error.URLError):
+        time.sleep(1)
+else:
+    raise SystemExit("Add-on S6 startup failed")
+print("Add-on S6 startup check passed")
+PY
+docker rm -f "$name" >/dev/null
 # The image CMD needs bashio and the Supervisor; launch gunicorn directly the
 # same way run.sh does, with no configuration so the wizard takes over.
 docker run -d --name "$name" --read-only --tmpfs /tmp --cap-drop ALL \

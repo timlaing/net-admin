@@ -1,5 +1,5 @@
 name: NetAdmin
-version: "0.4.2"
+version: "0.4.3"
 slug: netadmin
 description: Secure Bind, DHCP and RADIUS administration
 url: https://github.com/timlaing/net-admin
