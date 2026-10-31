@@ -26,30 +26,34 @@ def _canonical() -> str:
     return result.stdout
 
 
+def _zone_end(text: str, index: int) -> int:
+    """Find the closing delimiter after an opening zone brace."""
+    depth = 1
+    quoted = False
+    escaped = False
+    while index < len(text) and depth:
+        char = text[index]
+        if escaped:
+            escaped = False
+        elif char == "\\" and quoted:
+            escaped = True
+        elif char == '"':
+            quoted = not quoted
+        elif not quoted:
+            depth += (char == "{") - (char == "}")
+        index += 1
+    if depth or not text[index:].lstrip().startswith(";"):
+        raise ValueError("Incomplete zone declaration")
+    return text.index(";", index) + 1
+
+
 def _zone_blocks(text: str) -> list[tuple[str, int, int]]:
     """Locate complete top-level zone blocks, ignoring quoted braces."""
     if re.search(r"(?m)^\s*view\s", text):
         raise ValueError("Bind views require explicit migration before management")
     result = []
     for match in re.finditer(r'(?m)^\s*zone\s+"([^"]+)"[^\n{]*\{', text):
-        depth = 1
-        quoted = False
-        escaped = False
-        index = match.end()
-        while index < len(text) and depth:
-            char = text[index]
-            if escaped:
-                escaped = False
-            elif char == "\\" and quoted:
-                escaped = True
-            elif char == '"':
-                quoted = not quoted
-            elif not quoted:
-                depth += (char == "{") - (char == "}")
-            index += 1
-        if depth or not text[index:].lstrip().startswith(";"):
-            raise ValueError("Incomplete zone declaration")
-        end = text.index(";", index) + 1
+        end = _zone_end(text, match.end())
         result.append((match.group(1).rstrip("."), match.start(), end))
     names = [name for name, _, _ in result]
     if len(names) != len(set(names)):

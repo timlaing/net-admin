@@ -12,6 +12,10 @@ from flask.sessions import SecureCookieSessionInterface
 from werkzeug.wrappers import Response
 
 _PREFIX = re.compile(r"/api/(?:hassio_ingress|hassio/ingress)/[A-Za-z0-9_-]+")
+# Home Assistant requires this fixed Supervisor peer for ingress authentication.
+# https://developers.home-assistant.io/docs/apps/presentation/
+# This is a trust boundary, not a configurable outbound service address.
+SUPERVISOR_INGRESS_ADDRESS = "172.30.32.2"  # NOSONAR - required, reviewed ingress peer allowlist.
 
 
 def supports_ingress_identity() -> bool:
@@ -42,7 +46,7 @@ def configure_ingress(app: Flask) -> None:
         """Restore the externally visible mount point before Flask routes."""
         prefix = environ.get("HTTP_X_INGRESS_PATH", "")
         if prefix:
-            if environ.get("REMOTE_ADDR") != "172.30.32.2":
+            if environ.get("REMOTE_ADDR") != SUPERVISOR_INGRESS_ADDRESS:
                 return Response("Ingress requests must come from Supervisor", status=403)(
                     environ, start_response
                 )

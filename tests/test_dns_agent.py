@@ -36,7 +36,8 @@ def test_discovery_and_creation_migrate_without_losing_existing_zones(tmp_path, 
     )
     assert response.status_code == 201
     managed = (tmp_path / "managed.conf").read_text()
-    assert "existing.example" in managed and "new.example" in managed
+    assert "existing.example" in managed
+    assert "new.example" in managed
     assert (tmp_path / "named.conf.before-netadmin").read_text() == 'include "legacy.conf";\n'
     assert "managed.conf" in main.read_text()
 
@@ -94,7 +95,8 @@ def test_web_zone_operations_use_agent_and_do_not_write_service_files(tmp_path, 
     client.set_cookie("netadmin_session", token)
     response = client.get("/dns")
     assert response.status_code == 200
-    assert "example.net" in response.text and "Create authoritative zone" in response.text
+    assert "example.net" in response.text
+    assert "Create authoritative zone" in response.text
     assert (
         client.post("/dns/zones", data={"name": "new.example", "content": "zone data"}).status_code
         == 302

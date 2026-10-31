@@ -42,6 +42,7 @@ from netadmin.store import Store
 web = Blueprint("web", __name__)
 
 # Endpoint names for url_for(); constants keep each literal in a single place.
+DASHBOARD_INDEX = "web.dashboard"
 DNS_INDEX = "web.dns_index"
 DHCP_INDEX = "web.dhcp_index"
 RADIUS_INDEX = "web.radius_index"
@@ -64,7 +65,7 @@ def _audit(action: str, target: str, success: bool = True) -> None:
 def login() -> Any:
     """Authenticate root locally or a user through RADIUS."""
     if g.identity is not None and g.identity.source == "ingress":
-        return redirect(url_for("web.dashboard"))
+        return redirect(url_for(DASHBOARD_INDEX))
     form = LoginForm()
     if form.validate_on_submit():
         username = (form.username.data or "").strip()
@@ -104,7 +105,7 @@ def logout() -> Any:
     """Invalidate the current session."""
     if current_identity().source == "ingress":
         flash("Your session is managed by Home Assistant. Sign out there to end it.", "info")
-        return redirect(url_for("web.dashboard"))
+        return redirect(url_for(DASHBOARD_INDEX))
     session_id = request.cookies.get("netadmin_session", "")
     _audit("logout", current_identity().username)
     _store().delete_session(session_id)
@@ -407,10 +408,10 @@ def password() -> Any:
     form = PasswordForm()
     if identity.source == "ingress":
         flash("Manage your Home Assistant password in your Home Assistant profile.", "info")
-        return redirect(url_for("web.dashboard"))
+        return redirect(url_for(DASHBOARD_INDEX))
     if identity.username == "root":
         flash("The emergency root password is managed through its environment hash.", "info")
-        return redirect(url_for("web.dashboard"))
+        return redirect(url_for(DASHBOARD_INDEX))
     if form.validate_on_submit():
         if not _store().allow_attempt(f"password:{identity.username}", 5, 900):
             flash("Too many password-change attempts. Try again later.", "danger")

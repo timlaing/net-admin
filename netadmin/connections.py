@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import base64
-import binascii
 import socket
 import ssl
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -71,7 +70,7 @@ def settings_with_connections(settings: Settings, values: dict[str, str]) -> Set
             changes[field] = Path(values[field]) if values[field] else None
         elif field == "dns_zones":
             changes[field] = tuple(zone for zone in values[field].split(",") if zone)
-    return replace(settings, **changes)
+    return Settings(**(asdict(settings) | changes))
 
 
 def connection_extensions(settings: Settings) -> dict[str, Any]:
@@ -191,6 +190,28 @@ def configuration_errors(values: dict[str, str]) -> dict[str, str]:
     return errors
 
 
+def _valid_agent_url(value: str) -> bool:
+    """Require HTTPS and reject embedded credentials and malformed ports."""
+    try:
+        parsed = urlsplit(value)
+        return bool(
+            parsed.scheme == "https"
+            and parsed.hostname
+            and parsed.port != 0
+            and not parsed.username
+            and not parsed.password
+            and not parsed.query
+            and not parsed.fragment
+        )
+    except ValueError:
+        return False
+
+
+def _missing_fields(values: dict[str, str], names: tuple[str, ...], message: str) -> dict[str, str]:
+    """Report missing fields without changing values or exposing secrets."""
+    return {name: message for name in names if not values[name]}
+
+
 def _agent_errors(values: dict[str, str]) -> dict[str, str]:
     """Validate agent transport and RADIUS authentication requirements."""
     errors: dict[str, str] = {}
@@ -200,28 +221,21 @@ def _agent_errors(values: dict[str, str]) -> dict[str, str]:
         if values[f"{service}_enabled"] != "true":
             continue
         field = f"{service}_agent_url"
-        try:
-            parsed = urlsplit(values[field])
-            valid = (
-                parsed.scheme == "https"
-                and parsed.hostname
-                and parsed.port != 0
-                and not parsed.username
-                and not parsed.password
-                and not parsed.query
-                and not parsed.fragment
-            )
-        except ValueError:
-            valid = False
-        if not valid:
+        if not _valid_agent_url(values[field]):
             errors[field] = "Enter an HTTPS agent URL without credentials, query or fragment."
-        for name in ("agent_token", "agent_cert", "agent_key"):
-            if not values[name]:
-                errors[name] = "Required for enabled agents using mTLS and bearer authentication."
+        errors.update(
+            _missing_fields(
+                values,
+                ("agent_token", "agent_cert", "agent_key"),
+                "Required for enabled agents using mTLS and bearer authentication.",
+            )
+        )
     if values["radius_enabled"] == "true":
-        for name in ("radius_host", "radius_secret"):
-            if not values[name]:
-                errors[name] = "Required for RADIUS authentication."
+        errors.update(
+            _missing_fields(
+                values, ("radius_host", "radius_secret"), "Required for RADIUS authentication."
+            )
+        )
     return errors
 
 
@@ -242,7 +256,7 @@ def _dns_errors(values: dict[str, str]) -> dict[str, str]:
         if values["dns_tsig_secret"]:
             try:
                 base64.b64decode(values["dns_tsig_secret"], validate=True)
-            except (ValueError, binascii.Error):
+            except ValueError:
                 errors["dns_tsig_secret"] = "Enter the base64 secret from your existing TSIG key."  # noqa: S105
     return errors
 

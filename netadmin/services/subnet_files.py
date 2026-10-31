@@ -55,6 +55,20 @@ def create_subnet(text: str, cidr: str, identifier: int, kea: bool) -> str:
     return text[:opening] + "\n" + item + separator + suffix
 
 
+def _kea_removal_span(text: str, match: re.Match[str]) -> tuple[int, int]:
+    """Include the adjacent array separator when removing a Kea object."""
+    start, end = kea_files._enclosing_object(text, match)  # pylint: disable=protected-access
+    following = _next_token(text, end)
+    if text[following : following + 1] == ",":
+        return start, following + 1
+    preceding = start - 1
+    while preceding >= 0 and text[preceding].isspace():
+        preceding -= 1
+    if preceding >= 0 and text[preceding] == ",":
+        start = preceding
+    return start, end
+
+
 def remove_subnet(text: str, network: str, kea: bool) -> str:
     """Remove only the selected subnet, retaining unrelated directives."""
     pattern = kea_files.SUBNET_VALUE if kea else dhcp_files.SUBNET_START
@@ -62,16 +76,7 @@ def remove_subnet(text: str, network: str, kea: bool) -> str:
         if match.group(1).split("/")[0] != network:
             continue
         if kea:
-            start, end = kea_files._enclosing_object(text, match)  # pylint: disable=protected-access
-            following = _next_token(text, end)
-            if following < len(text) and text[following] == ",":
-                end = following + 1
-            else:
-                preceding = start - 1
-                while preceding >= 0 and text[preceding].isspace():
-                    preceding -= 1
-                if preceding >= 0 and text[preceding] == ",":
-                    start = preceding
+            start, end = _kea_removal_span(text, match)
         else:
             start = match.start()
             end, _ = dhcp_files._block(text, start)  # pylint: disable=protected-access

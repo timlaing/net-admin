@@ -28,6 +28,7 @@ from netadmin.preferences import read_env_file, write_env_file
 from netadmin.store import Store
 
 connection_web = Blueprint("connections", __name__)
+ERROR_TEMPLATE = "error.html"
 
 
 @connection_web.route("/settings", methods=["GET", "POST"])
@@ -41,7 +42,7 @@ def settings_page() -> Any:
         saved = read_env_file() if editable else {}
     except (OSError, ValueError):
         return render_template(
-            "error.html",
+            ERROR_TEMPLATE,
             message="Cannot read the app settings file. Check its path and permissions.",
         ), 503
     previous = {
@@ -57,7 +58,7 @@ def settings_page() -> Any:
     if request.method == "POST":
         if not editable:
             return render_template(
-                "error.html",
+                ERROR_TEMPLATE,
                 message="Standalone settings are managed through environment variables.",
             ), 403
         if form.validate_on_submit():
@@ -68,7 +69,7 @@ def settings_page() -> Any:
                     write_env_file({env_key(field): value for field, value in values.items()})
                 except (OSError, ValueError, dns.exception.DNSException):
                     return render_template(
-                        "error.html",
+                        ERROR_TEMPLATE,
                         message="Could not save settings. Check the configuration directory.",
                     ), 503
                 current_app.extensions.update(replacements)
@@ -107,7 +108,8 @@ def reload_connections() -> Any:
     """Reload connection assignments after a manual file edit, without restarting."""
     if os.getenv("NETADMIN_ADDON") != "1":
         return render_template(
-            "error.html", message="Restart standalone deployments to reload environment variables."
+            ERROR_TEMPLATE,
+            message="Restart standalone deployments to reload environment variables.",
         ), 403
     runtime = cast(Settings, extension("netadmin_settings"))
     try:
@@ -118,7 +120,7 @@ def reload_connections() -> Any:
         }
         if configuration_errors(values):
             return render_template(
-                "error.html",
+                ERROR_TEMPLATE,
                 message=(
                     "Invalid saved connections. Correct them in Settings. "
                     "Active connections were kept."
@@ -127,7 +129,7 @@ def reload_connections() -> Any:
         replacements = connection_extensions(settings_with_connections(runtime, values))
     except (OSError, ValueError, dns.exception.DNSException):
         return render_template(
-            "error.html",
+            ERROR_TEMPLATE,
             message="Could not reload saved connections. Active connections were kept.",
         ), 503
     current_app.extensions.update(replacements)

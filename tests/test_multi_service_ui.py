@@ -25,7 +25,8 @@ def test_multiple_dns_zones_can_be_selected_independently(tmp_path):
         response = client.get("/dns", query_string={"zone": zone})
         assert response.status_code == 200
         assert f'value="{zone}" selected' in response.text
-        assert "example.net" in response.text and "other.net" in response.text
+        assert "example.net" in response.text
+        assert "other.net" in response.text
     assert selected == ["example.net", "other.net"]
 
 
@@ -84,7 +85,8 @@ def test_subnet_create_and_remove_controls_use_agent(tmp_path):
         post=lambda path, payload: calls.append((path, payload)),
     )
     page = client.get("/dhcp")
-    assert page.status_code == 200 and "Create subnet" in page.text
+    assert page.status_code == 200
+    assert "Create subnet" in page.text
     assert client.post("/dhcp/subnets", data={"cidr": "192.0.2.0/24"}).status_code == 302
     assert client.post("/dhcp/subnets/delete", data={"network": "192.0.2.0"}).status_code == 302
     assert calls == [

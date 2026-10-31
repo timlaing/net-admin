@@ -6,7 +6,7 @@ import secrets
 from typing import Any
 
 from argon2 import PasswordHasher
-from flask import Flask, abort, render_template, request
+from flask import Flask, Response, abort, render_template, request
 from flask_wtf import CSRFProtect, FlaskForm
 from wtforms import PasswordField
 from wtforms.validators import DataRequired, EqualTo, Length
@@ -14,6 +14,8 @@ from wtforms.validators import DataRequired, EqualTo, Length
 from netadmin.ingress import configure_ingress
 from netadmin.preferences import read_env_file, write_env_file
 from netadmin.presentation import display_time
+
+SETUP_TEMPLATE = "setup.html"
 
 
 class RootForm(FlaskForm):  # type: ignore[misc]
@@ -28,7 +30,7 @@ class RootForm(FlaskForm):  # type: ignore[misc]
 def step1() -> Any:
     """Create the root account once; configure external services after login."""
     if read_env_file().get("NETADMIN_SECRET_KEY"):
-        return render_template("setup.html", step="done")
+        return render_template(SETUP_TEMPLATE, step="done")
     form = RootForm()
     if form.validate_on_submit():
         write_env_file(
@@ -40,8 +42,8 @@ def step1() -> Any:
                 "NETADMIN_RADIUS_ENABLED": "false",
             }
         )
-        return render_template("setup.html", step="done")
-    return render_template("setup.html", step=1, form=form)
+        return render_template(SETUP_TEMPLATE, step="done")
+    return render_template(SETUP_TEMPLATE, step=1, form=form)
 
 
 def create_setup_app() -> Flask:
@@ -66,11 +68,12 @@ def create_setup_app() -> Flask:
     CSRFProtect(app)
 
     @app.errorhandler(ValueError)
-    def bad_env_file(_error: ValueError) -> tuple[str, int]:
+    def bad_env_file(_error: ValueError) -> Response:
         """Keep file contents and parser errors out of the response."""
-        return (
+        return Response(
             "Check NETADMIN_ENV_FILE: it must be absolute and free of '..', with valid text.",
-            500,
+            status=500,
+            mimetype="text/plain",
         )
 
     app.add_url_rule("/", view_func=step1, methods=["GET", "POST"])
