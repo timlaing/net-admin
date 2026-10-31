@@ -291,6 +291,28 @@ def dhcp_configuration_save() -> Any:
     return redirect(url_for(DHCP_INDEX))
 
 
+@web.route("/dhcp/subnets", methods=["POST"])
+@admin_required
+def dhcp_subnet_create() -> Any:
+    """Create a subnet through its restricted agent."""
+    cidr = request.form.get("cidr", "")
+    cast(AgentClient, extension("netadmin_dhcp")).post("subnets", {"cidr": cidr})
+    _audit("dhcp.subnet.create", cidr)
+    flash("Subnet created. Add allocation pools below.", "success")
+    return redirect(url_for(DHCP_INDEX))
+
+
+@web.route("/dhcp/subnets/delete", methods=["POST"])
+@admin_required
+def dhcp_subnet_remove() -> Any:
+    """Remove the selected subnet without deleting lease history."""
+    network = request.form.get("network", "")
+    cast(AgentClient, extension("netadmin_dhcp")).post("subnets/delete", {"network": network})
+    _audit("dhcp.subnet.delete", network)
+    flash("Subnet removed. Lease history was retained.", "success")
+    return redirect(url_for(DHCP_INDEX))
+
+
 @web.route("/dhcp/export/kea", methods=["GET"])
 @admin_required
 def dhcp_export_kea() -> Any:

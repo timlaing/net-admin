@@ -18,7 +18,7 @@ from netadmin.agents.common import (
     json_object,
     validated_transaction,
 )
-from netadmin.services import dhcp_files, kea_files
+from netadmin.services import dhcp_files, kea_files, subnet_files
 from netadmin.services.dhcp_files import kea_export
 
 HOST_PATTERN = re.compile(r"host\s+([A-Za-z0-9_-]+)\s*\{(.*?)\}", re.DOTALL)
@@ -279,6 +279,49 @@ def _validate_pools(cidr: str, ranges: list[Any]) -> None:
         raise ValueError("Pools cannot overlap")
 
 
+def _create_subnet() -> Any:
+    """Create a subnet through daemon validation without copying existing pools."""
+    main_config = _path("DHCP_MAIN")
+    try:
+        network = ipaddress.IPv4Network(str(json_object().get("cidr", "")))
+        inventory = _all_subnets(main_config)
+        if any(
+            network.overlaps(ipaddress.IPv4Network(f"{item['network']}/{item['netmask']}"))
+            for item in inventory
+        ):
+            return jsonify({"error": "Subnet overlaps an existing subnet"}), 409
+        identifier = max((int(item.get("id", 0)) for item in inventory), default=0) + 1
+        updated = subnet_files.create_subnet(
+            main_config.read_text(encoding="utf-8"), str(network), identifier, _kea()
+        )
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    backup = main_config.with_name(main_config.name + ".before-netadmin-subnets")
+    changes = {main_config: updated}
+    if not backup.exists():
+        changes[backup] = main_config.read_text(encoding="utf-8")
+    validated_transaction(changes, lambda: _validate_live(main_config), _reload())
+    return jsonify({"created": str(network)}), 201
+
+
+def _remove_subnet() -> Any:
+    """Stop serving a subnet, preserving the lease database and an original copy."""
+    main_config = _path("DHCP_MAIN")
+    network = str(json_object().get("network", ""))
+    matches = [item for item in _all_subnets(main_config) if item["network"] == network]
+    if not matches:
+        return jsonify({"error": "Unknown subnet"}), 404
+    source = Path(matches[0]["source"])
+    original = source.read_text(encoding="utf-8")
+    updated = subnet_files.remove_subnet(original, network, _kea())
+    changes = {source: updated}
+    backup = source.with_name(source.name + ".before-netadmin-subnets")
+    if not backup.exists():
+        changes[backup] = original
+    validated_transaction(changes, lambda: _validate_live(main_config), _reload())
+    return jsonify({"deleted": network, "leases_preserved": True})
+
+
 def _export_kea() -> Any:
     main_config = _path("DHCP_MAIN")
     return jsonify(
@@ -308,6 +351,8 @@ def create_dhcp_agent() -> Flask:
     app.add_url_rule("/reservations/delete", view_func=_delete_reservation, methods=["POST"])
     app.add_url_rule("/configuration", view_func=_configuration, methods=["GET"])
     app.add_url_rule("/configuration", view_func=_save_configuration, methods=["POST"])
+    app.add_url_rule("/subnets", view_func=_create_subnet, methods=["POST"])
+    app.add_url_rule("/subnets/delete", view_func=_remove_subnet, methods=["POST"])
     app.add_url_rule("/export/kea", view_func=_export_kea, methods=["GET"])
     return app
 

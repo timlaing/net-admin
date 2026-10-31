@@ -159,3 +159,31 @@ For Compose, opt in with `-f docker-compose.yml -f docker-compose.dns-agent.yml`
 SAN, and its CA/client trust and bearer token must match NetAdmin. The override
 shares Bind's network namespace for local RNDC and its configuration directory;
 it does not mount the Docker socket. No changes are made merely by discovering zones.
+
+## DHCP subnet and pool management
+
+The DHCP page discovers subnets across the agent's main configuration and included
+files. Use **Create subnet** with an IPv4 CIDR, then edit its allocation pools and
+options under **Subnets, pools and options**. Each pool is a start-end address pair;
+remove a line to remove a pool, or leave the field blank to remove all pools.
+New networks must not overlap an existing subnet. Ranges must be ordered,
+non-overlapping, contained in their subnet and exclude network/broadcast addresses.
+
+**Remove subnet** removes its definition and nested configuration after confirmation,
+while retaining the lease database. Before the first subnet creation/removal in a
+source file, the agent saves `<filename>.before-netadmin-subnets`. Changes go through
+the native ISC/Kea validator and existing transactional reload/rollback mechanism.
+Existing subnets remain in their original files: no duplicate registry or mandatory
+rewriting of unrelated configuration is needed. New ISC definitions are appended to
+the main configuration; Kea requires exactly one `subnet4` array in the main file
+for creation. More complex layouts can still be discovered and existing definitions
+edited/removed, subject to the daemon's own validation.
+
+DNS agent deployment support currently targets the supplied Alpine 3.24 image and
+Bind container. Its `named-checkconf` executable is `/usr/bin/named-checkconf`;
+other distributions may require adapting that path. Declare the TSIG update key
+in Bind's configuration (not only in its separate RNDC key file). The agent uses
+`DNS_UPDATE_KEY`, falling back to `NETADMIN_DNS_TSIG_NAME` and then `rndc-key`, and
+rejects creation if that key is not declared. Custom non-root/AppArmor deployments
+must provision `DNS_ZONE_DIR` with daemon write access for dynamic-update journals;
+the bundled container test verifies authenticated updates in the supplied image.

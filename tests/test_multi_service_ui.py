@@ -74,3 +74,22 @@ def test_multiple_dhcp_subnets_and_ranges_update_independently(tmp_path):
             },
         )
     ]
+
+
+def test_subnet_create_and_remove_controls_use_agent(tmp_path):
+    app, client = admin_client(tmp_path)
+    calls = []
+    app.extensions["netadmin_dhcp"] = SimpleNamespace(
+        get=lambda path: [],
+        post=lambda path, payload: calls.append((path, payload)),
+    )
+    page = client.get("/dhcp")
+    assert page.status_code == 200 and "Create subnet" in page.text
+    assert client.post("/dhcp/subnets", data={"cidr": "192.0.2.0/24"}).status_code == 302
+    assert client.post("/dhcp/subnets/delete", data={"network": "192.0.2.0"}).status_code == 302
+    assert calls == [
+        ("subnets", {"cidr": "192.0.2.0/24"}),
+        ("subnets/delete", {"network": "192.0.2.0"}),
+    ]
+    app.config["WTF_CSRF_ENABLED"] = True
+    assert client.post("/dhcp/subnets", data={"cidr": "198.51.100.0/24"}).status_code == 400
