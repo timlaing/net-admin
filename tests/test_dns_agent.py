@@ -98,3 +98,12 @@ def test_web_zone_operations_use_agent_and_do_not_write_service_files(tmp_path, 
     )
     assert client.post("/dns/zones/delete", data={"zone": "example.net"}).status_code == 302
     assert [path for path, _ in calls] == ["zones", "zones/delete"]
+
+
+def test_agent_uses_configured_tsig_name_unless_explicitly_overridden(monkeypatch):
+    monkeypatch.setenv("NETADMIN_AGENT_TOKEN", "synthetic")
+    monkeypatch.setenv("NETADMIN_DNS_TSIG_NAME", "custom-update")
+    monkeypatch.delenv("DNS_UPDATE_KEY", raising=False)
+    assert create_dns_agent().config["DNS_UPDATE_KEY"] == "custom-update"
+    monkeypatch.setenv("DNS_UPDATE_KEY", "explicit-update")
+    assert create_dns_agent().config["DNS_UPDATE_KEY"] == "explicit-update"

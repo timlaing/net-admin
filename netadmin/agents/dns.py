@@ -134,7 +134,7 @@ def _delete() -> Any:
 
 def create_dns_agent() -> Flask:
     """Create the bearer-protected agent; production transport requires mTLS."""
-    update_key = os.getenv("DNS_UPDATE_KEY", "rndc-key")
+    update_key = os.getenv("DNS_UPDATE_KEY", os.getenv("NETADMIN_DNS_TSIG_NAME", "rndc-key"))
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", update_key):
         raise ValueError("Invalid DNS_UPDATE_KEY")
     app = create_agent(__name__)
