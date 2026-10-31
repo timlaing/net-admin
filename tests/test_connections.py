@@ -392,3 +392,26 @@ def test_reload_keeps_auth_and_standalone_boundaries(runtime, monkeypatch) -> No
     assert client.post("/settings/reload").status_code == 302
     client = client_for(runtime, monkeypatch, addon=False)
     assert client.post("/settings/reload").status_code == 403
+
+
+def test_supervisor_authentication_option_overrides_environment_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NETADMIN_ENV_FILE", str(tmp_path / "netadmin.env"))
+    write_env_file({"NETADMIN_INGRESS_REQUIRE_LOGIN": "false"})
+    stub = tmp_path / "gunicorn"
+    stub.write_text('#!/bin/sh\nprintf "%s" "$NETADMIN_INGRESS_REQUIRE_LOGIN"\n')
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+    script = Path(__file__).resolve().parents[1] / "home-assistant/netadmin/run.sh"
+    result = subprocess.run(  # noqa: S603 - synthetic Bashio and fixed entrypoint
+        [
+            "/bin/bash",
+            "-c",
+            'function bashio::config() { printf true; }; source "$1"',
+            "probe",
+            str(script),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout == "true"

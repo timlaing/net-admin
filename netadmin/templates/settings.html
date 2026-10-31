@@ -5,6 +5,13 @@
 <p class="text-secondary">Enable the services you use. NetAdmin connects to your existing servers and restricted agents.</p>
 {% if pending %}<div class="alert alert-warning" role="status">Saved settings differ from the running configuration. Save the form or reload saved connections to apply them. Tests use the active configuration.</div>{% endif %}
 {% if not editable %}<div class="alert alert-info">This standalone deployment uses environment variables. Edit them in your deployment configuration, then restart NetAdmin.</div>{% endif %}
+{% if editable %}
+<section class="alert alert-info">
+  <h2 class="h5">Home Assistant access</h2>
+  <p class="mb-0">{{ 'A separate NetAdmin login is required through ingress.' if service_settings.ingress_require_login else 'Trusted Home Assistant administrators can use ingress without a second login.' }}
+  Change <strong>Require NetAdmin login through ingress</strong> in Home Assistant's NetAdmin Configuration tab, then restart the app. Direct access always requires login.</p>
+</section>
+{% endif %}
 <section class="card my-4"><div class="card-body">
   <h2 class="h4">Test active connections</h2>
   <p>Tests read service state. They do not change server configuration or test write permissions. Each test may take up to 10 seconds, plus hostname resolution.</p>

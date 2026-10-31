@@ -61,6 +61,8 @@ def _audit(action: str, target: str, success: bool = True) -> None:
 @web.route("/login", methods=["GET", "POST"])
 def login() -> Any:
     """Authenticate root locally or a user through RADIUS."""
+    if g.identity is not None and g.identity.source == "ingress":
+        return redirect(url_for("web.dashboard"))
     form = LoginForm()
     if form.validate_on_submit():
         username = (form.username.data or "").strip()
@@ -98,6 +100,9 @@ def login() -> Any:
 @login_required
 def logout() -> Any:
     """Invalidate the current session."""
+    if current_identity().source == "ingress":
+        flash("Your session is managed by Home Assistant. Sign out there to end it.", "info")
+        return redirect(url_for("web.dashboard"))
     session_id = request.cookies.get("netadmin_session", "")
     _audit("logout", current_identity().username)
     _store().delete_session(session_id)
@@ -335,6 +340,9 @@ def password() -> Any:
     """Allow a RADIUS user to change only their own password."""
     identity = current_identity()
     form = PasswordForm()
+    if identity.source == "ingress":
+        flash("Manage your Home Assistant password in your Home Assistant profile.", "info")
+        return redirect(url_for("web.dashboard"))
     if identity.username == "root":
         flash("The emergency root password is managed through its environment hash.", "info")
         return redirect(url_for("web.dashboard"))

@@ -18,7 +18,9 @@ def make_wizard(tmp_path: Path, monkeypatch):  # type: ignore[no-untyped-def]
     app.config.update(
         TESTING=True, WTF_CSRF_ENABLED=False, APPLICATION_ROOT=INGRESS["X-Ingress-Path"]
     )
-    return app.test_client()
+    client = app.test_client()
+    client.environ_base["REMOTE_ADDR"] = "172.30.32.2"
+    return client
 
 
 def test_hidden_outside_ingress(tmp_path, monkeypatch) -> None:
@@ -88,7 +90,9 @@ def test_wizard_reports_bad_env_file(monkeypatch) -> None:
     monkeypatch.setenv("NETADMIN_ENV_FILE", "netadmin.env")
     app = create_setup_app()
     app.config.update(WTF_CSRF_ENABLED=False)
-    response = app.test_client().get("/", headers=INGRESS)
+    response = app.test_client().get(
+        "/", headers=INGRESS, environ_overrides={"REMOTE_ADDR": "172.30.32.2"}
+    )
     assert response.status_code == 500
     assert b"NETADMIN_ENV_FILE" in response.data
 

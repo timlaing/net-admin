@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable, Iterable
 from typing import Any
@@ -11,6 +12,14 @@ from flask.sessions import SecureCookieSessionInterface
 from werkzeug.wrappers import Response
 
 _PREFIX = re.compile(r"/api/(?:hassio_ingress|hassio/ingress)/[A-Za-z0-9_-]+")
+
+
+def supports_ingress_identity() -> bool:
+    """Older Supervisor releases do not sanitize the groups header reliably."""
+    version = re.fullmatch(
+        r"(\d{4})\.(\d{1,2})\.(\d+)", os.getenv("NETADMIN_SUPERVISOR_VERSION", "")
+    )
+    return bool(version and tuple(map(int, version.groups())) >= (2026, 10, 5))
 
 
 class IngressSessionInterface(SecureCookieSessionInterface):
@@ -33,9 +42,14 @@ def configure_ingress(app: Flask) -> None:
         """Restore the externally visible mount point before Flask routes."""
         prefix = environ.get("HTTP_X_INGRESS_PATH", "")
         if prefix:
+            if environ.get("REMOTE_ADDR") != "172.30.32.2":
+                return Response("Ingress requests must come from Supervisor", status=403)(
+                    environ, start_response
+                )
             if not _PREFIX.fullmatch(prefix):
                 return Response("Invalid ingress path", status=400)(environ, start_response)
             environ["SCRIPT_NAME"] = prefix
+            environ["netadmin.trusted_ingress"] = True
             scheme = environ.get("HTTP_X_FORWARDED_PROTO", "")
             if scheme in {"http", "https"}:
                 environ["wsgi.url_scheme"] = scheme

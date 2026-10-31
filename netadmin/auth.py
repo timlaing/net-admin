@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hmac
+import os
 import posixpath
+import re
 import subprocess  # nosec B404 - fixed executable and argv, no shell
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,6 +18,7 @@ from argon2.exceptions import InvalidHashError, VerificationError
 from flask import abort, current_app, g, has_request_context, redirect, request, url_for
 
 from netadmin.config import Settings
+from netadmin.ingress import supports_ingress_identity
 from netadmin.store import SessionRecord, Store
 
 
@@ -25,6 +28,8 @@ class Identity:
 
     username: str
     role: str
+    source: str = "netadmin"
+    display_name: str = ""
 
 
 def verify_root(password_hash: str, password: str) -> bool:
@@ -64,7 +69,9 @@ def authenticate_radius(username: str, password: str, settings: Settings) -> str
 
 def load_identity() -> None:
     """Load the server-side session for the current request."""
-    g.identity = None
+    g.identity = _ingress_identity()
+    if g.identity is not None:
+        return
     session_id = request.cookies.get("netadmin_session", "")
     if not session_id:
         return
@@ -72,6 +79,27 @@ def load_identity() -> None:
     record: SessionRecord | None = store.get_session(session_id)
     if record is not None:
         g.identity = Identity(record.username, record.role)
+
+
+def _ingress_identity() -> Identity | None:
+    """Accept only Supervisor-authenticated administrators, never caller headers."""
+    settings = cast(Settings, extension("netadmin_settings"))
+    if (
+        os.getenv("NETADMIN_ADDON") != "1"
+        or settings.ingress_require_login
+        or not request.environ.get("netadmin.trusted_ingress")
+        or not supports_ingress_identity()
+    ):
+        return None
+    user_id = request.headers.get("X-Remote-User-Id", "")
+    groups = request.headers.get("X-Remote-User-Groups", "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", user_id) or not groups:
+        # Older Supervisor versions may omit identity/groups. Keep local login.
+        return None
+    if "system-admin" not in {group.strip() for group in groups.split(",")}:
+        abort(403)
+    label = request.headers.get("X-Remote-User-Display-Name", "")[:253]
+    return Identity(f"ha:{user_id}", "admin", source="ingress", display_name=label)
 
 
 def login_required[**P, R](view: Callable[P, R]) -> Callable[P, R]:

@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Sign in · NetAdmin{% endblock %}
 {% block content %}
+{% if request.environ.get('netadmin.trusted_ingress') and not service_settings.ingress_require_login %}
+<div class="alert alert-info">Home Assistant did not provide a complete administrator identity. Sign in below. Check that Supervisor supports forwarding user identities and groups to use automatic ingress access.</div>
+{% endif %}
 <div class="card login-card mx-auto shadow-sm">
   <div class="card-body p-4">
     <h1 class="h3 mb-1">Network administration</h1>

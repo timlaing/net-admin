@@ -1,11 +1,28 @@
 """Regression coverage for Supervisor's stripped-path ingress requests."""
 
+import re
+from dataclasses import replace
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from flask.testing import FlaskClient
 
 from netadmin.setup import create_setup_app
-from tests.test_app import make_app
+from tests.test_app import make_app as base_app
+
+
+def make_app(tmp_path):
+    app = base_app(tmp_path)
+    app.config["TESTING"] = True
+    app.test_client_class = SupervisorClient
+    return app
+
+
+class SupervisorClient(FlaskClient):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.environ_base["REMOTE_ADDR"] = "172.30.32.2"
+
 
 PREFIX = "/api/hassio_ingress/synthetic-token"
 HEADERS = {"X-Ingress-Path": PREFIX, "X-Forwarded-Proto": "https"}
@@ -93,8 +110,138 @@ def test_standalone_ignores_ingress_headers(tmp_path, monkeypatch) -> None:
 def test_setup_uses_ingress_urls_and_secure_cookie(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("NETADMIN_ENV_FILE", str(tmp_path / "netadmin.env"))
     app = create_setup_app()
+    app.test_client_class = SupervisorClient
     app.config.update(TESTING=True, APPLICATION_ROOT=PREFIX)
     response = app.test_client().get("/", headers=HEADERS)
     assert f'action="{PREFIX}/"'.encode() in response.data
     assert "Secure" in response.headers["Set-Cookie"]
     assert f"Path={PREFIX}" in response.headers["Set-Cookie"]
+
+
+def delegated_client(tmp_path, monkeypatch, require_login=False, addon=True):
+
+    monkeypatch.setenv("NETADMIN_ADDON", "1" if addon else "0")
+    monkeypatch.setenv("NETADMIN_ENV_FILE", str(tmp_path / "netadmin.env"))
+    monkeypatch.setenv("NETADMIN_SUPERVISOR_VERSION", "2026.10.5")
+    app = make_app(tmp_path)
+    app.extensions["netadmin_settings"] = replace(
+        app.extensions["netadmin_settings"], ingress_require_login=require_login
+    )
+    app.config["APPLICATION_ROOT"] = PREFIX if addon else "/"
+    return app.test_client()
+
+
+ADMIN = {
+    **HEADERS,
+    "X-Remote-User-Id": "synthetic-ha-id",
+    "X-Remote-User-Display-Name": "HA Administrator",
+    "X-Remote-User-Groups": "system-users,system-admin",
+}
+
+
+def test_delegated_ingress_admin_without_portable_session(tmp_path, monkeypatch) -> None:
+    client = delegated_client(tmp_path, monkeypatch)
+    response = client.get("/", headers=ADMIN)
+    assert response.status_code == 200
+    assert b"HA Administrator" in response.data
+    assert b"Home Assistant session" in response.data
+    assert b"Sign out</button>" not in response.data
+    assert b"Change password</a>" not in response.data
+    assert "netadmin_session=" not in str(response.headers.getlist("Set-Cookie"))
+    # Losing the HA identity never leaves a local administrator session behind.
+    assert client.get("/", headers=HEADERS).status_code == 302
+    assert client.get("/").status_code == 302
+    assert client.get("/settings", headers=ADMIN).status_code == 200
+
+
+def test_required_ingress_login_ignores_admin_headers(tmp_path, monkeypatch) -> None:
+    client = delegated_client(tmp_path, monkeypatch, require_login=True)
+    assert client.get("/", headers=ADMIN).status_code == 302
+    assert b"Network administration" in client.get("/login", headers=ADMIN).data
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        HEADERS,
+        {**ADMIN, "X-Remote-User-Id": ""},
+        {**ADMIN, "X-Remote-User-Id": "invalid id"},
+        {**ADMIN, "X-Remote-User-Groups": ""},
+    ],
+)
+def test_missing_identity_falls_back_to_login(tmp_path, monkeypatch, headers) -> None:
+    client = delegated_client(tmp_path, monkeypatch)
+    assert client.get("/", headers=headers).status_code == 302
+
+
+@pytest.mark.parametrize("groups", ["system-users", "system-admin-other", "system-read-only"])
+def test_non_admin_identity_is_denied_even_with_local_cookie(tmp_path, monkeypatch, groups) -> None:
+    client = delegated_client(tmp_path, monkeypatch)
+    token = client.application.extensions["netadmin_store"].create_session("root", "admin", 60)
+    client.set_cookie("netadmin_session", token, path=PREFIX)
+    assert client.get("/", headers={**ADMIN, "X-Remote-User-Groups": groups}).status_code == 403
+
+
+@pytest.mark.parametrize("peer", ["127.0.0.1", "172.30.33.5", "172.30.32.3"])
+def test_forged_ingress_headers_from_other_peers_are_denied(tmp_path, monkeypatch, peer) -> None:
+    client = delegated_client(tmp_path, monkeypatch)
+    response = client.get(
+        "/",
+        headers={**ADMIN, "X-Forwarded-For": "172.30.32.2"},
+        environ_overrides={"REMOTE_ADDR": peer},
+    )
+    assert response.status_code == 403
+    assert client.get("/", environ_overrides={"REMOTE_ADDR": peer}).status_code == 302
+
+
+def test_delegation_is_never_enabled_in_standalone(tmp_path, monkeypatch) -> None:
+    client = delegated_client(tmp_path, monkeypatch, addon=False)
+    assert client.get("/", headers=ADMIN).status_code == 302
+
+
+def test_delegated_login_cannot_mint_session_and_password_stays_in_ha(
+    tmp_path, monkeypatch
+) -> None:
+    client = delegated_client(tmp_path, monkeypatch)
+    for path in ("/login", "/password"):
+        response = client.post(
+            path,
+            headers=ADMIN,
+            data={"username": "root", "password": "correct-horse-battery-staple"},
+        )
+        assert response.status_code == 302
+        assert response.location == PREFIX + "/"
+        assert "netadmin_session=" not in str(response.headers.getlist("Set-Cookie"))
+    assert client.post("/logout", headers=ADMIN).location == PREFIX + "/"
+    assert client.get("/", headers=ADMIN).status_code == 200
+
+
+def test_delegated_mutations_require_csrf_and_use_stable_audit_identity(
+    tmp_path, monkeypatch
+) -> None:
+
+    client = delegated_client(tmp_path, monkeypatch)
+    client.application.config["WTF_CSRF_ENABLED"] = True
+    assert client.post("/settings", headers=ADMIN).status_code == 400
+    response = client.get("/settings", headers=ADMIN)
+    token = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', response.text).group(1)
+    response = client.post(
+        "/settings",
+        headers={**ADMIN, "Referer": "https://localhost" + PREFIX + "/settings"},
+        data={"csrf_token": token},
+    )
+    assert response.status_code == 302
+    events = client.application.extensions["netadmin_store"].recent_audit()
+    assert events[0]["username"] == "ha:synthetic-ha-id"
+    assert events[0]["action"] == "settings.connections"
+    # Reloading connections preserves the Supervisor-controlled authentication policy.
+    assert client.application.extensions["netadmin_settings"].ingress_require_login is False
+
+
+@pytest.mark.parametrize("version", ["", "2026.10.0", "2026.10.4", "2026.11.0.dev0", "unknown"])
+def test_old_or_unknown_supervisor_never_trusts_group_headers(
+    tmp_path, monkeypatch, version
+) -> None:
+    client = delegated_client(tmp_path, monkeypatch)
+    monkeypatch.setenv("NETADMIN_SUPERVISOR_VERSION", version)
+    assert client.get("/", headers=ADMIN).status_code == 302

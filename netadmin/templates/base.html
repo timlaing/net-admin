@@ -14,11 +14,15 @@
     <a class="navbar-brand fw-semibold" href="{{ url_for('web.dashboard') }}">NetAdmin</a>
     {% if g.identity %}
     <div class="d-flex align-items-center gap-3 text-white">
-      <span>{{ g.identity.username }} · {{ g.identity.role }}</span>
+      <span>{{ g.identity.display_name or g.identity.username }} · {{ g.identity.role }}</span>
+      {% if g.identity.source == 'ingress' %}
+      <span class="badge bg-light text-dark">Home Assistant session</span>
+      {% else %}
       <form method="post" action="{{ url_for('web.logout') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button class="btn btn-sm btn-outline-light">Sign out</button>
       </form>
+      {% endif %}
     </div>
     {% endif %}
   </div>
@@ -29,7 +33,7 @@
     <aside class="col-md-2 sidebar py-4">
       <nav class="nav flex-column gap-1" aria-label="Sections">
         <a class="nav-link" href="{{ url_for('web.dashboard') }}">Overview</a>
-        <a class="nav-link" href="{{ url_for('web.password') }}">Change password</a>
+        {% if g.identity.source != 'ingress' %}<a class="nav-link" href="{{ url_for('web.password') }}">Change password</a>{% endif %}
         {% if g.identity.role == 'admin' %}
         <a class="nav-link" href="{{ url_for('web.dns_index') }}">DNS</a>
         <a class="nav-link" href="{{ url_for('web.dhcp_index') }}">DHCP</a>

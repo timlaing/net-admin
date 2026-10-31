@@ -1,4 +1,11 @@
 configuration:
+  ingress_require_login:
+    name: Require NetAdmin login through ingress
+    description: >-
+      On (default): ask for a root/RADIUS login inside Home Assistant. Off: use
+      the authenticated Home Assistant administrator identity from trusted
+      Supervisor ingress (Supervisor 2026.10.5+ required). Direct access always requires login. Restart NetAdmin
+      after changing this option. Missing identity/group headers fall back to login.
   dhcp_backend:
     name: Legacy DHCP backend
     description: >-

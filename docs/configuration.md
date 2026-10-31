@@ -96,3 +96,8 @@ DNS, DHCP and RADIUS can each be disabled with `NETADMIN_DNS_ENABLED`,
 The Home Assistant app manages these and connection details on its **Settings** page.
 Agent diagnostics require the same HTTPS, client certificate and bearer token as
 the supported production Compose deployment. A health check does not test write permissions.
+
+`NETADMIN_INGRESS_REQUIRE_LOGIN` defaults to `true`. In the Home Assistant app it
+is managed by the **Require NetAdmin login through ingress** option. Setting it
+to `false` delegates trusted ingress administrator access to Home Assistant; it
+never disables direct or standalone authentication. Connection reloads preserve it.

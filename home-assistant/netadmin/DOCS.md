@@ -82,8 +82,8 @@ Set `NETADMIN_DNS_ENABLED`, `NETADMIN_DHCP_ENABLED` and `NETADMIN_RADIUS_ENABLED
 ## Access and troubleshooting
 
 Open NetAdmin through Home Assistant ingress over HTTPS. Session cookies are
-always Secure, so plain HTTP is unsuitable for login. NetAdmin has its own login:
-Home Assistant ingress does not replace its account permissions. RADIUS users
+always Secure, so plain HTTP is unsuitable for login. NetAdmin requires its own login by default. The optional ingress login policy
+below can delegate administrator authentication to Home Assistant. RADIUS users
 with `Filter-Id` set to `netadmin-admin` can administer services; users with
 `netadmin-standard` can change only their own password.
 
@@ -112,3 +112,27 @@ network details before sharing diagnostics.
 [Report an issue](https://github.com/timlaing/net-admin/issues)
 
 NetAdmin is released under the [MIT license](https://github.com/timlaing/net-admin/blob/main/LICENSE).
+
+## Ingress login policy
+
+**Require NetAdmin login through ingress** is a Home Assistant Configuration option,
+separate from connection settings. It is **on by default**, retaining root/RADIUS
+login inside Home Assistant. Turn it **off** to use your existing Home Assistant
+administrator session without a second login. Restart NetAdmin after changing it.
+Connection save/reload does not change this policy.
+
+The panel remains available to users who sign in with root/RADIUS. Delegated access requires a
+request from Supervisor (`172.30.32.2`), its ingress path and a user identity whose
+forwarded groups contain `system-admin`, plus Supervisor 2026.10.5 or newer. The
+version is detected at startup through Bashio; unknown/older versions retain login.
+Other source addresses with forged ingress
+headers are denied. Missing identity/group headers (for example, an older Supervisor)
+fall back to NetAdmin login. A non-administrator identity is denied.
+
+Delegated access does not issue a reusable NetAdmin administrator session cookie.
+Audit records identify the Home Assistant user by stable user ID. Sign-out and
+password changes belong to Home Assistant when using this mode. CSRF protection and
+Secure cookies remain enabled: continue using HTTPS for the Home Assistant frontend.
+
+Standalone containers and direct requests always retain NetAdmin login, regardless
+of this option. The app does not publish an additional direct port automatically.

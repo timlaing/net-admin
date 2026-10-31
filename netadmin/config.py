@@ -58,6 +58,7 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     dns_enabled: bool = True
     dhcp_enabled: bool = True
     radius_enabled: bool = True
+    ingress_require_login: bool = True
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -93,4 +94,8 @@ class Settings:  # pylint: disable=too-many-instance-attributes
             dns_enabled=_choice("NETADMIN_DNS_ENABLED", "true", {"true", "false"}) == "true",
             dhcp_enabled=_choice("NETADMIN_DHCP_ENABLED", "true", {"true", "false"}) == "true",
             radius_enabled=_choice("NETADMIN_RADIUS_ENABLED", "true", {"true", "false"}) == "true",
+            ingress_require_login=_choice(
+                "NETADMIN_INGRESS_REQUIRE_LOGIN", "true", {"true", "false"}
+            )
+            == "true",
         )

@@ -69,3 +69,10 @@ def test_translations_describe_every_option() -> None:
         assert isinstance(entry, dict), f"no translation entry for {key}"
         assert entry.get("name"), f"translation for {key} has no name"
         assert entry.get("description"), f"translation for {key} has no description"
+
+
+def test_ingress_login_default_preserves_access_for_radius_users() -> None:
+    config = load_yaml("config.yaml")
+    assert config["options"]["ingress_require_login"] is True
+    assert config["schema"]["ingress_require_login"] == "bool"
+    assert config["panel_admin"] is False

@@ -82,6 +82,13 @@ status, headers, _ = call(base + "/")
 assert status in (302, 401), f"/ returned {status} without authentication"
 assert "/login" in headers.get("Location", ""), "/ did not redirect to /login"
 
+# Home Assistant headers must not bypass standalone login.
+status, headers, _ = call(base + "/", headers={
+    "X-Ingress-Path": "/api/hassio_ingress/forged",
+    "X-Remote-User-Id": "forged-admin", "X-Remote-User-Groups": "system-admin",
+})
+assert status == 302 and headers.get("Location", "").startswith("/login")
+
 # CSRF protection rejects a tokenless login attempt.
 status, _, _ = call(
     base + "/login", data=b"username=root&password=wrong"

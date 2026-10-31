@@ -16,24 +16,46 @@ cleanup() {
 }
 trap cleanup EXIT
 docker volume create "$volume" >/dev/null
+# Give only these disposable, network-isolated test containers a loopback alias.
+# This does not allocate an overlapping Docker network on an HA host.
+smoke_python() {
+  {
+    cat <<'PYCLIENT'
+import http.client
+import urllib.request
+
+class SupervisorConnection(http.client.HTTPConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, source_address=("172.30.32.2", 0), **kwargs)
+
+class SupervisorHandler(urllib.request.HTTPHandler):
+    def http_open(self, request):
+        return self.do_open(SupervisorConnection, request)
+
+urllib.request.install_opener(urllib.request.build_opener(SupervisorHandler))
+PYCLIENT
+    cat
+  } | docker exec -i "$name" python -
+}
 # Exercise the real S6 -> bashio -> run.sh startup chain before the isolated
 # application checks below. Seed the Bashio Supervisor-options cache so this
 # needs no live Supervisor. AppArmor enforcement still needs a Linux HA host.
-docker run -d --name "$name" \
+docker run -d --name "$name" --network none --cap-add NET_ADMIN \
   --mount "type=volume,source=$volume,target=/config" \
-  --entrypoint /bin/sh -p 127.0.0.1::8099 "$image" -c '
+  --entrypoint /bin/sh "$image" -c '
     mkdir -p /tmp/.bashio
-    printf "%s\n" '\''{"dhcp_backend":"isc","dns_server":"dns.internal","dns_zones":"","dhcp_agent_url":"https://dhcp.internal:8081","radius_agent_url":"https://radius.internal:8082"}'\'' > /tmp/.bashio/addons.self.options.config.cache
+    printf "%s\n" '\''{"supervisor":"2026.10.5"}'\'' > /tmp/.bashio/info.cache
+    printf "%s\n" '\''{"ingress_require_login":true,"dhcp_backend":"isc","dns_server":"dns.internal","dns_zones":"","dhcp_agent_url":"https://dhcp.internal:8081","radius_agent_url":"https://radius.internal:8082"}'\'' > /tmp/.bashio/addons.self.options.config.cache
     exec /init /run.sh
   ' >/dev/null
-port="$(docker port "$name" 8099/tcp | sed 's/.*://')"
-NETADMIN_SMOKE_PORT="$port" python3 - <<'PY'
+docker exec "$name" ip addr add 172.30.32.2/32 dev lo
+smoke_python <<'PY'
 import os
 import time
 import urllib.error
 import urllib.request
 
-base = "http://127.0.0.1:" + os.environ["NETADMIN_SMOKE_PORT"]
+base = "http://127.0.0.1:8099"
 for _ in range(30):
     try:
         request = urllib.request.Request(
@@ -56,20 +78,20 @@ docker exec "$name" test ! -e /root/.gunicorn/gunicorn.ctl
 docker rm -f "$name" >/dev/null
 # The image CMD needs bashio and the Supervisor; launch gunicorn directly the
 # same way run.sh does, with no configuration so the wizard takes over.
-docker run -d --name "$name" --read-only --tmpfs /tmp --cap-drop ALL \
+docker run -d --name "$name" --network none --read-only --tmpfs /tmp --cap-drop ALL --cap-add NET_ADMIN \
   --security-opt no-new-privileges \
   --mount "type=volume,source=$volume,target=/config" \
-  --entrypoint gunicorn -e NETADMIN_ADDON=1 \
-  -p 127.0.0.1::8099 "$image" \
+  --entrypoint gunicorn -e NETADMIN_ADDON=1 -e NETADMIN_SUPERVISOR_VERSION=2026.10.5 \
+  "$image" \
   --bind 0.0.0.0:8099 --workers 1 netadmin.wsgi:app >/dev/null
-port="$(docker port "$name" 8099/tcp | sed 's/.*://')"
-NETADMIN_SMOKE_PORT="$port" python3 - <<'PY'
+docker exec "$name" ip addr add 172.30.32.2/32 dev lo
+smoke_python <<'PY'
 import os
 import time
 import urllib.error
 import urllib.request
 
-base = "http://127.0.0.1:" + os.environ["NETADMIN_SMOKE_PORT"]
+base = "http://127.0.0.1:8099"
 ingress = {"X-Ingress-Path": "/api/hassio/ingress/synthetic"}
 for _ in range(30):
     try:
@@ -107,20 +129,20 @@ docker run --rm --mount "type=volume,source=$volume,target=/config" \
   --entrypoint sh "$image" -c \
   "printf \"NETADMIN_SECRET_KEY='smoke'\n\" > /config/netadmin.env"
 docker rm -f "$name" >/dev/null 2>&1 || true
-docker run -d --name "$name" --read-only --tmpfs /tmp --cap-drop ALL \
+docker run -d --name "$name" --network none --read-only --tmpfs /tmp --cap-drop ALL --cap-add NET_ADMIN \
   --security-opt no-new-privileges \
   --mount "type=volume,source=$volume,target=/config" \
-  --entrypoint gunicorn -e NETADMIN_ADDON=1 \
-  -p 127.0.0.1::8099 "$image" \
+  --entrypoint gunicorn -e NETADMIN_ADDON=1 -e NETADMIN_SUPERVISOR_VERSION=2026.10.5 \
+  "$image" \
   --bind 0.0.0.0:8099 --workers 1 netadmin.wsgi:app >/dev/null
-port="$(docker port "$name" 8099/tcp | sed 's/.*://')"
-NETADMIN_SMOKE_PORT="$port" python3 - <<'PY'
+docker exec "$name" ip addr add 172.30.32.2/32 dev lo
+smoke_python <<'PY'
 import os
 import time
 import urllib.error
 import urllib.request
 
-base = "http://127.0.0.1:" + os.environ["NETADMIN_SMOKE_PORT"]
+base = "http://127.0.0.1:8099"
 ingress = {"X-Ingress-Path": "/api/hassio/ingress/synthetic"}
 for _ in range(30):
     try:
@@ -141,6 +163,7 @@ PY
 docker exec -i "$name" python - <<'PY'
 from pathlib import Path
 import re
+from dataclasses import replace
 from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
 
@@ -155,6 +178,7 @@ with TemporaryDirectory() as directory:
     ))
     app.config["APPLICATION_ROOT"] = prefix
     client = app.test_client()
+    client.environ_base["REMOTE_ADDR"] = "172.30.32.2"
     response = client.get("/", headers=headers)
     assert urlsplit(response.location).path == prefix + "/login"
     response = client.get("/login", headers=headers)
@@ -180,7 +204,23 @@ with TemporaryDirectory() as directory:
     response = client.post("/settings/reload", data={"csrf_token": csrf}, headers=action_headers)
     assert response.status_code == 302
     assert client.get("/settings", headers=headers).status_code == 200
+    # Delegation accepts only a real Supervisor peer and an administrator identity.
+    app.extensions["netadmin_settings"] = replace(
+        app.extensions["netadmin_settings"], ingress_require_login=False
+    )
+    delegated = app.test_client()
+    delegated.environ_base["REMOTE_ADDR"] = "172.30.32.2"
+    identity = {**headers, "X-Remote-User-Id": "smoke-ha-admin",
+                "X-Remote-User-Groups": "system-admin"}
+    response = delegated.get("/", headers=identity)
+    assert response.status_code == 200 and "Home Assistant session" in response.text
+    assert "netadmin_session=" not in str(response.headers.getlist("Set-Cookie"))
+    assert delegated.get("/", headers=headers).status_code == 302
+    assert delegated.get("/").status_code == 302
+    assert delegated.get("/", headers=identity,
+                         environ_overrides={"REMOTE_ADDR": "127.0.0.1"}).status_code == 403
 print("Configured add-on ingress checks passed")
 print("Packaged settings and CSRF-protected diagnostics checks passed")
 print("Connection save/reload without restart check passed")
+print("Delegated ingress authentication and direct-access isolation checks passed")
 PY

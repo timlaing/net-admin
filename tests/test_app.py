@@ -57,3 +57,18 @@ def test_bad_root_login(tmp_path: Path) -> None:
     client = make_app(tmp_path).test_client()
     response = client.post("/login", data={"username": "root", "password": "wrong"})
     assert b"Invalid username" in response.data
+
+
+def test_ingress_authentication_option_is_strict_and_defaults_to_login(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("NETADMIN_SECRET_KEY", "synthetic")
+    monkeypatch.setenv("NETADMIN_ROOT_PASSWORD_HASH", "unused")
+    monkeypatch.setenv("NETADMIN_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("NETADMIN_INGRESS_REQUIRE_LOGIN", raising=False)
+    assert Settings.from_env().ingress_require_login is True
+    monkeypatch.setenv("NETADMIN_INGRESS_REQUIRE_LOGIN", "false")
+    assert Settings.from_env().ingress_require_login is False
+    monkeypatch.setenv("NETADMIN_INGRESS_REQUIRE_LOGIN", "invalid")
+    with pytest.raises(RuntimeError, match="NETADMIN_INGRESS_REQUIRE_LOGIN"):
+        Settings.from_env()
