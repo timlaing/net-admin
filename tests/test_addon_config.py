@@ -42,11 +42,9 @@ def test_list_options_are_pipe_separated_choices() -> None:
     config = load_yaml("config.yaml")
     options: dict[str, Any] = config["options"]
 
-    checked = 0
     for key, schema_type in config["schema"].items():
         if not str(schema_type).startswith("list("):
             continue
-        checked += 1
         choices = list_choices(str(schema_type))
         assert len(choices) > 1, f"{key}: {schema_type!r} is a single choice, use list(a|b)"
         assert all(choice and choice.strip() == choice for choice in choices), (
@@ -56,8 +54,6 @@ def test_list_options_are_pipe_separated_choices() -> None:
             f"{key}: default {options[key]!r} is not one of {choices}, "
             "the Supervisor rejects it and the add-on cannot start"
         )
-
-    assert checked, "expected at least one list(...) option in the schema"
 
 
 def test_translations_describe_every_option() -> None:

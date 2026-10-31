@@ -96,7 +96,9 @@ docker compose -f docker-compose.kea.yml up -d --build
 The DHCP agent selects its backend with `DHCP_SERVER=isc|kea` (default `isc`) and
 validates candidate files with the matching daemon parser (`dhcpd -t` /
 `kea-dhcp4 -t`); in Kea mode it reloads the daemon over `/run/kea/kea4-ctrl.sock`.
-The Home Assistant add-on exposes the same choice as the `dhcp_backend` option.
+In the Home Assistant add-on, choose the matching DHCP backend in NetAdmin
+**Settings → DHCP**. All service connections are managed there; Home Assistant
+Configuration contains only the ingress login policy.
 
 #### Migrating an existing ISC configuration
 

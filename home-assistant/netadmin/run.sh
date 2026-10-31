@@ -3,13 +3,13 @@
 set -euo pipefail
 export NETADMIN_ADDON=1
 export NETADMIN_DATA_DIR=/data
-NETADMIN_DHCP_BACKEND="$(bashio::config 'dhcp_backend')"
-NETADMIN_DNS_SERVER="$(bashio::config 'dns_server')"
-NETADMIN_DNS_ZONES="$(bashio::config 'dns_zones')"
-NETADMIN_DHCP_AGENT_URL="$(bashio::config 'dhcp_agent_url')"
-NETADMIN_RADIUS_AGENT_URL="$(bashio::config 'radius_agent_url')"
-export NETADMIN_DHCP_BACKEND NETADMIN_DNS_SERVER NETADMIN_DNS_ZONES NETADMIN_DHCP_AGENT_URL NETADMIN_RADIUS_AGENT_URL
-# Legacy Supervisor options seed connections; the in-app Settings page owns saved values.
+# Import legacy values before deleting their retired Supervisor options. The
+# migration emits only fixed option names, never connection values or secrets.
+netadmin_retired_options="$(bashio::addon.options | python3 -m netadmin.addon_options)"
+for netadmin_option in $netadmin_retired_options; do
+  bashio::addon.option "$netadmin_option"
+done
+# The in-app Settings page is the sole owner of saved service connections.
 netadmin_env_file="${NETADMIN_ENV_FILE:-/config/netadmin.env}"
 if [[ -r "$netadmin_env_file" ]]; then
   set -a

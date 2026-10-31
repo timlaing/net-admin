@@ -36,18 +36,20 @@ environment file as a trusted administrator, then reload saved connections. Keep
 
 ## Configuration options
 
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `dhcp_backend` | `isc` | Choose `isc` or `kea` to match the deployed DHCP agent. This does not migrate or reconfigure the DHCP server. |
-| `dns_server` | `dns.internal` | Reachable hostname or IP address of Bind. |
-| `dns_zones` | empty | Comma-separated authoritative zones, for example `example.net,2.0.192.in-addr.arpa`. Set these explicitly for this add-on unless you separately configure a readable Bind configuration for discovery. |
-| `dhcp_agent_url` | `https://dhcp.internal:8081` | DHCP agent HTTPS URL. The hostname must match its TLS certificate. |
-| `radius_agent_url` | `https://radius.internal:8082` | RADIUS agent HTTPS URL. The hostname must match its TLS certificate. |
+Home Assistant Configuration contains only **Require NetAdmin login through ingress**
+(`ingress_require_login`, on by default). Restart the add-on after changing this
+Home Assistant authentication policy.
 
-The Home Assistant options above are legacy startup fallbacks, retained for existing
-installations. **NetAdmin Settings is authoritative:** values saved there override
-these fallbacks on every start, including saved blank values. Do not maintain two
-copies. Existing installations retain their enabled services until explicitly disabled.
+Manage all DNS, DHCP and RADIUS connection details in **NetAdmin → Settings**,
+including the DHCP backend, DNS server and zones, agent URLs, credentials and TLS
+paths. Save there to apply changes without restarting.
+
+When upgrading from an older release, startup imports the retired Home Assistant
+connection options into `/config/netadmin.env` only for assignments that are not
+already saved there. Existing saved values, including empty strings, win. Once
+that import succeeds, startup removes the retired options from Home Assistant.
+If import or cleanup fails, startup stops rather than discard your configuration;
+check the add-on logs and configuration file permissions before restarting.
 
 ## Service credentials and certificates
 
@@ -60,8 +62,8 @@ Settings groups everyday connection fields by service. Advanced sections contain
 - **RADIUS:** enter both the administration agent URL and the authentication host,
   plus the existing shared secret configured in FreeRADIUS's client entry.
 - **Advanced DNS:** set the TSIG name/algorithm if they differ from your existing
-  key. Explicit zone names are recommended. Optional local discovery reads a
-  Bind configuration file mounted inside NetAdmin; it cannot discover remote files.
+  key. Use the optional DNS agent for automatic zone discovery and management. Without
+  an agent, enter zone names or provide a readable local Bind configuration.
 
 Each diagnostic tests the **active** settings. Saving validates and applies connection
 changes immediately without a process restart. **Reload saved connections** applies
@@ -87,9 +89,9 @@ below can delegate administrator authentication to Home Assistant. RADIUS users
 with `Filter-Id` set to `netadmin-admin` can administer services; users with
 `netadmin-standard` can change only their own password.
 
-If the interface displays an HTTPS notice, open Home Assistant using its HTTPS
-address. When HTTPS terminates at a reverse proxy, ensure it forwards the original
-protocol in `X-Forwarded-Proto`. Do not disable Secure cookies to work around this.
+The HTTPS notice is hidden through trusted ingress. For direct HTTP access, open
+NetAdmin using HTTPS. When HTTPS terminates at a reverse proxy, ensure it forwards
+the original protocol. Do not disable Secure cookies to work around this.
 Ingress navigation, form actions and session cookies stay under NetAdmin's own
 Home Assistant ingress path.
 
@@ -97,7 +99,7 @@ Home Assistant ingress path.
   it loads `/config/netadmin.env`.
 - **Agent connection fails:** check name resolution, the HTTPS URL, certificate
   hostname, CA and client certificate paths, and the shared agent token.
-- **No DNS zones or updates fail:** set `dns_zones`, check AXFR permissions and
+- **No DNS zones or updates fail:** configure DNS discovery or zones in Settings, check AXFR permissions and
   confirm the TSIG key has update permission for the relevant zone.
 - **RADIUS login fails:** check `NETADMIN_RADIUS_HOST`, the shared secret,
   server client entry and role attribute. Use the emergency root account to

@@ -3,6 +3,7 @@
 import socket
 import ssl
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -281,13 +282,17 @@ def test_entrypoint_saved_settings_override_legacy_options(runtime, monkeypatch,
     stub = tmp_path / "gunicorn"
     stub.write_text('#!/bin/sh\nprintf "%s|%s" "$NETADMIN_DNS_SERVER" "$NETADMIN_DNS_ZONES"\n')
     stub.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+    monkeypatch.setenv("PATH", f"{tmp_path}:{Path(sys.executable).parent}:/usr/bin:/bin")
     script = Path(__file__).resolve().parents[1] / "home-assistant/netadmin/run.sh"
     result = subprocess.run(  # noqa: S603 - fixed entrypoint and synthetic Bashio function
         [
             "/bin/bash",
             "-c",
-            'function bashio::config() { printf legacy; }; source "$1"',
+            '''function bashio::addon.options() {
+              printf '{"dns_server":"legacy","dns_zones":"legacy"}';
+            };
+            function bashio::config() { printf true; };
+            function bashio::addon.option() { :; }; source "$1"''',
             "probe",
             str(script),
         ],
@@ -400,13 +405,14 @@ def test_supervisor_authentication_option_overrides_environment_file(tmp_path, m
     stub = tmp_path / "gunicorn"
     stub.write_text('#!/bin/sh\nprintf "%s" "$NETADMIN_INGRESS_REQUIRE_LOGIN"\n')
     stub.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+    monkeypatch.setenv("PATH", f"{tmp_path}:{Path(sys.executable).parent}:/usr/bin:/bin")
     script = Path(__file__).resolve().parents[1] / "home-assistant/netadmin/run.sh"
     result = subprocess.run(  # noqa: S603 - synthetic Bashio and fixed entrypoint
         [
             "/bin/bash",
             "-c",
-            'function bashio::config() { printf true; }; source "$1"',
+            '''function bashio::addon.options() { printf '{}'; };
+            function bashio::config() { printf true; }; source "$1"''',
             "probe",
             str(script),
         ],

@@ -80,13 +80,16 @@ The Kea stack (`docker-compose.kea.yml`) sets `DHCP_SERVER: kea` for you.
 
 ## Home Assistant add-on options
 
-| Option             | Schema    | Purpose                   |
-| ------------------ | --------- | ------------------------- |
-| `dhcp_backend`     | `list(isc | kea)`                     | Backend selection (maps to `NETADMIN_DHCP_BACKEND`) |
-| `dns_server`       | `str`     | DNS server host           |
-| `dns_zones`        | `str?`    | Comma-separated zone list |
-| `dhcp_agent_url`   | `url`     | DHCP agent endpoint       |
-| `radius_agent_url` | `url`     | RADIUS agent endpoint     |
+| Option | Schema | Purpose |
+| --- | --- | --- |
+| `ingress_require_login` | `bool` | Require NetAdmin login through ingress (default `true`) |
+
+All service connection details are managed in **NetAdmin → Settings**, including
+DHCP backend, DNS server/zones and agent URLs. Changes saved there apply without a
+restart. Retired Home Assistant connection options are imported on upgrade only
+when their assignments are missing from `/config/netadmin.env`; existing values
+and saved blanks are preserved. After a successful import, the retired options
+are removed from Home Assistant.
 
 Secrets are **not** part of the options schema: the ingress-only wizard writes
 `/config/netadmin.env` (mode 0640) on first run.

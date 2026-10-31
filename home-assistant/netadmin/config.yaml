@@ -16,15 +16,5 @@ panel_admin: false
 map: [addon_config:rw]
 options:
   ingress_require_login: true
-  dhcp_backend: isc
-  dns_server: dns.internal
-  dns_zones: ""
-  dhcp_agent_url: https://dhcp.internal:8081
-  radius_agent_url: https://radius.internal:8082
 schema:
   ingress_require_login: bool
-  dhcp_backend: list(isc|kea)
-  dns_server: str
-  dns_zones: str?
-  dhcp_agent_url: url
-  radius_agent_url: url

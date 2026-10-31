@@ -6,28 +6,3 @@ configuration:
       the authenticated Home Assistant administrator identity from trusted
       Supervisor ingress (Supervisor 2026.10.5+ required). Direct access always requires login. Restart NetAdmin
       after changing this option. Missing identity/group headers fall back to login.
-  dhcp_backend:
-    name: Legacy DHCP backend
-    description: >-
-      Initial fallback only. Manage connections in NetAdmin Settings after sign-in.
-      Saved in-app settings take precedence. This does not migrate a DHCP server.
-  dns_server:
-    name: Legacy DNS server
-    description: >-
-      Initial Bind address fallback. Manage connections in NetAdmin Settings.
-      Saved in-app settings take precedence.
-  dns_zones:
-    name: Legacy DNS zones
-    description: >-
-      Initial comma-separated authoritative zone fallback. Blank does not discover
-      remote zones. Manage connections in NetAdmin Settings after sign-in.
-  dhcp_agent_url:
-    name: Legacy DHCP agent URL
-    description: >-
-      Initial DHCP HTTPS endpoint fallback. Manage connections in NetAdmin Settings.
-      Saved in-app settings take precedence.
-  radius_agent_url:
-    name: Legacy RADIUS agent URL
-    description: >-
-      Initial RADIUS HTTPS endpoint fallback. Manage connections in NetAdmin Settings.
-      Saved in-app settings take precedence.

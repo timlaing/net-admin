@@ -15,6 +15,44 @@ cleanup() {
   docker volume rm "$volume" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
+
+# Exercise the packaged migration and real Bashio option-removal functions.
+# Only the Supervisor API transport is synthetic; no live options are touched.
+docker run --rm -i --network none --entrypoint /bin/bash "$image" -s <<'BASH'
+set -euo pipefail
+source /usr/lib/bashio/bashio.sh
+export NETADMIN_ENV_FILE=/tmp/migration/netadmin.env
+mkdir -p /tmp/migration/bin
+printf '%s\n' 'NETADMIN_DNS_SERVER=saved.example' > "$NETADMIN_ENV_FILE"
+printf '%s\n' '{"ingress_require_login":true,"dhcp_backend":"kea","dns_server":"legacy.example","dns_zones":""}' > /tmp/migration/options.json
+function bashio::api.supervisor() {
+  case "$1 $2" in
+    'GET /addons/self/info') jq '{options:.}' /tmp/migration/options.json ;;
+    'GET /addons/self/options/config') jq '{ingress_require_login:.ingress_require_login}' /tmp/migration/options.json ;;
+    'GET /info') printf '%s\n' '{"supervisor":"2026.10.5"}' ;;
+    'POST /addons/self/options')
+      grep -q 'NETADMIN_DHCP_BACKEND=kea' "$NETADMIN_ENV_FILE" || return 1
+      printf '%s' "$3" | jq '.options' > /tmp/migration/options.json
+      ;;
+    *) return 1 ;;
+  esac
+}
+cat > /tmp/migration/bin/gunicorn <<'STUB'
+#!/bin/sh
+printf '%s|%s|%s|%s' "$NETADMIN_DHCP_BACKEND" "$NETADMIN_DNS_SERVER" "$NETADMIN_DNS_ZONES" "$NETADMIN_INGRESS_REQUIRE_LOGIN"
+STUB
+chmod 755 /tmp/migration/bin/gunicorn
+export PATH="/tmp/migration/bin:$PATH"
+result="$(source /run.sh)"
+[[ "$result" == 'kea|saved.example||true' ]]
+[[ "$(jq -c . /tmp/migration/options.json)" == '{"ingress_require_login":true}' ]]
+first="$(cat "$NETADMIN_ENV_FILE")"
+second="$(source /run.sh)"
+[[ "$second" == "$result" ]]
+[[ "$(cat "$NETADMIN_ENV_FILE")" == "$first" ]]
+echo 'Packaged legacy-option import, cleanup and repeat-start checks passed'
+BASH
+
 docker volume create "$volume" >/dev/null
 # Give only these disposable, network-isolated test containers a loopback alias.
 # This does not allocate an overlapping Docker network on an HA host.
@@ -45,7 +83,8 @@ docker run -d --name "$name" --network none --cap-add NET_ADMIN \
   --entrypoint /bin/sh "$image" -c '
     mkdir -p /tmp/.bashio
     printf "%s\n" '\''{"supervisor":"2026.10.5"}'\'' > /tmp/.bashio/info.cache
-    printf "%s\n" '\''{"ingress_require_login":true,"dhcp_backend":"isc","dns_server":"dns.internal","dns_zones":"","dhcp_agent_url":"https://dhcp.internal:8081","radius_agent_url":"https://radius.internal:8082"}'\'' > /tmp/.bashio/addons.self.options.config.cache
+    printf "%s\n" '\''{"ingress_require_login":true}'\'' > /tmp/.bashio/addons.self.options.config.cache
+    printf "%s\n" '\''{"ingress_require_login":true}'\'' > /tmp/.bashio/addons.self.options.cache
     exec /init /run.sh
   ' >/dev/null
 docker exec "$name" ip addr add 172.30.32.2/32 dev lo

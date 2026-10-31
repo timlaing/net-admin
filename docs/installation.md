@@ -75,7 +75,8 @@ from a repository checkout on the server.
   load it. The wizard is only reachable through ingress and locks itself once
   configured.
 - Configure service connections and diagnostics in the application's Settings page.
-  The add-on's `ingress_require_login` option controls whether trusted Home Assistant
+  Legacy service options are imported on upgrade and removed from Home Assistant.
+  The add-on's only option, `ingress_require_login`, controls whether trusted Home Assistant
   administrator identity can replace the application login through ingress.
 - For the 0.5.0 upgrade, optional DNS agent and rollback preparation, see
   [Deployment guide](deployment-0.5.0.md).

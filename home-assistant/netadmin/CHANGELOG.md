@@ -2,6 +2,7 @@
 
 ## 0.5.1
 
+- Consolidate DNS/DHCP/RADIUS connection settings in NetAdmin Settings. Import legacy Home Assistant option values without overwriting saved settings, then remove the retired options. Keep the ingress login policy in Home Assistant Configuration.
 - Hide the HTTPS sign-in notice through trusted Home Assistant ingress, including when the internal forwarded connection uses HTTP.
 - Keep HTTPS guidance for direct HTTP access, with wording appropriate to NetAdmin.
 
