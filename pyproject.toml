@@ -38,7 +38,7 @@ netadmin-radius-agent = "netadmin.agents.radius:main"
 include = ["netadmin*"]
 
 [tool.setuptools.package-data]
-netadmin = ["templates/*.html", "static/*.css"]
+netadmin = ["templates/*.html", "static/*.css", "static/*.js", "static/*.png", "static/*.svg", "static/vendor/*.css", "static/vendor/*.txt"]
 
 [tool.ruff]
 line-length = 100

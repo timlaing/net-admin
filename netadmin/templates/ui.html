@@ -1,0 +1,57 @@
+{% macro icon(name) -%}
+<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+{% if name == 'overview' %}<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>
+{% elif name == 'dns' %}<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18M5 6h14M5 18h14"/>
+{% elif name == 'dhcp' %}<rect x="8" y="3" width="8" height="6" rx="1.5"/><path d="M12 9v5M4 14h16M4 14v3m8-3v3m8-3v3"/><rect x="1.5" y="17" width="5" height="4" rx="1"/><rect x="9.5" y="17" width="5" height="4" rx="1"/><rect x="17.5" y="17" width="5" height="4" rx="1"/>
+{% elif name == 'radius' %}<path d="m12 2 8 3v6c0 5-4 8-8 11-4-3-8-6-8-11V5l8-3Z"/><path d="m8 12 3 3 5-6"/>
+{% elif name == 'activity' %}<path d="M3 12h4l3-8 4 16 3-8h4"/>
+{% elif name == 'settings' %}<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2" fill="var(--surface)"/><circle cx="16" cy="12" r="2" fill="var(--surface)"/><circle cx="10" cy="18" r="2" fill="var(--surface)"/>
+{% elif name == 'key' %}<circle cx="8" cy="8" r="5"/><path d="m12 12 9 9m-3-3 3-3m-6 0 3-3"/>
+{% elif name == 'arrow' %}<path d="M5 12h14m-5-5 5 5-5 5"/>
+{% elif name == 'check' %}<path d="m5 12 4 4L19 6"/>
+{% elif name == 'menu' %}<path d="M4 6h16M4 12h16M4 18h16"/>
+{% else %}<circle cx="12" cy="12" r="9"/><path d="M12 8v5m0 3h.01"/>{% endif %}
+</svg>
+{%- endmacro %}
+
+{% macro field(input, autocomplete='off') -%}
+<div class="field">
+  {{ input.label(class='form-label') }}
+  {{ input(class='form-select' if input.type == 'SelectField' else 'form-control', autocomplete=autocomplete, aria_invalid='true' if input.errors else 'false', aria_describedby=input.id ~ '-errors') }}
+  <div id="{{ input.id }}-errors" class="field-errors" role="alert">{% for error in input.errors %}<p>{{ error }}</p>{% endfor %}</div>
+</div>
+{%- endmacro %}
+
+{% macro nav_links() -%}
+{% set links = [('Overview','web.dashboard','overview'), ('DNS','web.dns_index','dns'), ('DHCP','web.dhcp_index','dhcp'), ('RADIUS','web.radius_index','radius'), ('Activity','web.audit','activity'), ('Settings','connections.settings_page','settings')] %}
+{% for label, endpoint, glyph in links %}
+{% if g.identity.role == 'admin' or endpoint == 'web.dashboard' %}
+{% set active = request.endpoint == endpoint or (glyph == 'settings' and request.endpoint.startswith('connections.')) %}
+<a class="section-link {{ 'active' if active }}" href="{{ url_for(endpoint) }}" {% if active %}aria-current="page"{% endif %}>{{ icon(glyph) }}<span>{{ label }}</span></a>
+{% endif %}
+{% endfor %}
+{% if g.identity.source != 'ingress' and g.identity.username != 'root' %}
+<a class="section-link {{ 'active' if request.endpoint == 'web.password' }}" href="{{ url_for('web.password') }}" {% if request.endpoint == 'web.password' %}aria-current="page"{% endif %}>{{ icon('key') }}<span>Change password</span></a>
+{% endif %}
+{%- endmacro %}
+
+{% macro table_tools(id, label) -%}
+<div class="table-tools" hidden data-filter-tools>
+  <label class="visually-hidden" for="filter-{{ id }}">Search {{ label }}</label>
+  <input class="form-control table-search" id="filter-{{ id }}" type="search" placeholder="Search {{ label }}…" data-table-filter="{{ id }}">
+  <span class="form-text" data-filter-count="{{ id }}" aria-live="polite"></span>
+</div>
+{%- endmacro %}
+
+{% macro empty(title, detail) -%}
+<div class="empty-state">{{ icon('dhcp') }}<h3>{{ title }}</h3><p>{{ detail }}</p></div>
+{%- endmacro %}
+
+{% macro audit_table(events, id='activity') -%}
+<div class="table-responsive" tabindex="0" role="region" aria-label="Recent activity">
+<table class="table align-middle" id="{{ id }}">
+<caption class="visually-hidden">Recent administrative activity</caption>
+<thead><tr><th scope="col">When (UTC)</th><th scope="col">User</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Result</th></tr></thead>
+<tbody>{% for event in events %}<tr data-filter-row><td class="text-nowrap">{{ event.occurred_at|display_time }}</td><td>{{ event.username }}</td><td>{{ event.action }}</td><td class="cell-value">{{ event.target }}</td><td><span class="status {{ 'status-success' if event.success else 'status-danger' }}">{{ 'Success' if event.success else 'Rejected' }}</span></td></tr>{% endfor %}</tbody>
+</table></div>
+{%- endmacro %}

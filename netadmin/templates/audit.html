@@ -1,1 +1,7 @@
-{% extends "base.html" %}{% block content %}<h1 class="h2">Audit log</h1><div class="table-responsive"><table class="table table-sm"><thead><tr><th>Unix time</th><th>User</th><th>Action</th><th>Target</th><th>Result</th></tr></thead><tbody>{% for event in events %}<tr><td>{{ event.occurred_at }}</td><td>{{ event.username }}</td><td>{{ event.action }}</td><td>{{ event.target }}</td><td>{{ 'Success' if event.success else 'Rejected' }}</td></tr>{% endfor %}</tbody></table></div>{% endblock %}
+{% extends 'base.html' %}
+{% from 'ui.html' import icon, table_tools, audit_table, empty %}
+{% block title %}Activity · NetAdmin{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">WORKSPACE HISTORY</p><h1>Audit log</h1><p>Recent sign-ins and administrative changes, with the user and outcome recorded.</p></div><span class="service-glyph">{{ icon('activity') }}</span></div>
+<section class="table-panel">{% if events %}{{ table_tools('activity', 'activity') }}{{ audit_table(events) }}{% else %}{{ empty('No activity yet', 'Sign-ins and administrative changes will appear here.') }}{% endif %}</section>
+{% endblock %}

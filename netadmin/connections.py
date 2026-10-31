@@ -77,6 +77,7 @@ def settings_with_connections(settings: Settings, values: dict[str, str]) -> Set
 def connection_extensions(settings: Settings) -> dict[str, Any]:
     """Construct replacements before changing any active app references."""
     return {
+        "netadmin_connection_results": {},
         "netadmin_settings": settings,
         "netadmin_dns": BindService(
             settings.dns_server,

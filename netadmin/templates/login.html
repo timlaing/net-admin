@@ -1,19 +1,13 @@
-{% extends "base.html" %}
+{% extends 'base.html' %}
+{% from 'ui.html' import field, icon %}
 {% block title %}Sign in · NetAdmin{% endblock %}
 {% block content %}
-{% if request.environ.get('netadmin.trusted_ingress') and not service_settings.ingress_require_login %}
-<div class="alert alert-info">Home Assistant did not provide a complete administrator identity. Sign in below. Check that Supervisor supports forwarding user identities and groups to use automatic ingress access.</div>
-{% endif %}
-<div class="card login-card mx-auto shadow-sm">
-  <div class="card-body p-4">
-    <h1 class="h3 mb-1">Network administration</h1>
-    <p class="text-secondary mb-4">Sign in with RADIUS or the emergency root account.</p>
-    <form method="post">
-      {{ form.hidden_tag() }}
-      <div class="mb-3">{{ form.username.label(class="form-label") }}{{ form.username(class="form-control", autocomplete="username") }}</div>
-      <div class="mb-3">{{ form.password.label(class="form-label") }}{{ form.password(class="form-control", autocomplete="current-password") }}</div>
-      {{ form.submit(class="btn btn-primary w-100") }}
-    </form>
-  </div>
+{% if request.environ.get('netadmin.trusted_ingress') and not service_settings.ingress_require_login %}<div class="alert alert-info">Home Assistant did not provide a complete administrator identity. Sign in below. Automatic access requires Supervisor 2026.10.5 or newer and a Home Assistant administrator account.</div>{% endif %}
+<div class="welcome-grid">
+  <section class="welcome-copy"><p class="eyebrow">WELCOME TO NETADMIN</p><h1>Your network.<br>A clearer view.</h1><p>One workspace for DNS, DHCP and RADIUS. Keep your network organised and your access under control.</p><img src="{{ url_for('static', filename='network.svg') }}" width="480" height="250" alt=""></section>
+  <section class="card login-card"><div class="card-body"><p class="eyebrow">SECURE WORKSPACE</p><h2>Network administration</h2><p class="text-secondary mb-4">Sign in with RADIUS or the emergency root account.</p>
+    <form method="post">{{ form.hidden_tag() }}{{ field(form.username, 'username') }}{{ field(form.password, 'current-password') }}{{ form.submit(class='btn btn-primary w-100') }}</form>
+    <p class="form-text mt-3 mb-0">Your account determines which services you can manage.</p>
+  </div></section>
 </div>
 {% endblock %}

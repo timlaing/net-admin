@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="250" viewBox="0 0 480 250" fill="none">
+<defs><linearGradient id="node" x1="205" y1="55" x2="300" y2="155" gradientUnits="userSpaceOnUse"><stop stop-color="#1765e9"/><stop offset="1" stop-color="#123b92"/></linearGradient><pattern id="dots" width="20" height="20" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1" fill="#89a5cf" opacity=".25"/></pattern></defs>
+<rect width="480" height="250" rx="24" fill="url(#dots)"/>
+<g stroke="#729acc" stroke-width="2"><path d="M240 105H92v65M240 105h148v65M240 140v30"/><path d="M240 55V30" stroke-dasharray="5 5"/></g>
+<rect x="204" y="62" width="72" height="72" rx="20" fill="url(#node)"/><path d="m240 77 19 7v15c0 14-9 21-19 26-10-5-19-12-19-26V84l19-7Z" stroke="#fff" stroke-width="3"/><path d="m231 99 6 6 12-14" stroke="#83e0db" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<g fill="#152b49" stroke="#7fa6d8" stroke-width="1.5"><rect x="51" y="170" width="82" height="48" rx="12"/><rect x="199" y="170" width="82" height="48" rx="12"/><rect x="347" y="170" width="82" height="48" rx="12"/></g>
+<g fill="#edf4ff" font-family="system-ui,sans-serif" font-weight="600" font-size="13" text-anchor="middle"><text x="92" y="199">DNS</text><text x="240" y="199">DHCP</text><text x="388" y="199">RADIUS</text></g>
+<g fill="#5ed8ce"><circle cx="92" cy="151" r="4"/><circle cx="240" cy="151" r="4"/><circle cx="388" cy="151" r="4"/></g>
+</svg>

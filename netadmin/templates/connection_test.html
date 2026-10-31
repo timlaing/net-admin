@@ -1,10 +1,7 @@
-{% extends "base.html" %}
+{% extends 'base.html' %}
+{% from 'ui.html' import icon %}
 {% block title %}{{ service }} connection · NetAdmin{% endblock %}
 {% block content %}
-<h1 class="h2">{{ service }} connection test</h1>
-<div class="alert {{ 'alert-success' if result.state == 'Connected' else 'alert-warning' }}" role="status">
-  <h2 class="h5">{{ result.state }}</h2><p class="mb-0">{{ result.message }}</p>
-</div>
-<p>This result describes the active settings at the time of this test. Saving connection settings applies them immediately.</p>
-<a class="btn btn-outline-primary" href="{{ url_for('connections.settings_page') }}">Back to Settings</a>
+<div class="page-heading"><div><p class="eyebrow">CONNECTION DIAGNOSTICS</p><h1>{{ service }} connection test</h1><p>A snapshot of your active connection. No server settings were changed.</p></div></div>
+<section class="card password-card"><div class="card-body"><span class="service-glyph mb-4">{{ icon(service|lower) }}</span><div class="alert {{ 'alert-success' if result.state == 'Connected' else 'alert-warning' }}" role="status"><h2 class="h4">{{ result.state }}</h2><p>{{ result.message }}</p></div><p class="text-secondary">This result describes the active settings at the time of this test. The overview now shows this last test result.</p><a class="btn btn-primary" href="{{ url_for('connections.settings_page') }}">Back to Settings</a></div></section>
 {% endblock %}

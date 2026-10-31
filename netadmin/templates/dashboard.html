@@ -1,20 +1,34 @@
-{% extends "base.html" %}
+{% extends 'base.html' %}
+{% from 'ui.html' import icon, audit_table, empty %}
+{% block title %}Overview · NetAdmin{% endblock %}
 {% block content %}
-<h1 class="h2">Network overview</h1>
-<p class="text-secondary">The services remain authoritative. NetAdmin reads their live state and submits validated changes.</p>
-<div class="row g-4 mt-2">
-  {% if g.identity.role == 'admin' %}
-  {% for title, text, endpoint in [('DNS','Authoritative Bind zones and dynamic records.','web.dns_index'),('DHCP','ISC leases and managed reservations.','web.dhcp_index'),('RADIUS','Users, roles, clients and password state.','web.radius_index')] %}
-  <div class="col-lg-4"><div class="card h-100 shadow-sm"><div class="card-body"><h2 class="h4">{{ title }}</h2><p>{{ text }}</p>
-  {% if service_settings|attr(title|lower ~ '_enabled') %}
-  <p class="text-secondary">Enabled · connection not checked on this page</p><a class="btn btn-outline-primary" href="{{ url_for(endpoint) }}">Manage {{ title }}</a>
-  {% else %}
-  <p class="text-secondary">Disabled</p><a class="btn btn-outline-primary" href="{{ url_for('connections.settings_page') }}">Configure {{ title }}</a>
-  {% endif %}
-  </div></div></div>
-  {% endfor %}
-  {% else %}
-  <div class="col-lg-6"><div class="card shadow-sm"><div class="card-body"><h2 class="h4">Self service</h2><p>Your role permits changing your own RADIUS password.</p><a class="btn btn-primary" href="{{ url_for('web.password') }}">Change password</a></div></div></div>
-  {% endif %}
+<section class="hero">
+  <div><p class="eyebrow">YOUR NETWORK, IN VIEW</p><h1>Network overview</h1><p>Manage names, addresses and access from one workspace. Your network services stay in control.</p>
+  <div class="hero-actions">{% if g.identity.role == 'admin' %}<a class="btn btn-primary" href="{{ url_for('connections.settings_page') }}">Connection settings {{ icon('arrow') }}</a><a class="btn btn-outline-secondary" href="{{ url_for('web.audit') }}">View activity</a>{% else %}<a class="btn btn-primary" href="{{ url_for('web.password') }}">Change password {{ icon('arrow') }}</a>{% endif %}</div></div>
+  <img src="{{ url_for('static', filename='network.svg') }}" width="480" height="250" alt="">
+</section>
+{% if g.identity.role == 'admin' %}
+<div class="metric-strip" aria-label="Configuration summary">
+  <div class="metric"><strong>{{ enabled_count }}<span class="visually-hidden"> of 3</span></strong><span>Services enabled</span></div>
+  <div class="metric"><strong>{{ service_settings.dns_zones|length if not service_settings.dns_config_path else 'Local file' }}</strong><span>Configured DNS zones</span></div>
+  <div class="metric"><strong>{{ service_settings.dhcp_backend|upper }}</strong><span>DHCP backend</span></div>
 </div>
+<div class="section-heading"><h2>Network services</h2><span class="form-text">Connection tests are run on demand</span></div>
+<div class="service-grid">
+{% for title, text, endpoint, address in [('DNS','Names & records','web.dns_index', service_settings.dns_server),('DHCP','Addresses & reservations','web.dhcp_index', service_settings.dhcp_agent_url),('RADIUS','Users & access','web.radius_index', service_settings.radius_agent_url)] %}
+{% set key = title|lower %}{% set enabled = service_settings|attr(key ~ '_enabled') %}{% set check = checks.get(key) %}
+<article class="service-card">
+  <div class="service-card-top"><span class="service-glyph">{{ icon(key) }}</span><span class="status {{ 'status-success' if enabled and check and check.result.state == 'Connected' else 'status-warning' if enabled and check else '' }}">{{ check.result.state if enabled and check else 'Not tested' if enabled else 'Disabled' }}</span></div>
+  <h2>{{ title }}</h2><p>{{ text }}</p>
+  <p class="service-endpoint">{{ address if enabled else 'Enable when you need this service.' }}</p>
+  {% if check and enabled %}<p class="last-check">Last test: {{ check.checked_at|display_time }} UTC</p>{% else %}<p class="last-check">{{ 'Enabled · connection not checked' if enabled else 'No connection attempts' }}</p>{% endif %}
+  <a class="btn btn-outline-primary" href="{{ url_for(endpoint) if enabled else url_for('connections.settings_page') }}">{{ 'Manage ' if enabled else 'Configure ' }}{{ title }} {{ icon('arrow') }}</a>
+</article>
+{% endfor %}
+</div>
+<div class="section-heading"><h2>Recent activity</h2><a href="{{ url_for('web.audit') }}">View all activity {{ icon('arrow') }}</a></div>
+<section class="table-panel">{% if events %}{{ audit_table(events) }}{% else %}{{ empty('No activity yet', 'Sign-ins and administrative changes will appear here.') }}{% endif %}</section>
+{% else %}
+<section class="card password-card"><div class="card-body"><p class="eyebrow">SELF SERVICE</p><h2 class="h4">Keep your account secure</h2><p>Your role permits changing your own RADIUS password. Use the Change password page to update it.</p></div></section>
+{% endif %}
 {% endblock %}

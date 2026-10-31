@@ -13,6 +13,7 @@ from wtforms.validators import DataRequired, EqualTo, Length
 
 from netadmin.ingress import configure_ingress
 from netadmin.preferences import read_env_file, write_env_file
+from netadmin.presentation import display_time
 
 
 class RootForm(FlaskForm):  # type: ignore[misc]
@@ -46,6 +47,7 @@ def step1() -> Any:
 def create_setup_app() -> Flask:
     """Create the unconfigured Home Assistant app."""
     app = Flask(__name__)
+    app.add_template_filter(display_time, "display_time")
     configure_ingress(app)
     app.config.update(
         SECRET_KEY=secrets.token_urlsafe(32),

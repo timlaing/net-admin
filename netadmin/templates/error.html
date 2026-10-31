@@ -1,1 +1,6 @@
-{% extends "base.html" %}{% block content %}<div class="alert alert-danger"><h1 class="h4">Service operation failed</h1><p class="mb-0">{{ message }}</p></div>{% endblock %}
+{% extends 'base.html' %}
+{% from 'ui.html' import icon %}
+{% block title %}Service unavailable · NetAdmin{% endblock %}
+{% block content %}
+<section class="card password-card"><div class="card-body"><span class="service-glyph mb-4">{{ icon('info') }}</span><h1 class="h2">Service operation failed</h1><p>{{ message }}</p><p class="text-secondary">Review the connection settings and service logs, then try again.</p><div class="hero-actions"><a class="btn btn-outline-primary" href="{{ url_for('web.dashboard') }}">Back to overview</a>{% if g.identity and g.identity.role == 'admin' %}<a class="btn btn-primary" href="{{ url_for('connections.settings_page') }}">Connection settings</a>{% endif %}</div></div></section>
+{% endblock %}

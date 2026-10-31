@@ -1,40 +1,16 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NetAdmin setup</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
-  <link href="{{ url_for('static', filename='app.css') }}" rel="stylesheet">
-</head>
-<body>
-{% include "https_notice.html" %}
-<nav class="navbar navbar-dark bg-primary"><div class="container-fluid"><span class="navbar-brand">NetAdmin · first-run setup</span></div></nav>
-<main class="container py-5" style="max-width: 42rem;">
-{% if step == "done" %}
-  <div class="alert alert-success">Configuration written to the app's environment file.</div>
-  <div class="card"><div class="card-body p-4">
-    <h1 class="h4">Setup complete</h1>
-    <h2 class="h5 mt-3">Restart the add-on</h2>
-    <p>Restart NetAdmin from Home Assistant, then sign in as <strong>root</strong> with your chosen password.</p>
-    <p class="mb-0">Open <strong>Settings</strong> to enable and test the services you use. No external services are required to sign in.</p>
-  </div></div>
+{% extends 'base.html' %}
+{% from 'ui.html' import field, icon %}
+{% block title %}NetAdmin · first-run setup{% endblock %}
+{% block content %}
+<div class="onboarding">
+<img class="brand-illustration" src="{{ url_for('static', filename='network.svg') }}" width="480" height="250" alt="">
+{% if step == 'done' %}
+<div class="alert alert-success">Configuration written to the app's environment file.</div>
+<section class="card"><div class="card-body"><p class="eyebrow">READY FOR YOUR NETWORK</p><h1>Setup complete</h1><h2 class="h4 mt-4">Restart the add-on</h2><p>Restart NetAdmin from Home Assistant, then sign in as <strong>root</strong> with your chosen password.</p><p class="mb-0">Open <strong>Settings</strong> to enable and test the services you use. No external services are required to sign in.</p></div></section>
 {% else %}
-  <div class="card"><div class="card-body p-4">
-    <h1 class="h4">Emergency root account</h1>
-    <p class="text-secondary">Create your administrator account first. Configure DNS, DHCP and RADIUS connections after signing in. Store your password in a password manager.</p>
-    <form method="post" action="{{ url_for('step1') }}">
-      {{ form.hidden_tag() }}
-      {% for field in [form.password, form.confirm] %}
-      <div class="mb-3">
-        {{ field.label(class="form-label") }}{{ field(class="form-control", autocomplete="new-password", aria_describedby=field.id ~ '-errors') }}
-        <div id="{{ field.id }}-errors" class="text-danger" role="alert">{% for error in field.errors %}<p class="mb-0">{{ error }}</p>{% endfor %}</div>
-      </div>
-      {% endfor %}
-      <button class="btn btn-primary w-100">Create administrator account</button>
-    </form>
-  </div></div>
+<section class="card"><div class="card-body"><p class="eyebrow">LET'S GET STARTED</p><h1 class="h2">Emergency root account</h1><p class="text-secondary">Create your administrator account first. Connect DNS, DHCP and RADIUS after signing in.</p>
+<form method="post" action="{{ url_for('step1') }}">{{ form.hidden_tag() }}{{ field(form.password, 'new-password') }}{{ field(form.confirm, 'new-password') }}<p class="form-text">Use at least 12 characters and save your password in a password manager.</p><button class="btn btn-primary w-100">Create administrator account {{ icon('arrow') }}</button></form>
+</div></section>
 {% endif %}
-</main>
-</body>
-</html>
+</div>
+{% endblock %}

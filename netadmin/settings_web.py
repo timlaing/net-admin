@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import dns.exception
@@ -93,6 +94,10 @@ def connection_test(service: str) -> Any:
     """Run a user-requested read-only test against the active configuration."""
     runtime = cast(Settings, extension("netadmin_settings"))
     result = test_connection(runtime, service)
+    current_app.extensions["netadmin_connection_results"][service] = {
+        "result": result,
+        "checked_at": int(datetime.now(UTC).timestamp()),
+    }
     return render_template("connection_test.html", service=service.upper(), result=result)
 
 

@@ -33,6 +33,7 @@ from netadmin.forms import (
     RpiRecordForm,
 )
 from netadmin.ingress import configure_ingress
+from netadmin.presentation import display_time
 from netadmin.services.agents import AgentClient
 from netadmin.settings_web import connection_web
 from netadmin.store import Store
@@ -115,7 +116,13 @@ def logout() -> Any:
 @login_required
 def dashboard() -> Any:
     """Render the role-aware landing page."""
-    return render_template("dashboard.html")
+    runtime = _settings()
+    return render_template(
+        "dashboard.html",
+        enabled_count=sum((runtime.dns_enabled, runtime.dhcp_enabled, runtime.radius_enabled)),
+        checks=extension("netadmin_connection_results"),
+        events=_store().recent_audit(5) if current_identity().role == "admin" else [],
+    )
 
 
 @web.route("/dns", methods=["GET"])
@@ -380,6 +387,7 @@ def create_app(settings: Settings | None = None) -> Flask:
     """Create and configure NetAdmin."""
     runtime = settings or Settings.from_env()
     app = Flask(__name__)
+    app.add_template_filter(display_time, "display_time")
     if os.getenv("NETADMIN_ADDON") == "1":
         configure_ingress(app)
     app.config.update(

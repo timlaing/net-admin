@@ -1,57 +1,50 @@
+{% from 'ui.html' import icon, nav_links with context %}
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>{% block title %}NetAdmin{% endblock %}</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
+  <link rel="icon" href="{{ url_for('static', filename='brand.png') }}" type="image/png">
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <link href="{{ url_for('static', filename='vendor/bootstrap.min.css') }}" rel="stylesheet">
   <link href="{{ url_for('static', filename='app.css') }}" rel="stylesheet">
 </head>
 <body>
-{% include "https_notice.html" %}
-<nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm" aria-label="Primary">
-  <div class="container-fluid">
-    <a class="navbar-brand fw-semibold" href="{{ url_for('web.dashboard') }}">NetAdmin</a>
+<a class="skip-link" href="#main-content">Skip to content</a>
+{% include 'https_notice.html' %}
+<div class="app-shell {{ 'public-shell' if not g.identity }}">
+{% if g.identity %}
+<aside class="sidebar">
+  <a class="brand" href="{{ url_for('web.dashboard') }}"><img src="{{ url_for('static', filename='brand.png') }}" width="38" height="38" alt=""><span>NetAdmin<small>NETWORK CONSOLE</small></span></a>
+  <p class="nav-heading">Workspace</p>
+  <nav aria-label="Sections">{{ nav_links() }}</nav>
+  <div class="sidebar-note">{{ icon('radius') }}<span>Changes validated<br>by your service agents</span></div>
+</aside>
+{% endif %}
+<div class="workspace">
+<header class="topbar">
+  {% if g.identity %}
+  <details class="mobile-nav"><summary>{{ icon('menu') }}<span>Menu</span></summary><nav aria-label="Mobile sections">{{ nav_links() }}</nav></details>
+  <span class="workspace-label">Network administration</span>
+  {% else %}
+  <a class="brand" href="{{ url_for('step1') if request.endpoint == 'step1' else url_for('web.dashboard') }}"><img src="{{ url_for('static', filename='brand.png') }}" width="38" height="38" alt=""><span>NetAdmin<small>NETWORK CONSOLE</small></span></a>
+  {% endif %}
+  <div class="topbar-actions">
+    <label class="theme-control" hidden data-theme-control><span>Theme</span><select class="form-select" data-theme-choice aria-label="Color theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
     {% if g.identity %}
-    <div class="d-flex align-items-center gap-3 text-white">
-      <span>{{ g.identity.display_name or g.identity.username }} · {{ g.identity.role }}</span>
-      {% if g.identity.source == 'ingress' %}
-      <span class="badge bg-light text-dark">Home Assistant session</span>
-      {% else %}
-      <form method="post" action="{{ url_for('web.logout') }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button class="btn btn-sm btn-outline-light">Sign out</button>
-      </form>
-      {% endif %}
-    </div>
+    <div class="account"><span class="avatar" aria-hidden="true">{{ (g.identity.display_name or g.identity.username)[0]|upper }}</span><span class="account-label">{{ g.identity.display_name or g.identity.username }}<small>{{ 'Home Assistant session' if g.identity.source == 'ingress' else g.identity.role|capitalize }}</small></span></div>
+    {% if g.identity.source != 'ingress' %}<form method="post" action="{{ url_for('web.logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-sm btn-outline-secondary">Sign out</button></form>{% endif %}
     {% endif %}
   </div>
-</nav>
-{% if g.identity %}
-<div class="container-fluid">
-  <div class="row">
-    <aside class="col-md-2 sidebar py-4">
-      <nav class="nav flex-column gap-1" aria-label="Sections">
-        <a class="nav-link" href="{{ url_for('web.dashboard') }}">Overview</a>
-        {% if g.identity.source != 'ingress' %}<a class="nav-link" href="{{ url_for('web.password') }}">Change password</a>{% endif %}
-        {% if g.identity.role == 'admin' %}
-        <a class="nav-link" href="{{ url_for('web.dns_index') }}">DNS</a>
-        <a class="nav-link" href="{{ url_for('web.dhcp_index') }}">DHCP</a>
-        <a class="nav-link" href="{{ url_for('web.radius_index') }}">RADIUS</a>
-        <a class="nav-link" href="{{ url_for('web.audit') }}">Audit</a>
-        <a class="nav-link" href="{{ url_for('connections.settings_page') }}">Settings</a>
-        {% endif %}
-      </nav>
-    </aside>
-    <main class="col-md-10 px-md-5 py-4">
-{% else %}
-<main class="container py-5">
-{% endif %}
-      {% for category, message in get_flashed_messages(with_categories=true) %}
-      <div class="alert alert-{{ category }}">{{ message }}</div>
-      {% endfor %}
-      {% block content %}{% endblock %}
-    </main>
-  {% if g.identity %}</div></div>{% endif %}
+</header>
+<main id="main-content" class="main-content {{ 'public-content' if not g.identity }}" tabindex="-1">
+  {% for category, message in get_flashed_messages(with_categories=true) %}<div class="alert alert-{{ category }}" role="status">{{ message }}</div>{% endfor %}
+  {% block content %}{% endblock %}
+  <footer class="app-footer"><span>NetAdmin</span><span>DNS · DHCP · RADIUS</span></footer>
+</main>
+</div>
+</div>
 </body>
 </html>
