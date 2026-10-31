@@ -1,0 +1,8 @@
+FROM alpine:3.24
+RUN apk add --no-cache python3 py3-pip bind
+WORKDIR /app
+COPY pyproject.toml /app/
+COPY netadmin /app/netadmin
+RUN pip3 install --break-system-packages --no-cache-dir --only-binary :all: .
+EXPOSE 8083
+CMD ["sh", "-c", "exec gunicorn --bind 0.0.0.0:8083 --workers 1 --certfile /pki/server.crt --keyfile /pki/server.key --ca-certs /pki/ca.crt --cert-reqs 2 'netadmin.agents.dns:create_dns_agent()'"]

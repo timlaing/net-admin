@@ -24,7 +24,7 @@ from netadmin.services.dns import BindService
 SECRET_FIELDS = ("dns_tsig_secret", "radius_secret", "agent_token")
 PATH_FIELDS = ("dns_config_path", "agent_ca", "agent_cert", "agent_key")
 SECTIONS = {
-    "DNS": ("dns_enabled", "dns_server", "dns_zones", "dns_tsig_secret"),
+    "DNS": ("dns_enabled", "dns_server", "dns_agent_url", "dns_zones", "dns_tsig_secret"),
     "DHCP": ("dhcp_enabled", "dhcp_agent_url", "dhcp_backend"),
     "RADIUS": ("radius_enabled", "radius_agent_url", "radius_host", "radius_secret"),
     "Agent security": ("agent_token", "agent_ca", "agent_cert", "agent_key"),
@@ -76,7 +76,7 @@ def settings_with_connections(settings: Settings, values: dict[str, str]) -> Set
 
 def connection_extensions(settings: Settings) -> dict[str, Any]:
     """Construct replacements before changing any active app references."""
-    return {
+    extensions: dict[str, Any] = {
         "netadmin_connection_results": {},
         "netadmin_settings": settings,
         "netadmin_dns": BindService(
@@ -102,6 +102,15 @@ def connection_extensions(settings: Settings) -> dict[str, Any]:
             settings.agent_key,
         ),
     }
+    if settings.dns_agent_url:
+        extensions["netadmin_dns"].zone_agent = AgentClient(
+            settings.dns_agent_url,
+            settings.agent_token,
+            settings.agent_ca,
+            settings.agent_cert,
+            settings.agent_key,
+        )
+    return extensions
 
 
 def text_field(label: str, maximum: int = 253) -> StringField:
@@ -113,6 +122,7 @@ class ConnectionForm(FlaskForm):  # type: ignore[misc]
     """One administrator form for all service connections."""
 
     dns_enabled = BooleanField("Enable DNS administration")
+    dns_agent_url = text_field("DNS agent HTTPS URL (automatic discovery and zone management)")
     dns_server = text_field("Bind server")
     dns_zones = text_field("Authoritative zones (comma separated)", 1024)
     dns_tsig_secret = PasswordField("TSIG secret", validators=[Length(max=512)])
@@ -184,7 +194,9 @@ def configuration_errors(values: dict[str, str]) -> dict[str, str]:
 def _agent_errors(values: dict[str, str]) -> dict[str, str]:
     """Validate agent transport and RADIUS authentication requirements."""
     errors: dict[str, str] = {}
-    for service in ("dhcp", "radius"):
+    for service in ("dns", "dhcp", "radius"):
+        if service == "dns" and not values["dns_agent_url"]:
+            continue
         if values[f"{service}_enabled"] != "true":
             continue
         field = f"{service}_agent_url"
@@ -304,6 +316,14 @@ def _probe(settings: Settings, service: str) -> ConnectionResult:
             settings.dns_config_path,
             settings.dns_zones,
         )
+        if settings.dns_agent_url:
+            bind.zone_agent = AgentClient(
+                settings.dns_agent_url,
+                settings.agent_token,
+                settings.agent_ca,
+                settings.agent_cert,
+                settings.agent_key,
+            )
         zones = bind.zones()
         if not zones:
             return ConnectionResult(

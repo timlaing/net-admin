@@ -136,3 +136,26 @@ Secure cookies remain enabled: continue using HTTPS for the Home Assistant front
 
 Standalone containers and direct requests always retain NetAdmin login, regardless
 of this option. The app does not publish an additional direct port automatically.
+
+## DNS agent and automatic zone discovery
+
+Deploy the DNS agent alongside Bind, then enter its HTTPS URL under NetAdmin
+**Settings → DNS**. It uses the shared agent token and client mTLS credentials.
+When configured, its inventory replaces the manual zone list; zones need not be
+specified up front. Record reads and updates still use Bind's AXFR/RFC 2136 interface.
+
+Zone creation takes a zone name and complete zone file (SOA and NS included).
+Zone removal stops serving that zone but retains the zone file and journal.
+The first mutation expands includes with `named-checkconf -p`, saves the original
+main configuration as `named.conf.before-netadmin`, and installs the canonical
+configuration in `netadmin.conf`. The original included files are retained.
+Bind validates all zone files with `named-checkconf -z` before `rndc reconfig`;
+a failed validation or reload restores the preceding configuration.
+
+Bind views and duplicate zone names are deliberately rejected. Review these
+configurations before migration. TLS certificates must be provisioned separately.
+For Compose, opt in with `-f docker-compose.yml -f docker-compose.dns-agent.yml`
+(or use the Kea base file). The DNS agent certificate must include `dns` in its
+SAN, and its CA/client trust and bearer token must match NetAdmin. The override
+shares Bind's network namespace for local RNDC and its configuration directory;
+it does not mount the Docker socket. No changes are made merely by discovering zones.

@@ -1,0 +1,18 @@
+# Explicit opt-in override for either the ISC or Kea stack.
+# Provision /pki/dns-agent certificates (server SAN: dns) before starting.
+services:
+  dns-agent:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dns-agent
+    restart: unless-stopped
+    network_mode: service:dns
+    depends_on: [dns]
+    env_file: .env
+    volumes:
+      - ./dns:/etc/bind:rw
+      - ./pki/dns-agent:/pki:ro
+      - rndc-shared:/run/rndc:ro
+  netadmin:
+    environment:
+      NETADMIN_DNS_AGENT_URL: https://dns:8083

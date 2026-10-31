@@ -13,6 +13,8 @@ import dns.tsigkeyring
 import dns.update
 import dns.zone
 
+from netadmin.services.agents import AgentClient
+
 
 @dataclass(frozen=True, slots=True)
 class DnsRecord:
@@ -59,6 +61,7 @@ class BindService:
         config_path: Path | None = None,
         configured_zones: tuple[str, ...] = (),
     ) -> None:
+        self.zone_agent: AgentClient | None = None
         self.server = server
         self.key_name = key_name
         self.keyring = dns.tsigkeyring.from_text({key_name: key_secret}) if key_secret else None
@@ -68,6 +71,11 @@ class BindService:
 
     def zones(self) -> list[DnsZone]:
         """Return zones declared by the mounted Bind configuration."""
+        if self.zone_agent is not None:
+            return [
+                DnsZone(str(item["name"]), str(item["file"]), bool(item["dynamic"]))
+                for item in self.zone_agent.get("zones")
+            ]
         if self.config_path is None:
             return [DnsZone(name, "", True) for name in self.configured_zones]
         return discover_zones(self.config_path.read_text(encoding="utf-8"))

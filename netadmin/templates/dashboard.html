@@ -10,7 +10,7 @@
 {% if g.identity.role == 'admin' %}
 <div class="metric-strip" aria-label="Configuration summary">
   <div class="metric"><strong>{{ enabled_count }}<span class="visually-hidden"> of 3</span></strong><span>Services enabled</span></div>
-  <div class="metric"><strong>{{ service_settings.dns_zones|length if not service_settings.dns_config_path else 'Local file' }}</strong><span>Configured DNS zones</span></div>
+  <div class="metric"><strong>{{ 'Agent discovery' if service_settings.dns_agent_url else service_settings.dns_zones|length if not service_settings.dns_config_path else 'Local file' }}</strong><span>Configured DNS zones</span></div>
   <div class="metric"><strong>{{ service_settings.dhcp_backend|upper }}</strong><span>DHCP backend</span></div>
 </div>
 <div class="section-heading"><h2>Network services</h2><span class="form-text">Connection tests are run on demand</span></div>

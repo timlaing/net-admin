@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess  # nosec B404 - fixed daemon tools, no shell
 from pathlib import Path
@@ -16,7 +17,7 @@ from netadmin.services.dns import discover_zones
 def _canonical() -> str:
     """Expand includes through Bind itself; never log configuration or keys."""
     result = subprocess.run(  # noqa: S603
-        ["/usr/sbin/named-checkconf", "-p", str(current_app.config["DNS_MAIN"])],
+        ["/usr/bin/named-checkconf", "-p", str(current_app.config["DNS_MAIN"])],
         check=True,
         capture_output=True,
         text=True,
@@ -68,7 +69,7 @@ def _install(canonical: str, extra: dict[Path, str] | None = None) -> None:
 
     def validate() -> None:
         subprocess.run(  # noqa: S603
-            ["/usr/sbin/named-checkconf", "-z", str(main)],
+            ["/usr/bin/named-checkconf", "-z", str(main)],
             check=True,
             capture_output=True,
             timeout=20,
@@ -102,13 +103,19 @@ def _create() -> Any:
     if name in {zone.lower() for zone, _, _ in _zone_blocks(canonical)}:
         return jsonify({"error": "Zone already exists"}), 409
     directory = cast(Path, current_app.config["DNS_ZONE_DIR"])
+    directory.mkdir(parents=True, exist_ok=True)
     path = directory / (name + ".zone")
     if path.exists() or path.with_suffix(path.suffix + ".jnl").exists():
         return jsonify({"error": "Existing zone data must be imported explicitly"}), 409
     content = str(body.get("content", ""))
     if not content or len(content) > 1_000_000:
         raise ValueError("Provide a complete zone file of at most 1 MB")
-    declaration = f'\nzone "{name}" {{ type primary; file "{path}"; }};\n'
+    update_key = str(current_app.config["DNS_UPDATE_KEY"])
+    declaration = (
+        f'\nzone "{name}" {{ type primary; file "{path}"; '
+        f'allow-update {{ key "{update_key}"; }}; '
+        f'allow-transfer {{ key "{update_key}"; }}; }};\n'
+    )
     _install(canonical + declaration, {path: content})
     return jsonify({"created": name}), 201
 
@@ -127,8 +134,12 @@ def _delete() -> Any:
 
 def create_dns_agent() -> Flask:
     """Create the bearer-protected agent; production transport requires mTLS."""
+    update_key = os.getenv("DNS_UPDATE_KEY", "rndc-key")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", update_key):
+        raise ValueError("Invalid DNS_UPDATE_KEY")
     app = create_agent(__name__)
     app.config.update(
+        DNS_UPDATE_KEY=update_key,
         DNS_MAIN=configured_path("DNS_MAIN_CONFIG", "/etc/bind/named.conf"),
         DNS_MANAGED=configured_path("DNS_MANAGED_CONFIG", "/etc/bind/netadmin.conf"),
         DNS_ZONE_DIR=configured_path("DNS_ZONE_DIR", "/etc/bind/zones"),

@@ -67,3 +67,34 @@ def test_deletion_preserves_zone_data(tmp_path, monkeypatch):
     )
     assert retained.read_text() == "retain me"
     assert "existing.example" not in (tmp_path / "managed.conf").read_text()
+
+
+def test_web_zone_operations_use_agent_and_do_not_write_service_files(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from netadmin.app import create_app
+    from netadmin.config import Settings
+
+    settings = Settings(secret_key="synthetic", root_password_hash="unused", data_dir=tmp_path)  # noqa: S106
+    app = create_app(replace(settings, dns_agent_url="https://dns:8083"))
+    app.config.update(TESTING=True, WTF_CSRF_ENABLED=False)
+    calls = []
+    remote = app.extensions["netadmin_dns"].zone_agent
+    monkeypatch.setattr(
+        remote,
+        "get",
+        lambda path: [{"name": "example.net", "file": "example.zone", "dynamic": True}],
+    )
+    monkeypatch.setattr(remote, "post", lambda path, body: calls.append((path, body)))
+    client = app.test_client()
+    token = app.extensions["netadmin_store"].create_session("root", "admin", 60)
+    client.set_cookie("netadmin_session", token)
+    response = client.get("/dns")
+    assert response.status_code == 200
+    assert "example.net" in response.text and "Create authoritative zone" in response.text
+    assert (
+        client.post("/dns/zones", data={"name": "new.example", "content": "zone data"}).status_code
+        == 302
+    )
+    assert client.post("/dns/zones/delete", data={"zone": "example.net"}).status_code == 302
+    assert [path for path, _ in calls] == ["zones", "zones/delete"]

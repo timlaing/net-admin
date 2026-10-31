@@ -25,6 +25,7 @@ from netadmin.forms import (
     DeleteDnsForm,
     DhcpSubnetForm,
     DnsRecordForm,
+    DnsZoneForm,
     LoginForm,
     PasswordForm,
     RadiusClientForm,
@@ -139,7 +140,42 @@ def dns_index() -> Any:
         record_form=DnsRecordForm(),
         delete_form=DeleteDnsForm(),
         rpi_form=RpiRecordForm(),
+        zone_form=DnsZoneForm(),
+        zone_management=bool(_settings().dns_agent_url),
     )
+
+
+@web.route("/dns/zones", methods=["POST"])
+@admin_required
+def dns_zone_create() -> Any:
+    """Create a zone only through the configured privileged DNS agent."""
+    agent = extension("netadmin_dns").zone_agent
+    if agent is None:
+        flash("Configure a DNS agent to manage zones.", "warning")
+    else:
+        form = DnsZoneForm()
+        if form.validate_on_submit():
+            agent.post("zones", {"name": form.name.data, "content": form.content.data})
+            _audit("dns.zone.create", form.name.data or "")
+            flash("Zone created and Bind reconfigured.", "success")
+        else:
+            flash("Provide a valid zone name and complete zone file.", "danger")
+    return redirect(url_for(DNS_INDEX))
+
+
+@web.route("/dns/zones/delete", methods=["POST"])
+@admin_required
+def dns_zone_remove() -> Any:
+    """Remove a served zone while preserving its on-disk data."""
+    agent = extension("netadmin_dns").zone_agent
+    zone = request.form.get("zone", "")
+    if agent is None or not zone:
+        flash("Configure a DNS agent and select a zone first.", "warning")
+    else:
+        agent.post("zones/delete", {"name": zone})
+        _audit("dns.zone.delete", zone)
+        flash("Zone removed from Bind. Its data and journal were retained.", "success")
+    return redirect(url_for(DNS_INDEX))
 
 
 @web.route("/dns/records", methods=["POST"])

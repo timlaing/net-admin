@@ -107,3 +107,13 @@ class RadiusClientForm(FlaskForm):
     shortname = StringField("Short name", validators=[DataRequired(), Length(max=128)])
     secret = PasswordField("Shared secret", validators=[DataRequired(), Length(min=16, max=1024)])
     submit = SubmitField("Save client")
+
+
+class DnsZoneForm(FlaskForm):
+    """Create a complete authoritative zone through the restricted agent."""
+
+    name = StringField("Zone name", validators=[DataRequired(), Length(max=253)])
+    content = TextAreaField(
+        "Zone file contents (including SOA and NS)",
+        validators=[DataRequired(), Length(max=1_000_000)],
+    )
