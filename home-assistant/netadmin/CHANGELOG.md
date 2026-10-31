@@ -1,0 +1,13 @@
+# Changelog
+
+## 0.5.0
+
+- Refreshed responsive interface with local assets, light/dark themes, search and useful empty states.
+- Simplified connection settings, connection diagnostics and in-process configuration reload.
+- Optional Home Assistant delegated administrator access through trusted ingress; direct access still requires login.
+- Discover and manage multiple Bind zones through the optional authenticated DNS agent, including zone creation and removal.
+- Discover ISC/Kea subnet definitions and manage subnets, pools and reservations in their native configuration files.
+- Validate service configuration changes before installation and roll back when reload fails.
+- Build and smoke-test the DNS agent on amd64 and aarch64; exercise subnet changes against real ISC and Kea parsers.
+
+See `docs/deployment-0.5.0.md` in the repository for prerequisites, deployment and rollback preparation.

@@ -19,6 +19,7 @@ Every `vX.Y.Z` release publishes amd64 **and** arm64 manifests for:
 | ---------------------------------------- | --------------------------------------------------- |
 | `ghcr.io/timlaing/netadmin`              | Web application (port 8099)                         |
 | `ghcr.io/timlaing/netadmin-dhcp-agent`   | Restricted DHCP agent (8081, mTLS + bearer token)   |
+| `ghcr.io/timlaing/netadmin-dns-agent`    | Optional Bind zone agent (8083, mTLS + bearer token; from 0.5.0) |
 | `ghcr.io/timlaing/netadmin-radius-agent` | Restricted RADIUS agent (8082, mTLS + bearer token) |
 | `ghcr.io/timlaing/netadmin-dns`          | Bind 9 DNS service                                  |
 | `ghcr.io/timlaing/netadmin-dhcp`         | ISC DHCPD service                                   |
@@ -73,8 +74,11 @@ from a repository checkout on the server.
   password and writes `/config/netadmin.env` (mode 0640). Restart the add-on to
   load it. The wizard is only reachable through ingress and locks itself once
   configured.
-- Add-on options: `dhcp_backend` (`isc` | `kea`), `dns_server`, `dns_zones`,
-  `dhcp_agent_url`, `radius_agent_url`.
+- Configure service connections and diagnostics in the application's Settings page.
+  The add-on's `ingress_require_login` option controls whether trusted Home Assistant
+  administrator identity can replace the application login through ingress.
+- For the 0.5.0 upgrade, optional DNS agent and rollback preparation, see
+  [Deployment guide](deployment-0.5.0.md).
 
 ## Running from source
 
@@ -85,6 +89,7 @@ pip install -e '.[dev]'
 ```
 
 Console entry points after installation: `netadmin` (web application, port
-8099), `netadmin-dhcp-agent` (8081) and `netadmin-radius-agent` (8082). In
+8099), `netadmin-dhcp-agent` (8081), `netadmin-dns-agent` (8083) and
+`netadmin-radius-agent` (8082). In
 containers they run under gunicorn. See [Development](AGENTS.md) for the
 full check commands.

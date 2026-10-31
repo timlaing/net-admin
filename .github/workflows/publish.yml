@@ -76,12 +76,22 @@ jobs:
             arch: amd64
             runner: ubuntu-24.04
             dockerfile: docker/Dockerfile.dhcp-agent
-            smoke: Tools/smoke_agent.sh
+            smoke: Tools/smoke_agent.sh Tools/smoke_subnets.sh
           - flavour: dhcp-agent
             arch: aarch64
             runner: ubuntu-24.04-arm
             dockerfile: docker/Dockerfile.dhcp-agent
-            smoke: Tools/smoke_agent.sh
+            smoke: Tools/smoke_agent.sh Tools/smoke_subnets.sh
+          - flavour: dns-agent
+            arch: amd64
+            runner: ubuntu-24.04
+            dockerfile: docker/Dockerfile.dns-agent
+            smoke: Tools/smoke_dns_agent.sh
+          - flavour: dns-agent
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+            dockerfile: docker/Dockerfile.dns-agent
+            smoke: Tools/smoke_dns_agent.sh
           - flavour: radius-agent
             arch: amd64
             runner: ubuntu-24.04
@@ -153,7 +163,9 @@ jobs:
             --label "org.opencontainers.image.version=$PUBLISH_VERSION" \
             --label 'org.opencontainers.image.licenses=MIT' \
             -t "$image:sha-$GITHUB_SHA-$BUILD_ARCH" .
-          bash "$SMOKE_SCRIPT" "$image:sha-$GITHUB_SHA-$BUILD_ARCH"
+          for smoke in $SMOKE_SCRIPT; do
+            bash "$smoke" "$image:sha-$GITHUB_SHA-$BUILD_ARCH"
+          done
           docker push "$image:sha-$GITHUB_SHA-$BUILD_ARCH"
           echo "Published $image:sha-$GITHUB_SHA-$BUILD_ARCH" >> "$GITHUB_STEP_SUMMARY"
 
@@ -229,7 +241,7 @@ jobs:
           base="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/netadmin"
           prerelease=false
           [[ "$PUBLISH_VERSION" == *-* ]] && prerelease=true
-          for suffix in '' '-dhcp-agent' '-radius-agent' '-dns' '-dhcp' '-radius'; do
+          for suffix in '' '-dhcp-agent' '-dns-agent' '-radius-agent' '-dns' '-dhcp' '-radius'; do
             image="${base}${suffix}"
             sources=()
             for arch in amd64 aarch64; do

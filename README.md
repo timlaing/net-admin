@@ -149,6 +149,7 @@ verify and lint gates pass (`.github/workflows/publish.yml` triggers on
 `release: published`, so a stray `git push --tags` publishes nothing):
 
 - `ghcr.io/timlaing/netadmin` — web application
+- `ghcr.io/timlaing/netadmin-dns-agent` — restricted Bind zone-management agent (optional)
 - `ghcr.io/timlaing/netadmin-dhcp-agent` — restricted DHCP agent
 - `ghcr.io/timlaing/netadmin-radius-agent` — restricted RADIUS agent
 - `ghcr.io/timlaing/netadmin-dns` — Bind 9 service
