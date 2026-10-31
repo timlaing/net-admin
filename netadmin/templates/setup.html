@@ -9,94 +9,31 @@
 </head>
 <body>
 {% include "https_notice.html" %}
-<nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm">
-  <div class="container-fluid">
-    <span class="navbar-brand fw-semibold">NetAdmin · first-run setup</span>
-  </div>
-</nav>
+<nav class="navbar navbar-dark bg-primary"><div class="container-fluid"><span class="navbar-brand">NetAdmin · first-run setup</span></div></nav>
 <main class="container py-5" style="max-width: 42rem;">
 {% if step == "done" %}
-  <div class="alert alert-success">Configuration written to <code>/config/netadmin.env</code>.</div>
-  <div class="card shadow-sm">
-    <div class="card-body p-4">
-      <h1 class="h4 mb-3">Restart the add-on</h1>
-      <p class="mb-2">Restart NetAdmin from the add-on page or the button below. After the
-        restart the application loads these settings and this wizard is locked.</p>
-      <p class="mb-0">The root password you chose is the emergency account; everyday users
-        sign in through RADIUS.</p>
-    </div>
-  </div>
+  <div class="alert alert-success">Configuration written to the app's environment file.</div>
+  <div class="card"><div class="card-body p-4">
+    <h1 class="h4">Setup complete</h1>
+    <h2 class="h5 mt-3">Restart the add-on</h2>
+    <p>Restart NetAdmin from Home Assistant, then sign in as <strong>root</strong> with your chosen password.</p>
+    <p class="mb-0">Open <strong>Settings</strong> to enable and test the services you use. No external services are required to sign in.</p>
+  </div></div>
 {% else %}
-  <div class="d-flex gap-2 mb-4">
-    <span class="badge rounded-pill {{ 'bg-primary' if step in [1, 2, 3] else 'bg-secondary' }}">1 · Root</span>
-    <span class="badge rounded-pill {{ 'bg-primary' if step in [2, 3] else 'bg-secondary' }}">2 · Services</span>
-    <span class="badge rounded-pill {{ 'bg-primary' if step == 3 else 'bg-secondary' }}">3 · Apply</span>
-  </div>
-{% endif %}
-{% if step == 1 %}
-  <div class="card shadow-sm">
-    <div class="card-body p-4">
-      <h1 class="h4 mb-1">Emergency root account</h1>
-      <p class="text-secondary mb-4">Used only when RADIUS is unavailable. Store the
-        password in your password manager; it is kept as an Argon2id hash.</p>
-      <form method="post">
-        {{ form.hidden_tag() }}
-        <div class="mb-3">{{ form.password.label(class="form-label") }}{{ form.password(class="form-control", autocomplete="new-password") }}</div>
-        <div class="mb-3">{{ form.confirm.label(class="form-label") }}{{ form.confirm(class="form-control", autocomplete="new-password") }}</div>
-        <button class="btn btn-primary w-100">Continue</button>
-      </form>
-    </div>
-  </div>
-{% elif step == 2 %}
-  <div class="card shadow-sm">
-    <div class="card-body p-4">
-      <h1 class="h4 mb-1">Network services</h1>
-      <p class="text-secondary mb-4">Point NetAdmin at your agents and Bind server. Leave the
-        secrets blank to generate them; the RADIUS secret is shown before applying.</p>
-      <form method="post" action="{{ url_for('step2') }}">
-        {{ form.hidden_tag() }}
-        <div class="mb-3">{{ form.dns_server.label(class="form-label") }}{{ form.dns_server(class="form-control") }}</div>
-        <div class="mb-3">{{ form.dns_zones.label(class="form-label") }}{{ form.dns_zones(class="form-control") }}</div>
-        <div class="mb-3">{{ form.dhcp_agent_url.label(class="form-label") }}{{ form.dhcp_agent_url(class="form-control") }}</div>
-        <div class="mb-3">{{ form.radius_agent_url.label(class="form-label") }}{{ form.radius_agent_url(class="form-control") }}</div>
-        <div class="mb-3">{{ form.radius_secret.label(class="form-label") }}{{ form.radius_secret(class="form-control", autocomplete="off") }}</div>
-        <div class="mb-3">{{ form.tsig_secret.label(class="form-label") }}{{ form.tsig_secret(class="form-control", autocomplete="off") }}</div>
-        <button class="btn btn-primary w-100">Review</button>
-      </form>
-    </div>
-  </div>
-{% elif step == 3 %}
-  <div class="card shadow-sm">
-    <div class="card-body p-4">
-      <h1 class="h4 mb-1">Review and apply</h1>
-      <p class="text-secondary mb-2">These values are written to
-        <code>/config/netadmin.env</code>. Matching RADIUS client and TSIG entries must
-        exist on the target servers.</p>
-      <dl class="row mb-3">
-        <dt class="col-sm-4">Bind server</dt><dd class="col-sm-8"><code>{{ values.dns_server }}</code></dd>
-        <dt class="col-sm-4">Zones</dt><dd class="col-sm-8"><code>{{ values.dns_zones or "discover from named.conf" }}</code></dd>
-        <dt class="col-sm-4">DHCP agent</dt><dd class="col-sm-8"><code>{{ values.dhcp_agent_url }}</code></dd>
-        <dt class="col-sm-4">RADIUS agent</dt><dd class="col-sm-8"><code>{{ values.radius_agent_url }}</code></dd>
-        <dt class="col-sm-4">RADIUS secret</dt><dd class="col-sm-8"><code>{{ values.radius_secret }}</code></dd>
-        <dt class="col-sm-4">TSIG secret</dt><dd class="col-sm-8"><code>{{ "set" if values.tsig_secret else "not set" }}</code></dd>
-      </dl>
-      <form method="post" action="{{ url_for('apply') }}">
-        {{ form.hidden_tag() }}
-        <div class="form-check mb-3">
-          {{ form.confirmed(class="form-check-input") }}{{ form.confirmed.label(class="form-check-label") }}
-        </div>
-        <button class="btn btn-primary w-100">Apply configuration</button>
-      </form>
-    </div>
-  </div>
-{% elif step == "done" %}
-  <div class="card shadow-sm">
-    <div class="card-body p-4">
-      <h1 class="h4 mb-3">Setup complete</h1>
-      <p class="mb-0">Sign in with the root password above, then add your RADIUS client and
-        users from the RADIUS page.</p>
-    </div>
-  </div>
+  <div class="card"><div class="card-body p-4">
+    <h1 class="h4">Emergency root account</h1>
+    <p class="text-secondary">Create your administrator account first. Configure DNS, DHCP and RADIUS connections after signing in. Store your password in a password manager.</p>
+    <form method="post" action="{{ url_for('step1') }}">
+      {{ form.hidden_tag() }}
+      {% for field in [form.password, form.confirm] %}
+      <div class="mb-3">
+        {{ field.label(class="form-label") }}{{ field(class="form-control", autocomplete="new-password", aria_describedby=field.id ~ '-errors') }}
+        <div id="{{ field.id }}-errors" class="text-danger" role="alert">{% for error in field.errors %}<p class="mb-0">{{ error }}</p>{% endfor %}</div>
+      </div>
+      {% endfor %}
+      <button class="btn btn-primary w-100">Create administrator account</button>
+    </form>
+  </div></div>
 {% endif %}
 </main>
 </body>

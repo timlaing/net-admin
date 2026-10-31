@@ -37,7 +37,7 @@ def verify_root(password_hash: str, password: str) -> bool:
 
 def authenticate_radius(username: str, password: str, settings: Settings) -> str | None:
     """Authenticate with radclient and map its reply attribute to a role."""
-    if not settings.radius_secret:
+    if not settings.radius_enabled or not settings.radius_secret:
         return None
     packet = f"User-Name = {username!r}\nUser-Password = {password!r}\n"
     result = subprocess.run(  # noqa: S603

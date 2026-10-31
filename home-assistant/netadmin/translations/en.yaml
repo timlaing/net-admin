@@ -1,28 +1,26 @@
 configuration:
   dhcp_backend:
-    name: DHCP backend
+    name: Legacy DHCP backend
     description: >-
-      Backend the deployed DHCP agent runs: isc (ISC DHCPD) or kea. Pick the one
-      your agent actually uses; this only labels the UI and does not migrate or
-      reconfigure the DHCP server.
+      Initial fallback only. Manage connections in NetAdmin Settings after sign-in.
+      Saved in-app settings take precedence. This does not migrate a DHCP server.
   dns_server:
-    name: DNS server
+    name: Legacy DNS server
     description: >-
-      Reachable hostname or IP address of Bind. The hostname must match the
-      certificate it presents to the agents.
+      Initial Bind address fallback. Manage connections in NetAdmin Settings.
+      Saved in-app settings take precedence.
   dns_zones:
-    name: DNS zones
+    name: Legacy DNS zones
     description: >-
-      Optional comma-separated authoritative zones, for example
-      example.net,2.0.192.in-addr.arpa. Leave empty to discover zones from the
-      running Bind configuration.
+      Initial comma-separated authoritative zone fallback. Blank does not discover
+      remote zones. Manage connections in NetAdmin Settings after sign-in.
   dhcp_agent_url:
-    name: DHCP agent URL
+    name: Legacy DHCP agent URL
     description: >-
-      HTTPS endpoint of the NetAdmin DHCP agent. The hostname must match its TLS
-      certificate.
+      Initial DHCP HTTPS endpoint fallback. Manage connections in NetAdmin Settings.
+      Saved in-app settings take precedence.
   radius_agent_url:
-    name: RADIUS agent URL
+    name: Legacy RADIUS agent URL
     description: >-
-      HTTPS endpoint of the NetAdmin RADIUS agent. The hostname must match its
-      TLS certificate.
+      Initial RADIUS HTTPS endpoint fallback. Manage connections in NetAdmin Settings.
+      Saved in-app settings take precedence.

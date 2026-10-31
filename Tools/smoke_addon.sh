@@ -140,6 +140,7 @@ PY
 # Synthetic settings avoid depending on any external network services.
 docker exec -i "$name" python - <<'PY'
 from pathlib import Path
+import re
 from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
 
@@ -152,6 +153,7 @@ with TemporaryDirectory() as directory:
     app = create_app(Settings(
         secret_key="smoke", root_password_hash="unused", data_dir=Path(directory)
     ))
+    app.config["APPLICATION_ROOT"] = prefix
     client = app.test_client()
     response = client.get("/", headers=headers)
     assert urlsplit(response.location).path == prefix + "/login"
@@ -162,5 +164,23 @@ with TemporaryDirectory() as directory:
     cookie = response.headers["Set-Cookie"]
     assert "Secure" in cookie and "Path=" + prefix in cookie
     assert client.get("/static/app.css", headers=headers).status_code == 200
+    token = app.extensions["netadmin_store"].create_session("smoke-admin", "admin", 60)
+    client.set_cookie("netadmin_session", token, path=prefix)
+    response = client.get("/settings", headers=headers)
+    assert response.status_code == 200 and "Connection settings" in response.text
+    csrf = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', response.text).group(1)
+    response = client.post("/settings/test/dns", data={"csrf_token": csrf},
+                           headers={**headers, "Referer": "https://localhost" + prefix + "/settings"})
+    assert response.status_code == 200 and "Not configured" in response.text
+    # All checkboxes omitted: disable services and apply without restarting.
+    action_headers = {**headers, "Referer": "https://localhost" + prefix + "/settings"}
+    response = client.post("/settings", data={"csrf_token": csrf}, headers=action_headers)
+    assert response.status_code == 302
+    assert app.extensions["netadmin_settings"].dns_enabled is False
+    response = client.post("/settings/reload", data={"csrf_token": csrf}, headers=action_headers)
+    assert response.status_code == 302
+    assert client.get("/settings", headers=headers).status_code == 200
 print("Configured add-on ingress checks passed")
+print("Packaged settings and CSRF-protected diagnostics checks passed")
+print("Connection save/reload without restart check passed")
 PY

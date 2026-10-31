@@ -6,7 +6,7 @@ import os
 from typing import Any, cast
 
 import httpx
-from flask import Blueprint, Flask, flash, redirect, render_template, request, url_for
+from flask import Blueprint, Flask, flash, g, redirect, render_template, request, url_for
 from flask_wtf import CSRFProtect
 
 from netadmin.auth import (
@@ -20,6 +20,7 @@ from netadmin.auth import (
     verify_root,
 )
 from netadmin.config import Settings
+from netadmin.connections import connection_extensions
 from netadmin.forms import (
     DeleteDnsForm,
     DhcpSubnetForm,
@@ -33,7 +34,7 @@ from netadmin.forms import (
 )
 from netadmin.ingress import configure_ingress
 from netadmin.services.agents import AgentClient
-from netadmin.services.dns import BindService
+from netadmin.settings_web import connection_web
 from netadmin.store import Store
 
 web = Blueprint("web", __name__)
@@ -383,34 +384,26 @@ def create_app(settings: Settings | None = None) -> Flask:
     )
     CSRFProtect(app)
     store = Store(runtime.data_dir / "netadmin.sqlite3")
-    app.extensions.update(
-        netadmin_settings=runtime,
-        netadmin_store=store,
-        netadmin_dns=BindService(
-            runtime.dns_server,
-            runtime.dns_tsig_name,
-            runtime.dns_tsig_secret,
-            runtime.dns_tsig_algorithm,
-            runtime.dns_config_path,
-            runtime.dns_zones,
-        ),
-        netadmin_dhcp=AgentClient(
-            runtime.dhcp_agent_url,
-            runtime.agent_token,
-            runtime.agent_ca,
-            runtime.agent_cert,
-            runtime.agent_key,
-        ),
-        netadmin_radius=AgentClient(
-            runtime.radius_agent_url,
-            runtime.agent_token,
-            runtime.agent_ca,
-            runtime.agent_cert,
-            runtime.agent_key,
-        ),
-    )
+    app.extensions.update(netadmin_store=store, **connection_extensions(runtime))
     app.before_request(load_identity)
     app.register_blueprint(web)
+    app.register_blueprint(connection_web)
+
+    @app.context_processor
+    def connection_context() -> dict[str, Any]:
+        return {"service_settings": _settings()}
+
+    @app.before_request
+    def disabled_service() -> Any:
+        """Avoid backend calls for services the administrator disabled."""
+        if g.identity is not None and g.identity.role == "admin":
+            for service in ("dns", "dhcp", "radius"):
+                if (request.endpoint or "").startswith(f"web.{service}_") and not getattr(
+                    _settings(), f"{service}_enabled"
+                ):
+                    flash(f"{service.upper()} is disabled. Enable it in Settings first.", "info")
+                    return redirect(url_for("connections.settings_page"))
+        return None
 
     @app.errorhandler(httpx.HTTPError)
     @app.errorhandler(RuntimeError)

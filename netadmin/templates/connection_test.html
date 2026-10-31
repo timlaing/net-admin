@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ service }} connection · NetAdmin{% endblock %}
+{% block content %}
+<h1 class="h2">{{ service }} connection test</h1>
+<div class="alert {{ 'alert-success' if result.state == 'Connected' else 'alert-warning' }}" role="status">
+  <h2 class="h5">{{ result.state }}</h2><p class="mb-0">{{ result.message }}</p>
+</div>
+<p>This result describes the active settings at the time of this test. Saving connection settings applies them immediately.</p>
+<a class="btn btn-outline-primary" href="{{ url_for('connections.settings_page') }}">Back to Settings</a>
+{% endblock %}

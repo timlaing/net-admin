@@ -93,26 +93,8 @@ def test_standalone_ignores_ingress_headers(tmp_path, monkeypatch) -> None:
 def test_setup_uses_ingress_urls_and_secure_cookie(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("NETADMIN_ENV_FILE", str(tmp_path / "netadmin.env"))
     app = create_setup_app()
-    app.config.update(TESTING=True, WTF_CSRF_ENABLED=False, APPLICATION_ROOT=PREFIX)
-    client = app.test_client()
-    response = client.post(
-        "/",
-        headers=HEADERS,
-        data={
-            "password": "correct-horse-battery-staple",
-            "confirm": "correct-horse-battery-staple",
-        },
-    )
-    assert f'action="{PREFIX}/services"'.encode() in response.data
+    app.config.update(TESTING=True, APPLICATION_ROOT=PREFIX)
+    response = app.test_client().get("/", headers=HEADERS)
+    assert f'action="{PREFIX}/"'.encode() in response.data
     assert "Secure" in response.headers["Set-Cookie"]
     assert f"Path={PREFIX}" in response.headers["Set-Cookie"]
-    response = client.post(
-        "/services",
-        headers=HEADERS,
-        data={
-            "dns_server": "dns",
-            "dhcp_agent_url": "https://dhcp.example:8081",
-            "radius_agent_url": "https://radius.example:8082",
-        },
-    )
-    assert f'action="{PREFIX}/apply"'.encode() in response.data

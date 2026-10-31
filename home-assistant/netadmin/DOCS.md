@@ -16,20 +16,23 @@ Before making changes through NetAdmin, configure:
 
 ## First start
 
-1. Install the add-on and open **Configuration**.
-2. Enter the DNS server, DNS zone names and HTTPS URLs of your agents. Select
-   the backend that your DHCP agent actually uses, then save.
-3. Start the add-on and select **Open Web UI** through Home Assistant ingress.
-4. Complete the wizard: create an emergency `root` password of at least 12
-   characters, enter the service details and matching secrets, then apply.
-5. Restart the add-on to load the generated configuration, then sign in as `root`.
-6. Complete the external service authentication and certificate configuration
-   before using the administration pages.
+1. Install and start NetAdmin, then open its interface through Home Assistant over HTTPS.
+2. Create an emergency `root` password of at least 12 characters.
+3. Restart NetAdmin from Home Assistant and sign in as `root`.
+4. Open **Settings**. Enable DNS, DHCP and/or RADIUS and enter their connection details.
+5. Expand **Agent security** for your existing agent token and TLS certificate paths.
+6. Save to apply connection changes immediately, then use **Test active connections**.
 
-The wizard writes `/config/netadmin.env` in the add-on's persistent configuration
-directory with mode `0640`. It stores the root password as an Argon2id hash and
-generates the session secret and agent token. The wizard locks once configured.
-Keep this file private and include it in your backup plan.
+New installations start with all three services disabled. No external service is
+needed for root login. Disabling a service only disables its administration and,
+for RADIUS, its login path; it does not stop the external server.
+
+The account and connection settings are written to `/config/netadmin.env` with mode
+`0640`, using an atomic write. The root password is hashed with Argon2id. Service
+secrets never enter the wizard's browser session. Password fields on the Settings
+page stay empty: leaving one blank preserves its existing value. To remove a
+stored secret, disable the service and set its assignment to an empty string in the
+environment file as a trusted administrator, then reload saved connections. Keep the file private and include it in backups.
 
 ## Configuration options
 
@@ -41,29 +44,40 @@ Keep this file private and include it in your backup plan.
 | `dhcp_agent_url` | `https://dhcp.internal:8081` | DHCP agent HTTPS URL. The hostname must match its TLS certificate. |
 | `radius_agent_url` | `https://radius.internal:8082` | RADIUS agent HTTPS URL. The hostname must match its TLS certificate. |
 
-These addresses are placeholders: replace them with names reachable from the
-add-on. The Configuration options override the corresponding addresses saved
-by the wizard on each start. Keep both sets consistent and restart after changes.
+The Home Assistant options above are legacy startup fallbacks, retained for existing
+installations. **NetAdmin Settings is authoritative:** values saved there override
+these fallbacks on every start, including saved blank values. Do not maintain two
+copies. Existing installations retain their enabled services until explicitly disabled.
 
 ## Service credentials and certificates
 
-Advanced settings belong in `/config/netadmin.env`, using shell-compatible
-`NETADMIN_*=...` assignments. This file is sourced at startup; edit it only as a
-trusted administrator. See the project's
-[environment template](https://github.com/timlaing/net-admin/blob/main/.env.example)
-for all supported settings.
+Settings groups everyday connection fields by service. Advanced sections contain:
 
-- Set `NETADMIN_AGENT_CA`, `NETADMIN_AGENT_CERT` and `NETADMIN_AGENT_KEY` to the
-  paths of your CA, client certificate and private key inside the add-on, for
-  example under `/config/pki/`. Provision these files separately.
-- Configure both agents with the generated `NETADMIN_AGENT_TOKEN` value and
-  trust the client certificate. The wizard does not configure remote agents.
-- Set `NETADMIN_RADIUS_HOST` to the FreeRADIUS authentication server and use the
-  same `NETADMIN_RADIUS_SECRET` in its client entry. The RADIUS agent URL is a
-  separate endpoint used for administration.
-- Set `NETADMIN_DNS_TSIG_SECRET` to the existing Bind key's secret. Adjust
-  `NETADMIN_DNS_TSIG_NAME` and `NETADMIN_DNS_TSIG_ALGORITHM` if your key differs
-  from the defaults (`rndc-key` and `hmac-sha256`).
+- **Agent security:** enter the bearer token already shared with both agents.
+  Provision a CA, client certificate and private key under `/config/pki/`, then
+  enter their paths inside NetAdmin. A blank CA uses system trust; certificate
+  verification is never disabled. Both agents must trust the client certificate.
+- **RADIUS:** enter both the administration agent URL and the authentication host,
+  plus the existing shared secret configured in FreeRADIUS's client entry.
+- **Advanced DNS:** set the TSIG name/algorithm if they differ from your existing
+  key. Explicit zone names are recommended. Optional local discovery reads a
+  Bind configuration file mounted inside NetAdmin; it cannot discover remote files.
+
+Each diagnostic tests the **active** settings. Saving validates and applies connection
+changes immediately without a process restart. **Reload saved connections** applies
+manual file edits; invalid configuration leaves active connections unchanged. Both
+actions preserve accounts and sessions. Application upgrades and first-run account
+creation still require a full restart. Agent tests validate
+hostname resolution, TLS and bearer authentication via the protected health endpoint;
+they do not establish daemon health or write/reload permissions. DNS tests perform
+an AXFR read of the first configured zone only; they do not test updates or other zones.
+Failures are summarized without exposing remote response bodies or credentials.
+
+Standalone deployments show a read-only Settings page and offer the same tests.
+They continue to use `NETADMIN_*` environment variables, documented in the project's
+[environment template](https://github.com/timlaing/net-admin/blob/main/.env.example).
+Set `NETADMIN_DNS_ENABLED`, `NETADMIN_DHCP_ENABLED` and `NETADMIN_RADIUS_ENABLED` to
+`true` or `false`. They default to `true` for compatibility with existing deployments.
 
 ## Access and troubleshooting
 
@@ -79,7 +93,7 @@ protocol in `X-Forwarded-Proto`. Do not disable Secure cookies to work around th
 Ingress navigation, form actions and session cookies stay under NetAdmin's own
 Home Assistant ingress path.
 
-- **Wizard still appears:** confirm setup completed and restart the add-on so
+- **Wizard still appears:** create the root account and restart the add-on so
   it loads `/config/netadmin.env`.
 - **Agent connection fails:** check name resolution, the HTTPS URL, certificate
   hostname, CA and client certificate paths, and the shared agent token.

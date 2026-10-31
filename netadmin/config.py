@@ -47,14 +47,17 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     dns_tsig_algorithm: str = "hmac-sha256"
     dns_config_path: Path | None = None
     dns_zones: tuple[str, ...] = ()
-    dhcp_agent_url: str = "http://dhcp-agent:8081"
+    dhcp_agent_url: str = "https://dhcp-agent:8081"
     dhcp_backend: str = "isc"
-    radius_agent_url: str = "http://radius-agent:8082"
+    radius_agent_url: str = "https://radius-agent:8082"
     agent_token: str = ""
     agent_ca: Path | None = None
     agent_cert: Path | None = None
     agent_key: Path | None = None
     session_minutes: int = 60
+    dns_enabled: bool = True
+    dhcp_enabled: bool = True
+    radius_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -79,12 +82,15 @@ class Settings:  # pylint: disable=too-many-instance-attributes
                 for item in os.getenv("NETADMIN_DNS_ZONES", "").split(",")
                 if item.strip()
             ),
-            dhcp_agent_url=os.getenv("NETADMIN_DHCP_AGENT_URL", "http://dhcp-agent:8081"),
+            dhcp_agent_url=os.getenv("NETADMIN_DHCP_AGENT_URL", "https://dhcp-agent:8081"),
             dhcp_backend=_choice("NETADMIN_DHCP_BACKEND", "isc", {"isc", "kea"}),
-            radius_agent_url=os.getenv("NETADMIN_RADIUS_AGENT_URL", "http://radius-agent:8082"),
+            radius_agent_url=os.getenv("NETADMIN_RADIUS_AGENT_URL", "https://radius-agent:8082"),
             agent_token=os.getenv("NETADMIN_AGENT_TOKEN", ""),
             agent_ca=_path_env("NETADMIN_AGENT_CA"),
             agent_cert=_path_env("NETADMIN_AGENT_CERT"),
             agent_key=_path_env("NETADMIN_AGENT_KEY"),
             session_minutes=int(os.getenv("NETADMIN_SESSION_MINUTES", "60")),
+            dns_enabled=_choice("NETADMIN_DNS_ENABLED", "true", {"true", "false"}) == "true",
+            dhcp_enabled=_choice("NETADMIN_DHCP_ENABLED", "true", {"true", "false"}) == "true",
+            radius_enabled=_choice("NETADMIN_RADIUS_ENABLED", "true", {"true", "false"}) == "true",
         )

@@ -5,7 +5,13 @@
 <div class="row g-4 mt-2">
   {% if g.identity.role == 'admin' %}
   {% for title, text, endpoint in [('DNS','Authoritative Bind zones and dynamic records.','web.dns_index'),('DHCP','ISC leases and managed reservations.','web.dhcp_index'),('RADIUS','Users, roles, clients and password state.','web.radius_index')] %}
-  <div class="col-lg-4"><div class="card h-100 shadow-sm"><div class="card-body"><h2 class="h4">{{ title }}</h2><p>{{ text }}</p><a class="btn btn-outline-primary" href="{{ url_for(endpoint) }}">Manage {{ title }}</a></div></div></div>
+  <div class="col-lg-4"><div class="card h-100 shadow-sm"><div class="card-body"><h2 class="h4">{{ title }}</h2><p>{{ text }}</p>
+  {% if service_settings|attr(title|lower ~ '_enabled') %}
+  <p class="text-secondary">Enabled · connection not checked on this page</p><a class="btn btn-outline-primary" href="{{ url_for(endpoint) }}">Manage {{ title }}</a>
+  {% else %}
+  <p class="text-secondary">Disabled</p><a class="btn btn-outline-primary" href="{{ url_for('connections.settings_page') }}">Configure {{ title }}</a>
+  {% endif %}
+  </div></div></div>
   {% endfor %}
   {% else %}
   <div class="col-lg-6"><div class="card shadow-sm"><div class="card-body"><h2 class="h4">Self service</h2><p>Your role permits changing your own RADIUS password.</p><a class="btn btn-primary" href="{{ url_for('web.password') }}">Change password</a></div></div></div>

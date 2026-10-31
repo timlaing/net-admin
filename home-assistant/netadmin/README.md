@@ -8,7 +8,7 @@ truth. DHCP and RADIUS changes go through restricted agents that validate the
 configuration before applying it and roll back if reloading fails.
 
 - Open the interface directly from Home Assistant using ingress.
-- Set up the emergency root account and service connections with the first-run wizard.
+- Create the emergency root account first, then enable and test connections in Settings.
 - Use RADIUS accounts for everyday access, with separate administrator and standard roles.
 - Let standard users change their own password without access to administration tools.
 
@@ -19,9 +19,9 @@ DHCP/RADIUS agents must be deployed separately and reachable from the add-on.
 Agent connections require matching TLS certificates and a shared bearer token;
 Bind requires zone-transfer and authenticated update permissions.
 
-After installation, set the service addresses in **Configuration**, start the
-add-on and select **Open Web UI** to complete setup. See the **Documentation** tab
-for the options, connection requirements and troubleshooting steps.
+After installation, start NetAdmin and select **Open Web UI** to create the root
+account. Restart, sign in, and open **Settings** to configure the services you use.
+See the **Documentation** tab for connection requirements and troubleshooting.
 
 [Project and deployment guide](https://github.com/timlaing/net-admin#readme) ·
 [Report an issue](https://github.com/timlaing/net-admin/issues) ·
