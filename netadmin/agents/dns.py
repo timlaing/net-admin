@@ -111,6 +111,8 @@ def _create() -> Any:
     if not content or len(content) > 1_000_000:
         raise ValueError("Provide a complete zone file of at most 1 MB")
     update_key = str(current_app.config["DNS_UPDATE_KEY"])
+    if not re.search(r'(?m)^\s*key\s+"' + re.escape(update_key) + r'"\s*\{', canonical):
+        raise ValueError("Declare the matching TSIG update key in Bind configuration first")
     declaration = (
         f'\nzone "{name}" {{ type primary; file "{path}"; '
         f'allow-update {{ key "{update_key}"; }}; '

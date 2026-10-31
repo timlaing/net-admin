@@ -3,6 +3,9 @@
 set -euo pipefail
 docker run --rm -i --network none --entrypoint python "${1:-netadmin-dns-agent:test}" - <<'PY'
 import os
+import dns.query
+import dns.tsigkeyring
+import dns.update
 import subprocess
 import tempfile
 import time
@@ -37,6 +40,9 @@ with tempfile.TemporaryDirectory() as directory:
         response = client.post('/zones', headers=headers, json={'name':'example.net','content':zone})
         assert response.status_code == 201, response.json
         assert client.get('/zones', headers=headers).json[0]['name'] == 'example.net'
+        update = dns.update.Update('example.net', keyring=dns.tsigkeyring.from_text({'test':'YWJj'}))
+        update.add('client',300,'A','192.0.2.2')
+        assert dns.query.tcp(update,'127.0.0.1',port=9153,timeout=5).rcode() == 0
         original = (root/'managed.conf').read_bytes()
         assert client.post('/zones', headers=headers, json={'name':'bad.example','content':'invalid zone'}).status_code == 502
         assert (root/'managed.conf').read_bytes() == original

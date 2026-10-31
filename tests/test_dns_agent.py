@@ -17,7 +17,10 @@ def agent(tmp_path, monkeypatch):
     monkeypatch.setenv("DNS_MAIN_CONFIG", str(main))
     monkeypatch.setenv("DNS_MANAGED_CONFIG", str(tmp_path / "managed.conf"))
     monkeypatch.setenv("DNS_ZONE_DIR", str(zones))
-    canonical = 'zone "existing.example" { type primary; file "existing.zone"; };\n'
+    canonical = (
+        'key "rndc-key" { algorithm hmac-sha256; secret "YWJj"; };\n'
+        'zone "existing.example" { type primary; file "existing.zone"; };\n'
+    )
     monkeypatch.setattr(
         "netadmin.agents.dns.subprocess.run", lambda *a, **k: SimpleNamespace(stdout=canonical)
     )
@@ -44,7 +47,7 @@ def test_failed_validation_restores_original_and_removes_new_files(tmp_path, mon
     def command(args, **kwargs):
         if "-z" in args:
             raise subprocess.CalledProcessError(1, args, stderr="private configuration")
-        return SimpleNamespace(stdout="")
+        return SimpleNamespace(stdout='key "rndc-key" { algorithm hmac-sha256; secret "YWJj"; };\n')
 
     monkeypatch.setattr("netadmin.agents.dns.subprocess.run", command)
     response = client.post(
