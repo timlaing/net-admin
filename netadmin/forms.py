@@ -84,7 +84,7 @@ class DhcpSubnetForm(FlaskForm):
     """DHCP subnet pool and option editing form."""
 
     network = StringField("Subnet network", validators=[DataRequired(), Length(max=45)])
-    ranges = TextAreaField("Ranges (start-end, one per line)", validators=[DataRequired()])
+    ranges = TextAreaField("Pools (start-end, one per line; blank removes all pools)")
     options = TextAreaField("Options (name=value, one per line)")
     submit = SubmitField("Update subnet")
 

@@ -6,6 +6,7 @@ import ipaddress
 import os
 import re
 import subprocess  # nosec B404
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, cast
 
@@ -248,9 +249,34 @@ def _save_configuration() -> Any:
     if not matches:
         return jsonify({"error": "Unknown subnet"}), 404
     source = Path(matches[0]["source"])
+    try:
+        _validate_pools(f"{network}/{matches[0]['netmask']}", ranges)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
     updated = _update_subnet(source.read_text(encoding="utf-8"), network, ranges, options)
     validated_transaction({source: updated}, lambda: _validate_live(main_config), _reload())
     return jsonify({"network": network})
+
+
+def _validate_pools(cidr: str, ranges: list[Any]) -> None:
+    """Reject overlapping or invalid allocation ranges before writing."""
+    subnet = ipaddress.IPv4Network(cidr)
+    intervals = []
+    for pool in ranges:
+        if not isinstance(pool, list) or len(pool) != 2:
+            raise ValueError("Each pool requires start and end addresses")
+        try:
+            start, finish = (ipaddress.IPv4Address(value) for value in pool)
+        except (ValueError, TypeError) as error:
+            raise ValueError("Invalid pool address") from error
+        if start not in subnet or finish not in subnet or start > finish:
+            raise ValueError("Pool must be ordered and contained in its subnet")
+        if start == subnet.network_address or finish == subnet.broadcast_address:
+            raise ValueError("Pool cannot allocate network or broadcast addresses")
+        intervals.append((int(start), int(finish)))
+    ordered = sorted(intervals)
+    if any(right[0] <= left[1] for left, right in pairwise(ordered)):
+        raise ValueError("Pools cannot overlap")
 
 
 def _export_kea() -> Any:

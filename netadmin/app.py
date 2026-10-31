@@ -235,11 +235,11 @@ def dhcp_configuration_save() -> Any:
     """Update ranges and options for one ISC DHCPD subnet."""
     form = DhcpSubnetForm()
     if form.validate_on_submit():
-        ranges = [
-            [part.strip() for part in line.split("-", 1)]
-            for line in (form.ranges.data or "").splitlines()
-            if "-" in line
-        ]
+        lines = [line.strip() for line in (form.ranges.data or "").splitlines() if line.strip()]
+        if any(line.count("-") != 1 for line in lines):
+            flash("Enter each pool as start-end. No changes were applied.", "danger")
+            return redirect(url_for(DHCP_INDEX))
+        ranges = [[part.strip() for part in line.split("-", 1)] for line in lines]
         options = {
             name.strip(): value.strip()
             for line in (form.options.data or "").splitlines()

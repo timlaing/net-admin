@@ -49,3 +49,28 @@ def test_kea_parse_leases(monkeypatch: pytest.MonkeyPatch) -> None:
             "ends": "1766798400",
         }
     ]
+
+
+@pytest.mark.parametrize(
+    "pools", [[], [["192.0.2.10", "192.0.2.20"], ["192.0.2.30", "192.0.2.40"]]]
+)
+def test_pool_addition_and_removal(pools):
+    from netadmin.agents.dhcp import _validate_pools
+
+    _validate_pools("192.0.2.0/24", pools)
+
+
+@pytest.mark.parametrize(
+    "pools",
+    [
+        [["192.0.2.20", "192.0.2.10"]],
+        [["198.51.100.10", "198.51.100.20"]],
+        [["192.0.2.0", "192.0.2.20"]],
+        [["192.0.2.10", "192.0.2.20"], ["192.0.2.20", "192.0.2.30"]],
+    ],
+)
+def test_invalid_pools_rejected(pools):
+    from netadmin.agents.dhcp import _validate_pools
+
+    with pytest.raises(ValueError):
+        _validate_pools("192.0.2.0/24", pools)
