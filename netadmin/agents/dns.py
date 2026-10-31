@@ -75,7 +75,12 @@ def _install(canonical: str, extra: dict[Path, str] | None = None) -> None:
             timeout=20,
         )
 
-    validated_transaction(changes, validate, ["/usr/sbin/rndc", "reconfig"])
+    validated_transaction(
+        changes,
+        validate,
+        ["/usr/sbin/rndc", "reconfig"],
+        allowed_roots=(main.parent, managed.parent, cast(Path, current_app.config["DNS_ZONE_DIR"])),
+    )
 
 
 def _zones() -> Any:

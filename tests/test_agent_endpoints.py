@@ -214,3 +214,26 @@ def test_included_dhcp_pool_updates_its_own_file(monkeypatch, tmp_path):
     assert response.status_code == 200
     assert main.read_text() == 'include "pools.conf";\n'
     assert "range 192.0.2.30 192.0.2.40;" in pools.read_text()
+
+
+def test_dhcp_agent_refuses_writes_to_external_include(monkeypatch, tmp_path):
+    service = tmp_path / "service"
+    service.mkdir()
+    main = service / "dhcpd.conf"
+    external = tmp_path / "external.conf"
+    original = "subnet 192.0.2.0 netmask 255.255.255.0 {\n}\n"
+    external.write_text(original)
+    main.write_text(f'include "{external}";\n')
+    monkeypatch.setenv("NETADMIN_AGENT_TOKEN", "test-agent-token")
+    monkeypatch.setenv("DHCP_MAIN_CONFIG", str(main))
+    monkeypatch.setenv("DHCP_MANAGED_FILE", str(service / "reservations.conf"))
+    monkeypatch.setenv("DHCP_SERVER", "isc")
+    client = create_dhcp_agent().test_client()
+    response = client.post(
+        "/configuration",
+        headers=AUTH,
+        json={"network": "192.0.2.0", "ranges": [], "options": {}},
+    )
+    assert response.status_code == 400
+    assert "configured service directories" in response.get_json()["error"]
+    assert external.read_text() == original

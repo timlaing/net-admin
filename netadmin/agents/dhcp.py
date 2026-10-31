@@ -180,6 +180,16 @@ def _reload() -> list[str]:
     return cast(list[str], current_app.config["DHCP_RELOAD"])
 
 
+def _install_changes(changes: dict[Path, str], main_config: Path) -> None:
+    """Allow writes only in explicitly configured service directories."""
+    validated_transaction(
+        changes,
+        lambda: _validate_live(main_config),
+        _reload(),
+        allowed_roots=(main_config.parent, _path("DHCP_MANAGED").parent),
+    )
+
+
 def _health() -> Any:
     return jsonify({"status": "ok"})
 
@@ -204,7 +214,7 @@ def _save_reservation() -> Any:
     items.append(item)
     changes = {managed: render_reservations(items)}
     changes.update(_external_changes(all_items, managed, item["name"]))
-    validated_transaction(changes, lambda: _validate_live(main_config), _reload())
+    _install_changes(changes, main_config)
     return jsonify(item)
 
 
@@ -215,7 +225,7 @@ def _delete_reservation() -> Any:
     kept = [entry for entry in _current(managed) if entry["name"] != name]
     changes = {managed: render_reservations(kept)}
     changes.update(_external_changes(_all_reservations(main_config), managed, name))
-    validated_transaction(changes, lambda: _validate_live(main_config), _reload())
+    _install_changes(changes, main_config)
     return jsonify({"deleted": name})
 
 
@@ -254,7 +264,7 @@ def _save_configuration() -> Any:
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
     updated = _update_subnet(source.read_text(encoding="utf-8"), network, ranges, options)
-    validated_transaction({source: updated}, lambda: _validate_live(main_config), _reload())
+    _install_changes({source: updated}, main_config)
     return jsonify({"network": network})
 
 
@@ -300,7 +310,7 @@ def _create_subnet() -> Any:
     changes = {main_config: updated}
     if not backup.exists():
         changes[backup] = main_config.read_text(encoding="utf-8")
-    validated_transaction(changes, lambda: _validate_live(main_config), _reload())
+    _install_changes(changes, main_config)
     return jsonify({"created": str(network)}), 201
 
 
@@ -318,7 +328,7 @@ def _remove_subnet() -> Any:
     backup = source.with_name(source.name + ".before-netadmin-subnets")
     if not backup.exists():
         changes[backup] = original
-    validated_transaction(changes, lambda: _validate_live(main_config), _reload())
+    _install_changes(changes, main_config)
     return jsonify({"deleted": network, "leases_preserved": True})
 
 

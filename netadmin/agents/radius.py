@@ -192,6 +192,7 @@ def _migration_apply() -> Any:
         {authorize: remaining, managed: render_users(entries)},
         _validate_radius,
         _reload(),
+        allowed_roots=(authorize.parent, managed.parent),
     )
     names = sorted(legacy_entries)
     return jsonify({"users": names, "count": len(names)})

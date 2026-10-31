@@ -24,6 +24,8 @@ Push the reviewed commits and require the CI and lint workflows to pass for the 
 
 The first DNS configuration mutation writes the canonical managed configuration and preserves the original main file as `.before-netadmin`. Existing includes remain on disk. DHCP changes preserve native ISC/Kea configuration and create an initial `.before-netadmin-subnets` backup; Kea subnet creation requires one `subnet4` array in the main configuration. These backups are an initial migration safety net, not a replacement for versioned backups.
 
+Agent transactions constrain writes to configured service directories, including their subdirectories. DHCP permits the main configuration and managed-reservations directories; RADIUS permits its configured authorize and managed-user directories; DNS permits its main/managed configuration directories and configured zone directory. An include does not grant write access outside these directories, including through symlinks. Move external DHCP definitions into a permitted directory before editing them through NetAdmin.
+
 ## Rollback
 
 Record any service changes made after the update before rolling back. Pin the application and agents to the previous known-good versions. If configuration restoration is needed, restore a consistent service backup, including referenced files and appropriate zone journals, and validate it with the native service tools before restarting. Do not blindly overwrite live zone data or lease databases with older copies. Restore the saved application settings when required, then verify service health, authenticated access, inventory and representative DNS/DHCP behavior.

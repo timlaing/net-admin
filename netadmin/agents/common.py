@@ -12,7 +12,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, abort, request
+from flask import Flask, abort, jsonify, request
+
+
+class TransactionPathError(ValueError):
+    """A discovered service filename is outside the agent's write boundary."""
 
 
 def create_agent(name: str) -> Flask:
@@ -29,6 +33,11 @@ def create_agent(name: str) -> Flask:
         supplied = request.headers.get("Authorization", "").removeprefix("Bearer ")
         if not hmac.compare_digest(supplied, expected):
             abort(401)
+
+    @app.errorhandler(TransactionPathError)
+    def unsafe_path(_error: TransactionPathError) -> tuple[Any, int]:
+        """Reject unsafe include paths without exposing filesystem details."""
+        return jsonify({"error": "Write path is outside configured service directories"}), 400
 
     return app
 
@@ -70,9 +79,17 @@ def atomic_validated_write(
 
 
 def validated_transaction(
-    changes: dict[Path, str], validate: Callable[[], None], reload_command: list[str]
+    changes: dict[Path, str],
+    validate: Callable[[], None],
+    reload_command: list[str],
+    *,
+    allowed_roots: tuple[Path, ...],
 ) -> None:
     """Install a group of files with validation and complete rollback on failure."""
+    roots = tuple(root.resolve() for root in allowed_roots)
+    # Includes are service configuration content, not permission to write anywhere.
+    # Resolve links before every transaction and reject all paths before any writes.
+    changes = {_transaction_path(path, roots): content for path, content in changes.items()}
     originals = {path: path.read_bytes() if path.exists() else None for path in changes}
     candidates: dict[Path, Path] = {}
     try:
@@ -100,6 +117,16 @@ def validated_transaction(
     finally:
         for candidate in candidates.values():
             candidate.unlink(missing_ok=True)
+
+
+def _transaction_path(path: Path, roots: tuple[Path, ...]) -> Path:
+    """Constrain discovered filenames to explicitly configured service directories."""
+    if not path.is_absolute() or ".." in path.parts:
+        raise TransactionPathError("Transaction path must be absolute and free of '..'")
+    resolved = path.resolve()
+    if not any(resolved.is_relative_to(root) and resolved != root for root in roots):
+        raise TransactionPathError("Transaction path is outside configured service directories")
+    return resolved
 
 
 def json_object() -> dict[str, Any]:
