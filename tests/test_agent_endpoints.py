@@ -186,3 +186,31 @@ def test_radius_agent_rejects_bad_paths(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("RADIUS_MANAGED_FILE", "relative/netadmin")
     with pytest.raises(ValueError, match="RADIUS_MANAGED_FILE"):
         create_radius_agent()
+
+
+def test_included_dhcp_pool_updates_its_own_file(monkeypatch, tmp_path):
+    main = tmp_path / "dhcpd.conf"
+    pools = tmp_path / "pools.conf"
+    main.write_text('include "pools.conf";\n')
+    pools.write_text(
+        "subnet 192.0.2.0 netmask 255.255.255.0 {\n  range 192.0.2.10 192.0.2.20;\n}\n"
+    )
+    monkeypatch.setenv("NETADMIN_AGENT_TOKEN", "test-agent-token")
+    monkeypatch.setenv("DHCP_MAIN_CONFIG", str(main))
+    monkeypatch.setenv("DHCP_SERVER", "isc")
+    monkeypatch.setattr("netadmin.agents.dhcp.subprocess.run", lambda *args, **kwargs: None)
+    client = create_dhcp_agent().test_client()
+    inventory = client.get("/configuration", headers=AUTH).get_json()
+    assert inventory[0]["source"] == str(pools)
+    response = client.post(
+        "/configuration",
+        headers=AUTH,
+        json={
+            "network": "192.0.2.0",
+            "ranges": [["192.0.2.30", "192.0.2.40"]],
+            "options": {},
+        },
+    )
+    assert response.status_code == 200
+    assert main.read_text() == 'include "pools.conf";\n'
+    assert "range 192.0.2.30 192.0.2.40;" in pools.read_text()

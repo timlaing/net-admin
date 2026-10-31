@@ -219,7 +219,21 @@ def _delete_reservation() -> Any:
 
 
 def _configuration() -> Any:
-    return jsonify(_subnets(_path("DHCP_MAIN").read_text(encoding="utf-8")))
+    return jsonify(_all_subnets(_path("DHCP_MAIN")))
+
+
+def _all_subnets(main_config: Path) -> list[dict[str, Any]]:
+    """Discover subnet definitions across includes without ambiguous identities."""
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for source in _discover(main_config):
+        for subnet in _subnets(source.read_text(encoding="utf-8")):
+            network = str(subnet["network"])
+            if network in seen:
+                raise ValueError(f"Ambiguous subnet definition: {network}")
+            seen.add(network)
+            result.append({**subnet, "source": str(source)})
+    return result
 
 
 def _save_configuration() -> Any:
@@ -230,8 +244,12 @@ def _save_configuration() -> Any:
     if not isinstance(ranges, list) or not isinstance(options, dict):
         return jsonify({"error": "ranges and options have invalid types"}), 400
     main_config = _path("DHCP_MAIN")
-    updated = _update_subnet(main_config.read_text(encoding="utf-8"), network, ranges, options)
-    validated_transaction({main_config: updated}, lambda: _validate_live(main_config), _reload())
+    matches = [item for item in _all_subnets(main_config) if item["network"] == network]
+    if not matches:
+        return jsonify({"error": "Unknown subnet"}), 404
+    source = Path(matches[0]["source"])
+    updated = _update_subnet(source.read_text(encoding="utf-8"), network, ranges, options)
+    validated_transaction({source: updated}, lambda: _validate_live(main_config), _reload())
     return jsonify({"network": network})
 
 
@@ -239,7 +257,7 @@ def _export_kea() -> Any:
     main_config = _path("DHCP_MAIN")
     return jsonify(
         kea_export(
-            _subnets(main_config.read_text(encoding="utf-8")),
+            _all_subnets(main_config),
             _all_reservations(main_config),
         )
     )
