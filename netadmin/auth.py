@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import hmac
+import posixpath
 import subprocess  # nosec B404 - fixed executable and argv, no shell
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import wraps
 from typing import Any, cast
+from urllib.parse import unquote, urlsplit
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
-from flask import abort, current_app, g, redirect, request, url_for
+from flask import abort, current_app, g, has_request_context, redirect, request, url_for
 
 from netadmin.config import Settings
 from netadmin.store import SessionRecord, Store
@@ -78,7 +80,10 @@ def login_required[**P, R](view: Callable[P, R]) -> Callable[P, R]:
     @wraps(view)
     def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
         if g.get("identity") is None:
-            return cast(R, redirect(url_for("web.login", next=request.full_path)))
+            return cast(
+                R,
+                redirect(url_for("web.login", next=f"{request.script_root}{request.full_path}")),
+            )
         return view(*args, **kwargs)
 
     return wrapped
@@ -103,8 +108,14 @@ def safe_next_url(value: str | None) -> str:
     # Backslashes are rejected as well: URL parsers treat "\\" as "/", so a
     # target like "/\\evil.example" would resolve to another origin even
     # though it starts with a single slash.
+    prefix = request.script_root if has_request_context() else ""
+    fallback = f"{prefix}/"
     if not value or not value.startswith("/") or value.startswith("//") or "\\" in value:
-        return "/"
+        return fallback
+    if prefix:
+        path = unquote(urlsplit(value).path)
+        if "\\" in path or not posixpath.normpath(path).startswith(f"{prefix}/"):
+            return fallback
     return value
 
 

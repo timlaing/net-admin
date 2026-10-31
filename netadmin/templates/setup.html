@@ -8,6 +8,7 @@
   <link href="{{ url_for('static', filename='app.css') }}" rel="stylesheet">
 </head>
 <body>
+{% include "https_notice.html" %}
 <nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm">
   <div class="container-fluid">
     <span class="navbar-brand fw-semibold">NetAdmin · first-run setup</span>
@@ -52,7 +53,7 @@
       <h1 class="h4 mb-1">Network services</h1>
       <p class="text-secondary mb-4">Point NetAdmin at your agents and Bind server. Leave the
         secrets blank to generate them; the RADIUS secret is shown before applying.</p>
-      <form method="post" action="services">
+      <form method="post" action="{{ url_for('step2') }}">
         {{ form.hidden_tag() }}
         <div class="mb-3">{{ form.dns_server.label(class="form-label") }}{{ form.dns_server(class="form-control") }}</div>
         <div class="mb-3">{{ form.dns_zones.label(class="form-label") }}{{ form.dns_zones(class="form-control") }}</div>
@@ -79,7 +80,7 @@
         <dt class="col-sm-4">RADIUS secret</dt><dd class="col-sm-8"><code>{{ values.radius_secret }}</code></dd>
         <dt class="col-sm-4">TSIG secret</dt><dd class="col-sm-8"><code>{{ "set" if values.tsig_secret else "not set" }}</code></dd>
       </dl>
-      <form method="post" action="apply">
+      <form method="post" action="{{ url_for('apply') }}">
         {{ form.hidden_tag() }}
         <div class="form-check mb-3">
           {{ form.confirmed(class="form-check-input") }}{{ form.confirmed.label(class="form-check-label") }}

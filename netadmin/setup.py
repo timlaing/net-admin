@@ -13,6 +13,8 @@ from flask_wtf import CSRFProtect, FlaskForm
 from wtforms import BooleanField, PasswordField, StringField
 from wtforms.validators import DataRequired, EqualTo, Length, Optional
 
+from netadmin.ingress import configure_ingress
+
 MANAGED_KEYS = (
     "NETADMIN_SECRET_KEY",
     "NETADMIN_AGENT_TOKEN",
@@ -181,8 +183,12 @@ def apply() -> Any:
 def create_setup_app() -> Flask:
     """Create the unconfigured add-on app that only serves the setup wizard."""
     app = Flask(__name__)
+    configure_ingress(app)
     app.config.update(
         SECRET_KEY=secrets.token_urlsafe(32),
+        SESSION_COOKIE_SECURE=True,
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Strict",
         WTF_CSRF_TIME_LIMIT=None,
         MAX_CONTENT_LENGTH=65_536,
     )

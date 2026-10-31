@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, cast
 
 import httpx
@@ -30,6 +31,7 @@ from netadmin.forms import (
     ReservationForm,
     RpiRecordForm,
 )
+from netadmin.ingress import configure_ingress
 from netadmin.services.agents import AgentClient
 from netadmin.services.dns import BindService
 from netadmin.store import Store
@@ -83,6 +85,7 @@ def login() -> Any:
                 httponly=True,
                 samesite="Strict",
                 max_age=None,
+                path=request.script_root or "/",
             )
             return response
         _store().audit(username, "login", username, False)
@@ -98,7 +101,7 @@ def logout() -> Any:
     _audit("logout", current_identity().username)
     _store().delete_session(session_id)
     response = redirect(url_for("web.login"))
-    response.delete_cookie("netadmin_session")
+    response.delete_cookie("netadmin_session", path=request.script_root or "/")
     return response
 
 
@@ -351,7 +354,7 @@ def password() -> Any:
             _audit("radius.password.change", identity.username)
             _store().delete_user_sessions(identity.username)
             response = redirect(url_for("web.login"))
-            response.delete_cookie("netadmin_session")
+            response.delete_cookie("netadmin_session", path=request.script_root or "/")
             flash("Password changed. Sign in again.", "success")
             return response
     return render_template("password.html", form=form)
@@ -368,6 +371,8 @@ def create_app(settings: Settings | None = None) -> Flask:
     """Create and configure NetAdmin."""
     runtime = settings or Settings.from_env()
     app = Flask(__name__)
+    if os.getenv("NETADMIN_ADDON") == "1":
+        configure_ingress(app)
     app.config.update(
         SECRET_KEY=runtime.secret_key,
         WTF_CSRF_TIME_LIMIT=3600,

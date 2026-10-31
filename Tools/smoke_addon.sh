@@ -82,6 +82,8 @@ for _ in range(30):
 else:
     raise SystemExit("Add-on image failed to start")
 assert "first-run setup" in page, "Setup wizard did not render through ingress"
+assert 'href="/api/hassio/ingress/synthetic/static/app.css"' in page
+assert "Open Home Assistant over HTTPS" in page
 
 # Without the ingress header the wizard must not exist.
 try:
@@ -133,4 +135,32 @@ else:
 assert "Setup complete" in page, "Configured wizard did not lock itself"
 assert "Emergency root account" not in page, "Configured wizard still collects secrets"
 print("Add-on wizard locking checks passed")
+PY
+# Check the configured application's ingress boundary using the packaged code.
+# Synthetic settings avoid depending on any external network services.
+docker exec -i "$name" python - <<'PY'
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from urllib.parse import urlsplit
+
+from netadmin.app import create_app
+from netadmin.config import Settings
+
+prefix = "/api/hassio_ingress/synthetic"
+headers = {"X-Ingress-Path": prefix, "X-Forwarded-Proto": "https"}
+with TemporaryDirectory() as directory:
+    app = create_app(Settings(
+        secret_key="smoke", root_password_hash="unused", data_dir=Path(directory)
+    ))
+    client = app.test_client()
+    response = client.get("/", headers=headers)
+    assert urlsplit(response.location).path == prefix + "/login"
+    response = client.get("/login", headers=headers)
+    assert response.status_code == 200
+    assert 'href="' + prefix + '/static/app.css"' in response.text
+    assert "Open Home Assistant over HTTPS" not in response.text
+    cookie = response.headers["Set-Cookie"]
+    assert "Secure" in cookie and "Path=" + prefix in cookie
+    assert client.get("/static/app.css", headers=headers).status_code == 200
+print("Configured add-on ingress checks passed")
 PY

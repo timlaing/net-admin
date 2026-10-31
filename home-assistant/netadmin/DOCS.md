@@ -73,6 +73,12 @@ Home Assistant ingress does not replace its account permissions. RADIUS users
 with `Filter-Id` set to `netadmin-admin` can administer services; users with
 `netadmin-standard` can change only their own password.
 
+If the interface displays an HTTPS notice, open Home Assistant using its HTTPS
+address. When HTTPS terminates at a reverse proxy, ensure it forwards the original
+protocol in `X-Forwarded-Proto`. Do not disable Secure cookies to work around this.
+Ingress navigation, form actions and session cookies stay under NetAdmin's own
+Home Assistant ingress path.
+
 - **Wizard still appears:** confirm setup completed and restart the add-on so
   it loads `/config/netadmin.env`.
 - **Agent connection fails:** check name resolution, the HTTPS URL, certificate

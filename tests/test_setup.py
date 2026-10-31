@@ -13,7 +13,9 @@ INGRESS = {"X-Ingress-Path": "/api/hassio/ingress/token"}
 def make_wizard(tmp_path: Path, monkeypatch):  # type: ignore[no-untyped-def]
     monkeypatch.setenv("NETADMIN_ENV_FILE", str(tmp_path / "netadmin.env"))
     app = create_setup_app()
-    app.config.update(TESTING=True, WTF_CSRF_ENABLED=False)
+    app.config.update(
+        TESTING=True, WTF_CSRF_ENABLED=False, APPLICATION_ROOT=INGRESS["X-Ingress-Path"]
+    )
     return app.test_client()
 
 
