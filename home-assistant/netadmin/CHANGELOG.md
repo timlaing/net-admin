@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1
+
+- Hide the HTTPS sign-in notice through trusted Home Assistant ingress, including when the internal forwarded connection uses HTTP.
+- Keep HTTPS guidance for direct HTTP access, with wording appropriate to NetAdmin.
+
 ## 0.5.0
 
 - Refreshed responsive interface with local assets, light/dark themes, search and useful empty states.

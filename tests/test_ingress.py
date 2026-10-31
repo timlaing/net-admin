@@ -39,12 +39,33 @@ def test_ingress_redirect_assets_and_https_notice(tmp_path, monkeypatch) -> None
     page = client.get("/login", headers=HEADERS)
     assert f'href="{PREFIX}/static/app.css"'.encode() in page.data
     assert f'href="{PREFIX}/"'.encode() in page.data
-    assert b"Open Home Assistant over HTTPS" not in page.data
+    assert b"over HTTPS to sign in" not in page.data
     assert f"Path={PREFIX}" in page.headers["Set-Cookie"]
     assert "Secure" in page.headers["Set-Cookie"]
     page = client.get("/login", headers={**HEADERS, "X-Forwarded-Proto": "http"})
-    assert b"Open Home Assistant over HTTPS" in page.data
+    assert b"over HTTPS to sign in" not in page.data
+    page = client.get("/login", headers={"X-Ingress-Path": PREFIX})
+    assert b"over HTTPS to sign in" not in page.data
     assert client.get("/static/app.css", headers=HEADERS).status_code == 200
+
+
+@pytest.mark.parametrize("addon", [False, True])
+def test_direct_http_warns_but_https_does_not(tmp_path, monkeypatch, addon) -> None:
+    if addon:
+        monkeypatch.setenv("NETADMIN_ADDON", "1")
+    else:
+        monkeypatch.delenv("NETADMIN_ADDON", raising=False)
+    client = make_app(tmp_path).test_client()
+    page = client.get("/login", base_url="http://localhost")
+    assert b"Open NetAdmin over HTTPS to sign in." in page.data
+    page = client.get("/login", base_url="https://localhost")
+    assert b"over HTTPS to sign in" not in page.data
+
+
+def test_standalone_ingress_header_cannot_hide_direct_http_notice(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("NETADMIN_ADDON", raising=False)
+    page = make_app(tmp_path).test_client().get("/login", headers=HEADERS)
+    assert b"Open NetAdmin over HTTPS to sign in." in page.data
 
 
 @pytest.mark.parametrize(

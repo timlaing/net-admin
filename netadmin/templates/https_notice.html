@@ -1,6 +1,6 @@
-{% if request.environ.get('netadmin.trusted_ingress') and not request.is_secure %}
+{% if not request.environ.get('netadmin.trusted_ingress') and not request.is_secure %}
 <div class="alert alert-warning rounded-0 mb-0" role="alert">
-  <strong>Open Home Assistant over HTTPS to sign in.</strong>
+  <strong>Open NetAdmin over HTTPS to sign in.</strong>
   NetAdmin requires a secure connection to keep your session. If you are already
   using HTTPS, check that your reverse proxy forwards the original protocol.
 </div>

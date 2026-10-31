@@ -105,7 +105,7 @@ else:
     raise SystemExit("Add-on image failed to start")
 assert "first-run setup" in page, "Setup wizard did not render through ingress"
 assert 'href="/api/hassio/ingress/synthetic/static/app.css"' in page
-assert "Open Home Assistant over HTTPS" in page
+assert "over HTTPS to sign in" not in page
 
 # Without the ingress header the wizard must not exist.
 try:
@@ -184,7 +184,7 @@ with TemporaryDirectory() as directory:
     response = client.get("/login", headers=headers)
     assert response.status_code == 200
     assert 'href="' + prefix + '/static/app.css"' in response.text
-    assert "Open Home Assistant over HTTPS" not in response.text
+    assert "over HTTPS to sign in" not in response.text
     cookie = response.headers["Set-Cookie"]
     assert "Secure" in cookie and "Path=" + prefix in cookie
     assert client.get("/static/app.css", headers=headers).status_code == 200
