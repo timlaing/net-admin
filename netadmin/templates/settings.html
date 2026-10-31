@@ -4,7 +4,7 @@
 {% block content %}
 <div class="page-heading"><div><p class="eyebrow">WORKSPACE PREFERENCES</p><h1>Connection settings</h1><p>Connect the services you use. Save to apply changes immediately.</p></div><span class="service-glyph">{{ icon('settings') }}</span></div>
 <div class="settings-form">
-{% if pending %}<div class="alert alert-warning" role="status">Saved settings differ from the running configuration. Save the form or reload saved connections to apply them. Tests use the active configuration.</div>{% endif %}
+{% if pending %}<output class="alert alert-warning d-block">Saved settings differ from the running configuration. Save the form or reload saved connections to apply them. Tests use the active configuration.</output>{% endif %}
 {% if not editable %}<div class="alert alert-info">This standalone deployment uses environment variables. Edit them in your deployment configuration, then restart NetAdmin.</div>{% endif %}
 {% if editable %}
 <details class="card advanced-group"><summary>{{ icon('radius') }}Home Assistant access</summary><div class="card-body"><p>{{ 'A separate NetAdmin login is required through ingress.' if service_settings.ingress_require_login else 'Trusted Home Assistant administrators can use ingress without a second login.' }}</p><p class="mb-0">Change <strong>Require NetAdmin login through ingress</strong> in Home Assistant's NetAdmin Configuration tab, then restart the app. Direct access always requires login.</p></div></details>

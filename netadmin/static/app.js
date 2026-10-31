@@ -6,10 +6,24 @@
   let preference = 'system';
   try { preference = localStorage.getItem('netadmin-theme') || 'system'; } catch (_) { /* Storage may be disabled. */ }
   if (!['system', 'light', 'dark'].includes(preference)) preference = 'system';
-  const apply = () => { root.dataset.bsTheme = preference === 'system' ? (system.matches ? 'dark' : 'light') : preference; };
+  const apply = () => {
+    let theme = preference;
+    if (preference === 'system') theme = system.matches ? 'dark' : 'light';
+    root.dataset.bsTheme = theme;
+  };
   apply();
   system.addEventListener('change', apply);
   document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('[data-scroll-region]').forEach(region => {
+      // Native scrolling accepts arrow keys once focused. Avoid extra Tab stops
+      // when the complete table already fits in the available width.
+      const updateFocus = () => { region.tabIndex = region.scrollWidth > region.clientWidth ? 0 : -1; };
+      updateFocus();
+      const observer = new ResizeObserver(updateFocus);
+      observer.observe(region);
+      const table = region.querySelector('table');
+      if (table) observer.observe(table);
+    });
     document.querySelectorAll('[data-theme-control]').forEach(control => { control.hidden = false; });
     document.querySelectorAll('[data-theme-choice]').forEach(choice => {
       choice.value = preference;

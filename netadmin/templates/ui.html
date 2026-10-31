@@ -48,10 +48,10 @@
 {%- endmacro %}
 
 {% macro audit_table(events, id='activity') -%}
-<div class="table-responsive" tabindex="0" role="region" aria-label="Recent activity">
+<section class="table-responsive" aria-label="Recent activity" tabindex="-1" data-scroll-region>
 <table class="table align-middle" id="{{ id }}">
 <caption class="visually-hidden">Recent administrative activity</caption>
 <thead><tr><th scope="col">When (UTC)</th><th scope="col">User</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Result</th></tr></thead>
 <tbody>{% for event in events %}<tr data-filter-row><td class="text-nowrap">{{ event.occurred_at|display_time }}</td><td>{{ event.username }}</td><td>{{ event.action }}</td><td class="cell-value">{{ event.target }}</td><td><span class="status {{ 'status-success' if event.success else 'status-danger' }}">{{ 'Success' if event.success else 'Rejected' }}</span></td></tr>{% endfor %}</tbody>
-</table></div>
+</table></section>
 {%- endmacro %}
