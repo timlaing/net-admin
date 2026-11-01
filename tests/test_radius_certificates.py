@@ -1,5 +1,6 @@
 """Certificate lifecycle tests use synthetic keys and no live RADIUS material."""
 
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -219,7 +220,9 @@ def test_activation_failure_restores_original_and_restarts_old_identity(material
 
     monkeypatch.setattr("netadmin.agents.radius_certificates._restart", restart)
     assert client.post("/certificates", json=body, headers=AUTH).status_code == 502
-    assert len(calls) == 2 and calls[0] != original and calls[1] == original
+    assert len(calls) == 2
+    assert calls[0] != original
+    assert calls[1] == original
 
 
 def test_missing_key_and_symlink_block_management(material, monkeypatch):
@@ -265,7 +268,8 @@ def test_certificate_ui_confirmations_and_read_only_guards(tmp_path, material):
         ).status_code
         == 302
     )
-    assert calls[0][0] == "certificates" and calls[0][2] == {"timeout": 60}
+    assert calls[0][0] == "certificates"
+    assert calls[0][2] == {"timeout": 60}
     assert "PRIVATE KEY" not in client.get("/radius/certificates/download/server").text
     assert client.get("/radius/certificates/download/key").status_code == 404
     remote.read_only = lambda: True
@@ -305,7 +309,8 @@ def test_empty_crl_has_expiry_and_refresh_preserves_server(material, monkeypatch
     response = client.post("/certificates", json={**body, "action": "refresh-crl"}, headers=AUTH)
     assert response.status_code == 200
     status = client.get("/certificates", headers=AUTH).json
-    assert status["has_crl"] and status["crl_expires"]
+    assert status["has_crl"]
+    assert status["crl_expires"]
     assert status["revoked_count"] == 0
     assert status["server"]["fingerprint"] == body["expected_server"]
 
@@ -320,3 +325,49 @@ def test_ec_ca_renewal_and_retirement_preserve_curve(material):
     renewed = issue_certificate(authority, replacement, authority, replacement, is_ca=True)
     renewed.verify_directly_issued_by(renewed)
     assert renewed.signature_hash_algorithm.name == "sha384"
+
+
+@pytest.mark.parametrize("fail_restart", [False, True])
+def test_operator_restart_helper_without_pid_sharing(material, monkeypatch, fail_restart):
+    directory = material[0]
+    monkeypatch.setenv("NETADMIN_AGENT_TOKEN", "synthetic")
+    monkeypatch.setenv("RADIUS_CERT_DIR", str(directory))
+    monkeypatch.setenv("RADIUS_CERT_KEY_PASSWORD", PASSWORD.decode())
+    monkeypatch.setenv("RADIUS_CERT_MANAGEMENT", "true")
+    monkeypatch.setenv("RADIUS_CERT_RESTART_MODE", "command")
+    monkeypatch.setenv("RADIUS_CERT_RESTART_COMMAND", "/trusted/restart-radius")
+    original = (directory / "server.pem").read_bytes()
+    activations = []
+
+    def run(command, **_kwargs):
+        if command == ["/trusted/restart-radius"]:
+            activations.append((directory / "server.pem").read_bytes())
+            if fail_restart and len(activations) == 1:
+                raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr("netadmin.agents.radius_certificates.subprocess.run", run)
+    client = create_radius_agent().test_client()
+    status = client.get("/certificates", headers=AUTH).json
+    assert status["can_manage"]
+    body = {
+        "action": "renew-server",
+        "expected_ca": status["ca"]["fingerprint"],
+        "expected_server": status["server"]["fingerprint"],
+    }
+    response = client.post("/certificates", json=body, headers=AUTH)
+    assert activations[0] != original
+    if fail_restart:
+        assert response.status_code == 502
+        assert len(activations) == 2
+        assert activations[-1] == original
+    else:
+        assert response.status_code == 200
+        assert len(activations) == 1
+
+
+def test_command_restart_mode_requires_explicit_helper(monkeypatch):
+    monkeypatch.setenv("NETADMIN_AGENT_TOKEN", "synthetic")
+    monkeypatch.setenv("RADIUS_CERT_RESTART_MODE", "command")
+    monkeypatch.delenv("RADIUS_CERT_RESTART_COMMAND", raising=False)
+    app = create_radius_agent()
+    assert app.config["RADIUS_CERT_RESTART"] == []

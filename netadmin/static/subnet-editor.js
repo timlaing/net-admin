@@ -44,7 +44,7 @@ export function serializeDraft(draft, backend) {
 
 function ipv4(value) {
   const parts = value.trim().split('.');
-  if (parts.length !== 4 || parts.some(part => !/^\d{1,3}$/.test(part) || Number(part) > 255)) return NaN;
+  if (parts.length !== 4 || parts.some(part => !/^\d{1,3}$/.test(part) || Number(part) > 255)) return Number.NaN;
   return parts.reduce((address, part) => address * 256 + Number(part), 0);
 }
 
@@ -208,7 +208,8 @@ class SubnetEditor {
     row.select.required = true;
     const choices = { '': 'Choose an option', ...optionLabels, custom: 'Custom option…' };
     Object.entries(choices).forEach(([value, text]) => row.select.add(new Option(text, value)));
-    row.select.value = option ? (Object.hasOwn(optionLabels, option.name) ? option.name : 'custom') : '';
+    row.select.value = '';
+    if (option) row.select.value = Object.hasOwn(optionLabels, option.name) ? option.name : 'custom';
     row.custom = this.field('Custom option name', option?.name);
     choice.append(label, row.select, row.custom.wrapper);
     row.value = this.field('Value', option?.value);

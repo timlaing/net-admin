@@ -23,6 +23,11 @@ from netadmin.services.radius_certificates import (
     load_signing_key,
 )
 
+CA_CERTIFICATE = "ca.pem"
+SERVER_CERTIFICATE = "server.pem"
+CA_KEY = "ca.key"
+REVOCATION_LIST = "netadmin-crl.pem"
+
 
 def _root() -> Path:
     return Path(current_app.config["RADIUS_CERT_DIR"])
@@ -40,6 +45,8 @@ def _file(name: str) -> Path:
 
 
 def _protocol_ready() -> bool:
+    if current_app.config["RADIUS_CERT_RESTART_MODE"] == "command":
+        return bool(current_app.config["RADIUS_CERT_RESTART"])
     marker = _file(".netadmin-control")
     return (
         marker.exists()
@@ -49,22 +56,22 @@ def _protocol_ready() -> bool:
 
 
 def _inventory() -> dict[str, Any]:
-    ca = x509.load_pem_x509_certificate(_file("ca.pem").read_bytes())
-    server = x509.load_pem_x509_certificate(_file("server.pem").read_bytes())
+    ca = x509.load_pem_x509_certificate(_file(CA_CERTIFICATE).read_bytes())
+    server = x509.load_pem_x509_certificate(_file(SERVER_CERTIFICATE).read_bytes())
     reason = ""
     if not current_app.config["RADIUS_CERT_MANAGEMENT"]:
         reason = "Certificate management is not enabled on this agent."
     elif not _protocol_ready():
         reason = "Update the RADIUS service image to enable certificate activation."
-    elif not _file("ca.key").exists():
+    elif not _file(CA_KEY).exists():
         reason = "The CA signing key is not available. Renew or revoke through your external CA."
     else:
-        key = load_signing_key(_file("ca.key").read_bytes(), _password())
+        key = load_signing_key(_file(CA_KEY).read_bytes(), _password())
         if not key_matches(ca, key):
             raise ValueError("CA key mismatch")
         ca.verify_directly_issued_by(ca)
         server.verify_directly_issued_by(ca)
-    crl_path = _file("netadmin-crl.pem")
+    crl_path = _file(REVOCATION_LIST)
     crl = x509.load_pem_x509_crl(crl_path.read_bytes()) if crl_path.exists() else None
     return {
         "available": True,
@@ -94,13 +101,17 @@ def _status() -> Any:
 
 def _restart() -> None:
     """Wait for the service wrapper to acknowledge a fresh daemon process."""
+    command = list(current_app.config["RADIUS_CERT_RESTART"])
+    if not command:
+        raise ValueError("Certificate restart command is not configured")
+    if current_app.config["RADIUS_CERT_RESTART_MODE"] == "command":
+        # Operator-provided helpers must return success only after a healthy restart.
+        subprocess.run(command, check=True, capture_output=True, timeout=30)  # noqa: S603
+        return
     token = secrets.token_hex(24)
     request = _file(".netadmin-restart-request")
     request.write_text(token, encoding="ascii")
     request.chmod(0o600)
-    command = list(current_app.config["RADIUS_CERT_RESTART"])
-    if not command:
-        raise ValueError("Certificate restart command is not configured")
     subprocess.run(command, check=True, capture_output=True, timeout=5)  # noqa: S603
     result = _file(".netadmin-restart-result")
     deadline = time.monotonic() + 12
@@ -112,14 +123,14 @@ def _restart() -> None:
 
 
 def _install(changes: dict[str, str]) -> None:
-    server_stat = _file("server.pem").stat()
+    server_stat = _file(SERVER_CERTIFICATE).stat()
     restart_attempted = False
 
     def validate_and_activate() -> None:
         nonlocal restart_attempted
         for name in changes:
             path = _file(name)
-            path.chmod(0o600 if name == "ca.key" else 0o640)
+            path.chmod(0o600 if name == CA_KEY else 0o640)
             os.chown(path, server_stat.st_uid, server_stat.st_gid)
         subprocess.run(["/usr/sbin/radiusd", "-XC"], check=True, capture_output=True, timeout=20)
         restart_attempted = True
@@ -160,11 +171,11 @@ def _operate() -> Any:
                 ), 409
             if action == "retire-ca" and body.get("confirmation") != "REPLACE CA":
                 return jsonify({"error": "Type REPLACE CA to confirm retirement."}), 400
-            crl = _file("netadmin-crl.pem")
+            crl = _file(REVOCATION_LIST)
             changes = certificate_changes(
-                _file("ca.pem").read_bytes(),
-                _file("ca.key").read_bytes(),
-                _file("server.pem").read_bytes(),
+                _file(CA_CERTIFICATE).read_bytes(),
+                _file(CA_KEY).read_bytes(),
+                _file(SERVER_CERTIFICATE).read_bytes(),
                 crl.read_bytes() if crl.exists() else None,
                 _password(),
                 action,
@@ -189,7 +200,7 @@ def _operate() -> Any:
 
 
 def _download(kind: str) -> Any:
-    names = {"ca": "ca.pem", "server": "server.pem", "crl": "netadmin-crl.pem"}
+    names = {"ca": CA_CERTIFICATE, "server": SERVER_CERTIFICATE, "crl": REVOCATION_LIST}
     if kind not in names:
         return jsonify({"error": "Unknown public certificate document"}), 404
     try:
@@ -205,11 +216,16 @@ def _download(kind: str) -> Any:
 
 def register_certificates(app: Flask) -> None:
     """Keep certificate administration within the authenticated service agent."""
+    mode = os.getenv("RADIUS_CERT_RESTART_MODE", "signal")
+    if mode not in {"signal", "command"}:
+        raise ValueError("RADIUS_CERT_RESTART_MODE must be signal or command")
+    default_command = "kill -USR1 1" if mode == "signal" else ""
     app.config.update(
         RADIUS_CERT_DIR=configured_path("RADIUS_CERT_DIR", "/etc/raddb/certs"),
         RADIUS_CERT_MANAGEMENT=os.getenv("RADIUS_CERT_MANAGEMENT", "false") == "true",
         RADIUS_CERT_KEY_PASSWORD=os.getenv("RADIUS_CERT_KEY_PASSWORD", "whatever"),
-        RADIUS_CERT_RESTART=os.getenv("RADIUS_CERT_RESTART_COMMAND", "kill -USR1 1").split(),
+        RADIUS_CERT_RESTART_MODE=mode,
+        RADIUS_CERT_RESTART=os.getenv("RADIUS_CERT_RESTART_COMMAND", default_command).split(),
     )
     app.add_url_rule("/certificates", view_func=_status, methods=["GET"])
     app.add_url_rule("/certificates", view_func=_operate, methods=["POST"])

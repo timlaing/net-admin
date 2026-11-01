@@ -18,7 +18,7 @@
 {{ form.submit(class='btn btn-primary mt-3') }} <a class="btn btn-outline-secondary mt-3" href="{{ url_for('web.dhcp_index') }}">Cancel</a>
 </div></div>
 <div data-subnet-controls hidden>
-<div class="d-flex justify-content-end"><span class="status" data-draft-status role="status">No pending changes</span></div>
+<div class="d-flex justify-content-end"><output class="status" data-draft-status>No pending changes</output></div>
 <section class="card mt-3"><div class="card-body"><div class="section-heading"><h2 class="h4 mb-0">Allocation pools <span class="status" data-pool-count></span></h2><button type="button" class="btn btn-outline-primary" data-add-pool>Add pool</button></div><p class="form-text">Addresses available for automatic allocation. Pools must stay within this subnet and must not overlap.</p><div data-pool-rows></div><p data-pools-empty class="form-text" hidden>No pools. This subnet will not allocate addresses dynamically.</p></div></section>
 <section class="card mt-4"><div class="card-body"><div class="section-heading"><h2 class="h4 mb-0">DHCP options <span class="status" data-option-count></span></h2><button type="button" class="btn btn-outline-primary" data-add-option>Add option</button></div><p class="form-text">Settings supplied to devices on this subnet.</p><div data-option-rows></div><p data-options-empty class="form-text" hidden>No subnet options. Inherited defaults remain in effect.</p><p class="form-text mt-3">Removing a subnet option restores inherited defaults, if configured.</p></div></section>
 <p class="text-danger mt-3" role="alert" data-draft-error></p>

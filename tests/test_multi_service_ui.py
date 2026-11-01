@@ -200,7 +200,8 @@ def test_structured_subnet_editor_keeps_fallback_and_supports_clearing(tmp_path)
     page = client.get(path)
     assert "data-subnet-editor" in page.text
     assert 'type="module"' in page.text
-    assert 'name="ranges"' in page.text and 'name="options"' in page.text
+    assert 'name="ranges"' in page.text
+    assert 'name="options"' in page.text
     assert "<sample>" not in page.text
     response = client.post(path, data={"network": "192.0.2.0", "ranges": "", "options": ""})
     assert response.status_code == 302

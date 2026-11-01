@@ -137,7 +137,16 @@ Agent settings:
 | `RADIUS_CERT_DIR` | `/etc/raddb/certs` | Shared service certificate directory. |
 | `RADIUS_CERT_MANAGEMENT` | `false` | Enable mutations; the provided Compose files set this to true. |
 | `RADIUS_CERT_KEY_PASSWORD` | packaged bootstrap password | Password for existing CA keys and generated server keys; must match the EAP private-key password. Set through deployment secrets. |
+| `RADIUS_CERT_RESTART_MODE` | `signal` | Use the packaged wrapper, or explicitly choose `command` for an existing acknowledged restart helper. |
 | `RADIUS_CERT_RESTART_COMMAND` | `kill -USR1 1` | Signal the supported service wrapper. The agent waits for an acknowledgement before reporting success. |
+
+For deployments with a restricted host restart service and no shared PID namespace,
+set `RADIUS_CERT_RESTART_MODE=command` and explicitly set
+`RADIUS_CERT_RESTART_COMMAND` to the existing fixed helper. It must wait for a full
+RADIUS restart and a successful health check before returning zero. Nonzero status
+or timeout triggers rollback and another helper call to activate the restored files.
+Do not use a fire-and-forget signal command in this mode. This preserves existing
+socket-based integrations without giving the agent access to the Docker socket.
 
 Keep the native EAP configuration on the packaged `server.pem` and `ca.pem` paths.
 Custom configurations must be mounted into the agent too, so its `radiusd -XC`
