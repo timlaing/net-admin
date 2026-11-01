@@ -55,6 +55,7 @@ def test_multiple_dhcp_subnets_and_ranges_update_independently(tmp_path):
     page = client.get("/dhcp")
     assert page.status_code == 200
     assert 'id="subnets"' in page.text
+    assert 'class="btn btn-sm btn-outline-primary" aria-label="Edit subnet 192.0.2.0"' in page.text
     page = client.get("/dhcp/subnets/192.0.2.0")
     assert "192.0.2.10-192.0.2.20" in page.text
     assert "192.0.2.30-192.0.2.40" in page.text
@@ -179,6 +180,31 @@ def test_subnet_detail_validates_and_blocks_read_only_writes(tmp_path):
     assert client.post(path, data=data).status_code == 403
     assert len(changes) == 1
     assert client.get("/dhcp/subnets/203.0.113.0").status_code == 404
+
+
+def test_structured_subnet_editor_keeps_fallback_and_supports_clearing(tmp_path):
+    app, client = admin_client(tmp_path)
+    changes = []
+    subnet = {
+        "network": "192.0.2.0",
+        "netmask": "255.255.255.0",
+        "ranges": [["192.0.2.10", "192.0.2.20"]],
+        "options": {"domain-name": '"example.net"', "custom": '"<sample>"'},
+    }
+    app.extensions["netadmin_dhcp"] = SimpleNamespace(
+        read_only=lambda: False,
+        get=lambda path: [subnet],
+        post=lambda path, payload: changes.append((path, payload)),
+    )
+    path = "/dhcp/subnets/192.0.2.0"
+    page = client.get(path)
+    assert "data-subnet-editor" in page.text
+    assert 'type="module"' in page.text
+    assert 'name="ranges"' in page.text and 'name="options"' in page.text
+    assert "<sample>" not in page.text
+    response = client.post(path, data={"network": "192.0.2.0", "ranges": "", "options": ""})
+    assert response.status_code == 302
+    assert changes == [("configuration", {"network": "192.0.2.0", "ranges": [], "options": {}})]
 
 
 def test_read_only_radius_hides_all_write_controls(tmp_path):

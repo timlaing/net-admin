@@ -37,7 +37,9 @@ jobs:
       - name: pylint
         run: .venv/bin/python -m pylint netadmin
       - name: UI behavior checks
-        run: node Tools/test_ui.mjs
+        run: |
+          node Tools/test_ui.mjs
+          node Tools/test_subnet_ui.mjs
 
   tests:
     name: Python ${{ matrix.python }}

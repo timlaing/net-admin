@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Replace subnet edit links with buttons and add a structured pool and DHCP option editor, with individual Add/Remove controls, Undo and a review step before applying changes. Common options use friendly names; custom options and the text editor fallback remain available.
+
 ## 0.6.4
 
 - Sort table columns in ascending or descending order, with keyboard controls, numeric ordering and sort indicators. Sorting works with search and pagination.
