@@ -12,6 +12,7 @@ from flask import Blueprint, current_app, flash, redirect, render_template, requ
 from netadmin.auth import admin_required, current_identity, extension
 from netadmin.config import Settings
 from netadmin.connections import (
+    BOOLEAN_FIELDS,
     CONNECTION_FIELDS,
     SECRET_FIELDS,
     SECTIONS,
@@ -50,9 +51,7 @@ def settings_page() -> Any:
         for field, value in active.items()
     }
     data = {
-        field: value == "true"
-        if (field.endswith("_enabled") or field == "dns_use_agent")
-        else value
+        field: value == "true" if field in BOOLEAN_FIELDS else value
         for field, value in previous.items()
         if field not in SECRET_FIELDS
     }

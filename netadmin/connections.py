@@ -21,6 +21,7 @@ from netadmin.services.agents import AgentClient
 from netadmin.services.dns import AgentDnsService, BindService
 
 SECRET_FIELDS = ("dns_tsig_secret", "radius_secret", "agent_token")
+BOOLEAN_FIELDS = ("dns_enabled", "dhcp_enabled", "radius_enabled", "dns_use_agent")
 PATH_FIELDS = ("dns_config_path", "agent_ca", "agent_cert", "agent_key")
 SECTIONS = {
     "DNS": ("dns_enabled", "dns_use_agent", "dns_agent_url"),
@@ -71,7 +72,7 @@ def settings_with_connections(settings: Settings, values: dict[str, str]) -> Set
     """Replace only connection fields, keeping accounts and sessions intact."""
     changes: dict[str, Any] = dict(values)
     for field in CONNECTION_FIELDS:
-        if field.endswith("_enabled") or field == "dns_use_agent":
+        if field in BOOLEAN_FIELDS:
             changes[field] = values[field] == "true"
         elif field in PATH_FIELDS:
             changes[field] = Path(values[field]) if values[field] else None
@@ -187,12 +188,9 @@ class ConnectionForm(FlaskForm):  # type: ignore[misc]
 def configuration_errors(values: dict[str, str]) -> dict[str, str]:
     """Validate enabled-service prerequisites before accepting a configuration."""
     errors = {}
-    for service in ("dns", "dhcp", "radius"):
-        field = f"{service}_enabled"
+    for field in BOOLEAN_FIELDS:
         if values[field] not in {"true", "false"}:
             errors[field] = "Choose true or false."
-    if values["dns_use_agent"] not in {"true", "false"}:
-        errors["dns_use_agent"] = "Choose true or false."
     if values["dhcp_backend"] not in {"isc", "kea"}:
         errors["dhcp_backend"] = "Choose ISC DHCPD or Kea."
     for field in SECRET_FIELDS:
