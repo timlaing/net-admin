@@ -66,7 +66,8 @@ def _file_records(zone: str) -> Any:
         if directory is None:
             raise ValueError("Relative zone file requires an explicit Bind directory")
         filename = Path(directory[1]) / filename
-    result = subprocess.run(  # noqa: S603 - configured Bind file, fixed executable, no shell.
+    # Configured Bind file, fixed executable, no shell.
+    result = subprocess.run(  # noqa: S603
         ["/usr/bin/named-compilezone", "-j", "-q", "-D", "-o", "-", zone, str(filename)],
         check=True,
         capture_output=True,

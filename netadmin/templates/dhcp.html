@@ -2,7 +2,7 @@
 {% from 'ui.html' import field, icon, table_tools, empty %}
 {% block title %}DHCP · NetAdmin{% endblock %}
 {% block content %}
-{% if read_only %}<div class="alert alert-info" role="status">This agent is read-only. You can browse configuration, but changes are disabled.</div>{% endif %}
+{% if read_only %}<output class="alert alert-info d-block">This agent is read-only. You can browse configuration, but changes are disabled.</output>{% endif %}
 <div class="page-heading"><div><p class="eyebrow">ADDRESSES & RESERVATIONS</p><h1>DHCP <span class="status">{{ backend|upper }}</span></h1><p>Manage reserved addresses and view leases from your DHCP server.</p></div><span class="service-glyph">{{ icon('dhcp') }}</span></div>
 <details class="card advanced-group" {% if form.errors %}open{% endif %}><summary>Add or update reservation</summary><div class="card-body"><form method="post"><fieldset class="row g-3" {% if read_only %}disabled{% endif %}>{{ form.hidden_tag() }}<div class="col-md-4">{{ field(form.name) }}</div><div class="col-md-4">{{ field(form.mac) }}</div><div class="col-md-4">{{ field(form.address) }}</div><div class="col-12">{{ form.submit(class='btn btn-primary') }}</div></fieldset></form></div></details>
 <div class="section-heading"><h2>Reservations <span class="status">{{ reservations|length }}</span></h2></div>

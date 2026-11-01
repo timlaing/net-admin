@@ -20,6 +20,10 @@ from netadmin.config import Settings
 from netadmin.services.agents import AgentClient
 from netadmin.services.dns import AgentDnsService, BindService
 
+AGENT_SECURITY = "Agent security"
+DIRECT_BIND = "Direct Bind"
+NOT_CONFIGURED = "Not configured"
+
 SECRET_FIELDS = ("dns_tsig_secret", "radius_secret", "agent_token")
 BOOLEAN_FIELDS = ("dns_enabled", "dhcp_enabled", "radius_enabled", "dns_use_agent")
 PATH_FIELDS = ("dns_config_path", "agent_ca", "agent_cert", "agent_key")
@@ -27,8 +31,8 @@ SECTIONS = {
     "DNS": ("dns_enabled", "dns_use_agent", "dns_agent_url"),
     "DHCP": ("dhcp_enabled", "dhcp_agent_url", "dhcp_backend"),
     "RADIUS": ("radius_enabled", "radius_agent_url", "radius_host", "radius_secret"),
-    "Agent security": ("agent_token", "agent_ca", "agent_cert", "agent_key"),
-    "Direct Bind": (
+    AGENT_SECURITY: ("agent_token", "agent_ca", "agent_cert", "agent_key"),
+    DIRECT_BIND: (
         "dns_server",
         "dns_zones",
         "dns_tsig_secret",
@@ -293,13 +297,13 @@ def agent_status(settings: Settings, service: str) -> ConnectionResult:
         return ConnectionResult("Disabled", "Enable this service in Settings when you need it.")
     if service == "dns" and not settings.dns_use_agent:
         return ConnectionResult(
-            "Direct Bind", "DNS agent is off. Test direct Bind access in Settings."
+            DIRECT_BIND, "DNS agent is off. Test direct Bind access in Settings."
         )
     values = connection_values(settings)
-    fields = {f"{service}_agent_url", *SECTIONS["Agent security"]}
+    fields = {f"{service}_agent_url", *SECTIONS[AGENT_SECURITY]}
     errors = configuration_errors(values)
     if relevant := [message for field, message in errors.items() if field in fields]:
-        return ConnectionResult("Not configured", relevant[0])
+        return ConnectionResult(NOT_CONFIGURED, relevant[0])
     client = AgentClient(
         getattr(settings, f"{service}_agent_url"),
         settings.agent_token,
@@ -333,12 +337,12 @@ def test_connection(settings: Settings, service: str) -> ConnectionResult:
     errors = configuration_errors(values)
     fields = set(SECTIONS[service.upper()])
     if service == "dns" and not settings.dns_use_agent:
-        fields.update(SECTIONS["Direct Bind"])
+        fields.update(SECTIONS[DIRECT_BIND])
     else:
-        fields.update(SECTIONS["Agent security"])
+        fields.update(SECTIONS[AGENT_SECURITY])
     relevant = [message for field, message in errors.items() if field in fields]
     if relevant:
-        return ConnectionResult("Not configured", relevant[0])
+        return ConnectionResult(NOT_CONFIGURED, relevant[0])
     try:
         return _probe(settings, service)
     except (
@@ -383,7 +387,7 @@ def _probe(settings: Settings, service: str) -> ConnectionResult:
         zones = bind.zones()
         if not zones:
             return ConnectionResult(
-                "Not configured", "No authoritative zones found. Set your zone names."
+                NOT_CONFIGURED, "No authoritative zones found. Set your zone names."
             )
         records = bind.records(zones[0].name)
         return ConnectionResult(

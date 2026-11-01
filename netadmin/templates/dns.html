@@ -2,7 +2,7 @@
 {% from 'ui.html' import field, icon, table_tools, empty %}
 {% block title %}DNS · NetAdmin{% endblock %}
 {% block content %}
-{% if read_only %}<div class="alert alert-info" role="status">This agent is read-only. You can browse configuration, but changes are disabled.</div>{% endif %}
+{% if read_only %}<output class="alert alert-info d-block">This agent is read-only. You can browse configuration, but changes are disabled.</output>{% endif %}
 <div class="page-heading"><div><p class="eyebrow">NAMES & RECORDS</p><h1>DNS</h1><p>Read authoritative zones and manage records on your Bind server.</p></div><span class="service-glyph">{{ icon('dns') }}</span></div>
 <section class="card mb-4"><div class="card-body"><form class="row g-3 align-items-end" method="get"><div class="col-md"><label class="form-label" for="zone">Authoritative zone</label><select class="form-select" id="zone" name="zone"><option value="">Select a zone</option>{% for item in zones %}<option value="{{ item.name }}" {% if item.name == zone %}selected{% endif %}>{{ item.name }}{% if item.dynamic %} · dynamic{% endif %}</option>{% endfor %}</select></div><div class="col-md-auto"><button class="btn btn-primary">Load live zone</button></div></form></div></section>
 {% if zone_error %}<div class="alert alert-warning" role="alert">{{ zone_error }}{% if zone_management and not snapshot %}<p class="mt-2 mb-0"><a class="btn btn-outline-secondary" href="{{ url_for('web.dns_index', zone=zone, source='file') }}">Read local zone snapshot</a></p><p class="mb-0">A snapshot reads the agent's mounted zone file and journal. It may lag Bind's in-memory state and does not change the transfer policy. Requires DNS agent 0.6.1 or newer.</p>{% endif %}</div>{% endif %}

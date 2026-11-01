@@ -37,7 +37,7 @@ from netadmin.forms import (
 from netadmin.ingress import configure_ingress, session_cookie_secure
 from netadmin.presentation import display_time
 from netadmin.services.agents import AgentClient
-from netadmin.services.dns import AgentDnsService
+from netadmin.services.dns import AgentDnsService, BindService, DnsRecord
 from netadmin.settings_web import connection_web
 from netadmin.store import Store
 
@@ -135,25 +135,15 @@ def dashboard() -> Any:
 def dns_index() -> Any:
     """Show records for a selected authoritative zone."""
     zone = request.args.get("zone", "")
-    bind = extension("netadmin_dns")
+    bind = cast(BindService, extension("netadmin_dns"))
     zones = bind.zones()
-    records = []
+    records: list[DnsRecord] = []
     zone_error = ""
     snapshot = request.args.get("source") == "file" and isinstance(bind, AgentDnsService)
-    if zone:
-        if zone not in {item.name for item in zones}:
-            zone_error = "Select a configured authoritative zone."
-        else:
-            try:
-                records = bind.snapshot_records(zone) if snapshot else bind.records(zone)
-            except (httpx.HTTPError, dns.exception.DNSException, OSError, ValueError):
-                zone_error = (
-                    "Could not read the zone file and journal. "
-                    "Check the DNS agent's file mounts and permissions."
-                    if snapshot
-                    else "Could not load live records. Bind must allow authenticated zone "
-                    "transfers (AXFR) for this connection. Check its transfer policy and TSIG key."
-                )
+    if zone and zone not in {item.name for item in zones}:
+        zone_error = "Select a configured authoritative zone."
+    elif zone:
+        records, zone_error = _load_zone_records(bind, zone, snapshot)
     return render_template(
         "dns.html",
         zones=zones,
@@ -168,6 +158,23 @@ def dns_index() -> Any:
         snapshot=snapshot,
         read_only=bind.client.read_only() if isinstance(bind, AgentDnsService) else False,
     )
+
+
+def _load_zone_records(bind: BindService, zone: str, snapshot: bool) -> tuple[list[DnsRecord], str]:
+    """Keep record read failures on the DNS page with an actionable explanation."""
+    try:
+        if snapshot and isinstance(bind, AgentDnsService):
+            return bind.snapshot_records(zone), ""
+        return bind.records(zone), ""
+    except (httpx.HTTPError, dns.exception.DNSException, OSError, ValueError):
+        message = (
+            "Could not read the zone file and journal. "
+            "Check the DNS agent's file mounts and permissions."
+            if snapshot
+            else "Could not load live records. Bind must allow authenticated zone "
+            "transfers (AXFR) for this connection. Check its transfer policy and TSIG key."
+        )
+        return [], message
 
 
 @web.route("/dns/zones", methods=["POST"])

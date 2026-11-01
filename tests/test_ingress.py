@@ -269,7 +269,8 @@ def test_ingress_local_login_and_csrf_follow_frontend_scheme(tmp_path, monkeypat
     cookie = page.headers["Set-Cookie"]
     assert ("; Secure;" in cookie) == (scheme == "https")
     assert f"Path={PREFIX}" in cookie
-    assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
+    assert "HttpOnly" in cookie
+    assert "SameSite=Strict" in cookie
     token = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', page.text).group(1)
     action_headers = {**headers, "Referer": base_url + "/login"}
     assert client.post("/login", base_url=base_url, headers=action_headers).status_code == 400
@@ -289,7 +290,8 @@ def test_ingress_local_login_and_csrf_follow_frontend_scheme(tmp_path, monkeypat
     )
     assert ("; Secure;" in cookie) == (scheme == "https")
     assert f"Path={PREFIX}" in cookie
-    assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
+    assert "HttpOnly" in cookie
+    assert "SameSite=Strict" in cookie
     assert client.get("/", base_url=base_url, headers=headers).status_code == 200
     assert client.get("/", base_url=f"{scheme}://localhost").status_code == 302
 

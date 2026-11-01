@@ -32,6 +32,7 @@
           message.textContent = result.message;
           checked.textContent = `Checked ${new Date(result.checked_at * 1000).toLocaleTimeString()}`;
         } catch (_) {
+          // Show a safe failure status without exposing backend exception details.
           badge.textContent = 'Unavailable';
           badge.classList.remove('status-success');
           badge.classList.add('status-warning');
@@ -39,8 +40,8 @@
           checked.textContent = 'Last check failed';
         }
       };
-      update();
-      window.setInterval(update, 30000);
+      void update();
+      window.setInterval(() => { void update(); }, 30000);
     });
     const dnsMode = document.getElementById('dns_use_agent');
     if (dnsMode) {
