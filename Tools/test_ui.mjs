@@ -37,7 +37,7 @@ const document = {
 };
 vm.runInNewContext(readFileSync(new URL('../netadmin/static/app.js', import.meta.url), 'utf8'), {
   document, window: { matchMedia: () => ({ matches: false, addEventListener() {} }), setInterval(callback, delay) { assert.equal(delay, 30000); polling.push(callback); } },
-  AbortSignal, fetch: async (url, options) => { fetchCalls++; assert.equal(url, '/connections/status/dhcp'); assert.equal(options.credentials, 'same-origin'); if (!connected) throw new Error('private backend data'); return { ok: true, redirected: false, json: async () => ({ state: 'Connected', message: 'Agent authenticated', checked_at: 1 }) }; },
+  AbortSignal, fetch: async (url, options) => { fetchCalls++; assert.equal(url, '/connections/status/dhcp'); assert.equal(options.credentials, 'same-origin'); if (connected === 'timeout') throw Object.assign(new Error('private backend data'), { name: 'TimeoutError' }); if (!connected) throw new Error('private backend data'); return { ok: true, redirected: false, json: async () => ({ state: 'Connected', message: 'Agent authenticated', checked_at: 1 }) }; },
   localStorage: { getItem: () => null }, ResizeObserver: class { observe() {} },
 });
 assert.equal(leases.visible().length, 25);
@@ -80,6 +80,10 @@ assert.equal(status.badge.textContent, 'Unavailable');
 assert.equal(status.classes.has('status-success'), false);
 assert.equal(status.classes.has('status-warning'), true);
 assert.equal(status.message.textContent.includes('private backend data'), false);
+connected = 'timeout';
+polling[0]();
+await new Promise(setImmediate);
+assert.equal(status.message.textContent.includes('timed out'), true);
 document.hidden = true;
 const before = fetchCalls;
 await polling[0]();
