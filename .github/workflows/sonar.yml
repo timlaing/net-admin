@@ -41,6 +41,16 @@ jobs:
         run: |
           .venv/bin/python -m pytest -q
           .venv/bin/python -m coverage xml
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Run UI tests and generate JavaScript coverage
+        run: >-
+          npm exec --yes --package=c8@12.0.0 -- c8
+          --reporter=lcov --reporter=text --reports-dir=coverage-js
+          --include='netadmin/static/*.js'
+          node --input-type=module -e
+          "await import('./Tools/test_ui.mjs'); await import('./Tools/test_subnet_ui.mjs');"
       - name: Analyze and enforce quality gate
         uses: SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304 # v8
         env:

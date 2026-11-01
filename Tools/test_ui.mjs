@@ -58,7 +58,7 @@ vm.runInNewContext(readFileSync(new URL('../netadmin/static/app.js', import.meta
   document, window: { matchMedia: () => ({ matches: false, addEventListener() {} }), setInterval(callback, delay) { assert.equal(delay, 30000); polling.push(callback); } },
   Event, AbortSignal, fetch: async (url, options) => { fetchCalls++; assert.equal(url, '/connections/status/dhcp'); assert.equal(options.credentials, 'same-origin'); if (connected === 'timeout') throw Object.assign(new Error('private backend data'), { name: 'TimeoutError' }); if (!connected) throw new Error('private backend data'); return { ok: true, redirected: false, json: async () => ({ state: 'Connected', message: 'Agent authenticated', checked_at: 1, access_mode: accessMode }) }; },
   localStorage: { getItem: () => null }, ResizeObserver: class { observe() {} },
-});
+}, { filename: new URL('../netadmin/static/app.js', import.meta.url).pathname });
 sortable.next.fire('click');
 headers[0].child.fire('click');
 assert.equal(sortable.visible()[0].cells[0].textContent, '192.0.2.1');

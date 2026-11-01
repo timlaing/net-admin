@@ -1,10 +1,6 @@
 // Validate the production editor's draft conversion, validation and review content.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-const source = readFileSync(new URL('../netadmin/static/subnet-editor.js', import.meta.url), 'utf8');
-const { parseDraft, serializeDraft, validateDraft, draftChanges } = await import(
-  `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
-);
+import { parseDraft, serializeDraft, validateDraft, draftChanges } from '../netadmin/static/subnet-editor.js';
 const network = '192.0.2.0', mask = '255.255.255.0';
 const original = parseDraft('192.0.2.10-192.0.2.20\n192.0.2.40-192.0.2.50',
   'domain-name="example.net"\nrouters=192.0.2.1\ncustom-option="a=b"', 'isc');

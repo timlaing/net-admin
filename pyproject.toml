@@ -16,7 +16,7 @@ dependencies = [
   "gunicorn>=25.1,<27",
   "httpx>=0.28,<1",
   "argon2-cffi>=23.1,<26",
-  "cryptography>=46,<50",
+  "cryptography>=50,<51",
 ]
 
 [project.optional-dependencies]

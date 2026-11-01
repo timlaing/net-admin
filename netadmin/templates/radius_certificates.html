@@ -21,6 +21,7 @@
 <output class="alert alert-warning d-block">{{ certificates.reason }}</output>
 {% else %}
 {% if read_only %}<output class="alert alert-info d-block">This agent is read-only. Certificate changes are disabled.</output>{% elif not certificates.can_manage %}<output class="alert alert-info d-block">{{ certificates.reason }}</output>{% endif %}
+{% if certificates.ca.status == 'Expired' %}<output class="alert alert-warning d-block">The CA has expired. Renew the CA first, then renew the server certificate. Distribute the renewed CA to devices so they can trust it.</output>{% endif %}
 <div class="settings-grid">
 {% for kind, title in [('ca', 'Certificate authority'), ('server', 'Server certificate')] %}{% set cert = certificates[kind] %}
 <section class="card"><div class="card-body"><div class="section-heading"><h2 class="h4 mb-0">{{ title }}</h2><span class="status {{ 'status-success' if cert.status == 'Valid' else 'status-warning' }}">{{ cert.status }}</span></div>
