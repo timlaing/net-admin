@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
 
 - Add RADIUS certificate inventory, public certificate/CRL downloads, CA and server renewal, server revocation with replacement, and explicit CA retirement/replacement. Certificate transactions validate and restart RADIUS with rollback on failure; private keys remain on the agent. Upgrade the RADIUS service and agent and mount their shared certificate volume before enabling management.
 
