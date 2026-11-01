@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Sort table columns in ascending or descending order, with keyboard controls, numeric ordering and sort indicators. Sorting works with search and pagination.
+
 ## 0.6.3
 
 - Display agent access as a badge beside connection status on the overview, replacing the separate Access line.

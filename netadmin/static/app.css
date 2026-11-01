@@ -101,3 +101,9 @@ summary { cursor:pointer; }summary:focus-visible { outline-offset:-4px; }details
   .page-heading>.service-glyph { position:absolute; top:0; right:0; width:36px; height:36px; }
   .table td .btn,.btn-sm,.theme-control .form-select { min-height:44px; }
 }
+
+.table-sort { display:inline-flex; align-items:center; gap:8px; min-height:44px; padding:0; border:0; background:transparent; color:inherit; font:inherit; text-align:left; cursor:pointer; }
+.table-sort:hover { color:var(--accent); }
+.table-sort:focus-visible { outline:2px solid var(--accent); outline-offset:4px; border-radius:3px; }
+.sort-indicator { color:var(--muted); }
+[aria-sort="ascending"] .sort-indicator,[aria-sort="descending"] .sort-indicator { color:var(--accent); }
