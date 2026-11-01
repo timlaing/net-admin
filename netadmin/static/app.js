@@ -18,15 +18,17 @@
       const badge = card.querySelector('[data-connection-state]');
       const message = card.querySelector('[data-connection-message]');
       const checked = card.querySelector('[data-connection-checked]');
+      const access = card.querySelector('[data-connection-access]');
       const update = async () => {
         if (document.hidden) return;
         try {
           const response = await fetch(card.dataset.connectionStatusUrl, {
-            credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(6000),
+            credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(8000),
           });
           if (!response.ok || response.redirected) throw new Error('Status unavailable');
           const result = await response.json();
           badge.textContent = result.state;
+          if (access) access.textContent = result.state === 'Direct Bind' ? 'Direct Bind' : (result.access_mode || 'Unknown');
           badge.classList.toggle('status-success', result.state === 'Connected');
           badge.classList.toggle('status-warning', result.state !== 'Connected');
           message.textContent = result.message;
@@ -34,6 +36,7 @@
         } catch (error) {
           const timedOut = error.name === 'TimeoutError' || error.name === 'AbortError';
           badge.textContent = 'Unavailable';
+          if (access) access.textContent = 'Unknown';
           badge.classList.remove('status-success');
           badge.classList.add('status-warning');
           message.textContent = timedOut ? 'Connection check timed out. Open Settings for diagnostics.' : 'Could not check this connection. Open Settings for diagnostics.';

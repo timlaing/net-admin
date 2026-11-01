@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+{% from 'ui.html' import field %}
+{% block title %}Subnet {{ subnet.network }} · NetAdmin{% endblock %}
+{% block content %}
+<a href="{{ url_for('web.dhcp_index') }}">← DHCP subnets</a>
+<div class="page-heading"><div><p class="eyebrow">{{ backend|upper }} SUBNET</p><h1>{{ subnet.network }}</h1><p>{{ 'View configuration' if read_only else 'Edit allocation pools and DHCP options' }}</p></div></div>
+{% if read_only %}<output class="alert alert-info d-block">This agent is read-only.</output>{% endif %}
+<section class="card mb-4"><div class="card-body"><h2 class="h4">Subnet identity</h2><dl><dt>Network</dt><dd>{{ subnet.network }}</dd><dt>Netmask</dt><dd>{{ subnet.netmask }}</dd><dt>Source</dt><dd>{{ subnet.source or 'Not reported' }}</dd>{% if subnet.id is defined %}<dt>Kea subnet ID</dt><dd>{{ subnet.id }}</dd>{% endif %}</dl></div></section>
+{% if error %}<div class="alert alert-danger" role="alert">{{ error }} No changes were applied.</div>{% endif %}
+{% if read_only %}
+<section class="card mb-4"><div class="card-body"><h2 class="h4">Allocation pools</h2>{% for start, end in subnet.ranges %}<p><code>{{ start }} – {{ end }}</code></p>{% else %}<p>No allocation pools.</p>{% endfor %}<h2 class="h4">DHCP options</h2><dl>{% for name, value in subnet.options.items() %}<dt>{{ name }}</dt><dd>{{ value }}</dd>{% else %}<dd>No subnet options.</dd>{% endfor %}</dl></div></section>
+{% else %}
+<form method="post" class="card mb-4"><div class="card-body">{{ form.hidden_tag() }}<input type="hidden" name="network" value="{{ subnet.network }}"><h2 class="h4">Allocation pools</h2><p>Use one start-end pair per line. Pools must stay within this subnet and must not overlap. Clearing this field removes every pool.</p>{{ field(form.ranges) }}<h2 class="h4">DHCP options</h2><p>Use one name=value per line. Common options include routers, domain-name-servers, domain-name, and ntp-servers. Use the syntax expected by {{ backend|upper }}; quote text values for ISC. Clearing this field removes subnet options; inherited options remain in effect.</p>{{ field(form.options) }}<p class="form-text">The agent validates the complete candidate configuration before applying it. Other subnet directives remain unchanged.</p>{{ form.submit(class='btn btn-primary') }} <a class="btn btn-outline-secondary" href="{{ url_for('web.dhcp_index') }}">Cancel</a></div></form>
+<form method="post" action="{{ url_for('web.dhcp_subnet_remove') }}" data-confirm="Remove subnet {{ subnet.network }} and its allocation pools? Clients may lose DHCP service. Lease history is retained."><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="network" value="{{ subnet.network }}"><button class="btn btn-outline-danger">Remove subnet</button></form>
+{% endif %}
+{% endblock %}

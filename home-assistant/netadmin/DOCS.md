@@ -210,7 +210,9 @@ the bundled container test verifies authenticated updates in the supplied image.
 
 Set `NETADMIN_AGENT_READ_ONLY=true` on each service agent for inventory-only access.
 Agents reject write requests even if a caller bypasses the interface. NetAdmin
-reads `/capabilities` and disables service mutation forms. Keep configuration
+reads `/capabilities` and hides service mutation forms and action buttons.
+The overview displays **Read-only**, **Writable** or **Unknown** separately from
+connection status. Older agents without capability reporting display **Unknown**. Keep configuration
 mounts read-only and omit reload/PID access for these deployments. Older agents
 without the capability endpoint retain their existing behavior.
 
@@ -239,3 +241,17 @@ short HTTP timeouts with a 30-second server-side cache. A connected DNS agent do
 not imply that Bind allows AXFR, and a connected RADIUS agent does not verify a
 RADIUS user's login. Use the Settings diagnostics to check those service operations.
 Direct Bind mode is labelled separately because no DNS agent is configured.
+
+### Subnet table and editor (0.6.2)
+
+The DHCP page lists subnets in a searchable, paginated table. Select **Edit subnet**
+to change its allocation pools and DHCP options, or **View subnet** for a read-only
+agent. The detail page shows the network, netmask, configuration source and Kea
+subnet ID when reported. Subnet identity cannot be changed through this editor.
+
+Enter pools as `start-end`, one per line, and options as `name=value`, one per
+line, using the backend's native option syntax. ISC text values need quotes;
+upgrade the DHCP agent to 0.6.2 so those quotes are preserved when reading options.
+Blank fields remove subnet pools or options, while inherited options and other
+subnet directives remain unchanged. Invalid input stays on the page for correction;
+the agent still validates the complete candidate before installation and reload.

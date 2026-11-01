@@ -99,7 +99,7 @@ def subnets(text: str) -> list[dict[str, Any]]:
         _, body = _block(text, match.start())
         ranges = [list(item) for item in re.findall(r"\brange\s+([0-9.]+)\s+([0-9.]+)\s*;", body)]
         options = {
-            name: value.strip().strip('"')
+            name: value.strip()
             for name, value in re.findall(r"(?m)^[ \t]*option\s+([A-Za-z0-9_-]+)\s++([^;]*);", body)
         }
         result.append(

@@ -125,7 +125,12 @@ def connection_status(service: str) -> Any:
     entry = cache.get(service)
     if entry is None or not 0 <= now - entry["checked_at"] < 30:
         result = agent_status(cast(Settings, extension("netadmin_settings")), service)
-        entry = {"state": result.state, "message": result.message, "checked_at": now}
+        entry = {
+            "state": result.state,
+            "message": result.message,
+            "checked_at": now,
+            "access_mode": result.access_mode,
+        }
         cache[service] = entry
     response = jsonify(entry)
     response.headers["Cache-Control"] = "no-store"

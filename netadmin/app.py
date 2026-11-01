@@ -7,7 +7,7 @@ from typing import Any, cast
 
 import dns.exception
 import httpx  # pylint: disable=wrong-import-order
-from flask import Blueprint, Flask, flash, g, redirect, render_template, request, url_for  # pylint: disable=wrong-import-order
+from flask import Blueprint, Flask, abort, flash, g, redirect, render_template, request, url_for  # pylint: disable=wrong-import-order
 from flask_wtf import CSRFProtect  # pylint: disable=wrong-import-order
 
 from netadmin.auth import (
@@ -40,6 +40,7 @@ from netadmin.services.agents import AgentClient
 from netadmin.services.dns import AgentDnsService, BindService, DnsRecord
 from netadmin.settings_web import connection_web
 from netadmin.store import Store
+from netadmin.subnet_editor import subnet_payload
 
 web = Blueprint("web", __name__)
 
@@ -296,6 +297,49 @@ def dhcp_delete() -> Any:
     cast(AgentClient, extension("netadmin_dhcp")).post("reservations/delete", {"name": name})
     _audit("dhcp.reservation.delete", name)
     return redirect(url_for(DHCP_INDEX))
+
+
+@web.route("/dhcp/subnets/<network>", methods=["GET", "POST"])
+@admin_required
+def dhcp_subnet_edit(network: str) -> Any:
+    """Review or edit one subnet without rendering every subnet's forms."""
+    client = cast(AgentClient, extension("netadmin_dhcp"))
+    subnet = next(
+        (item for item in client.get("configuration") if item["network"] == network), None
+    )
+    if subnet is None:
+        abort(404)
+    read_only = client.read_only()
+    if request.method == "POST" and read_only:
+        abort(403)
+    form = DhcpSubnetForm()
+    error = ""
+    if request.method == "GET":
+        form.network.data = network
+        form.ranges.data = "\n".join(f"{start}-{end}" for start, end in subnet["ranges"])
+        form.options.data = "\n".join(
+            f"{name}={value}" for name, value in subnet["options"].items()
+        )
+    if form.validate_on_submit():
+        try:
+            payload = subnet_payload(
+                network, subnet["netmask"], form.ranges.data or "", form.options.data or ""
+            )
+        except ValueError as failure:
+            error = str(failure)
+        else:
+            client.post("configuration", payload)
+            _audit("dhcp.subnet.update", network)
+            flash("DHCP subnet configuration updated.", "success")
+            return redirect(url_for("web.dhcp_subnet_edit", network=network))
+    return render_template(
+        "subnet.html",
+        subnet=subnet,
+        form=form,
+        read_only=read_only,
+        error=error,
+        backend=_settings().dhcp_backend,
+    ), 422 if error or form.errors else 200
 
 
 @web.route("/dhcp/configuration", methods=["POST"])

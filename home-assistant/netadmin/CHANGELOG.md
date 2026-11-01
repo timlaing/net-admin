@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.2
+
+- Show agent access mode (Read-only, Writable or Unknown) alongside automatically refreshed connection status. Older agents without capability reporting remain Unknown.
+- Hide write forms, action columns and mutation buttons on read-only DNS, DHCP and RADIUS service pages while retaining inventory and snapshot access.
+- Replace inline subnet forms with a searchable, paginated table and dedicated subnet view/edit pages showing network identity, source, allocation pools and DHCP options.
+- Validate pool boundaries, ordering and overlaps, reject malformed or duplicate options, and retain entered values after validation errors. Read-only subnet pages reject submitted edits.
+- Preserve quoted ISC DHCP text options when reading and editing subnet configuration. Update the DHCP agent to 0.6.2 for this fix.
+
 ## 0.6.1
 
 - Automatically show DNS/DHCP/RADIUS agent connection status on the overview, refresh every 30 seconds and keep live DNS transfer/RADIUS login diagnostics separate from agent connectivity.

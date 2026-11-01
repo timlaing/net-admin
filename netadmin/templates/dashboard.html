@@ -19,6 +19,7 @@
 {% set key = title|lower %}{% set enabled = service_settings|attr(key ~ '_enabled') %}{% set check = checks.get(key) %}{% set agent_check = agent_checks.get(key) %}
 <article class="service-card" {% if enabled %}data-connection-status-url="{{ url_for('connections.connection_status', service=key) }}"{% endif %}>
   <div class="service-card-top"><span class="service-glyph">{{ icon(key) }}</span><span data-connection-state aria-live="polite" class="status {{ 'status-success' if agent_check and agent_check.state == 'Connected' else 'status-warning' if agent_check else '' }}">{{ agent_check.state if enabled and agent_check else 'Checking…' if enabled else 'Disabled' }}</span></div>
+  {% if enabled %}<p class="last-check">Access: <span data-connection-access>{{ agent_check.access_mode if agent_check and agent_check.access_mode else 'Unknown' }}</span></p>{% endif %}
   <h2>{{ title }}</h2><p>{{ text }}</p>
   <p class="service-endpoint">{{ address if enabled else 'Enable when you need this service.' }}</p>
   <p class="last-check" data-connection-message>{{ agent_check.message if enabled and agent_check else 'Checking agent connectivity…' if enabled else 'No connection attempts' }}</p>

@@ -53,6 +53,20 @@ class AgentClient:
         response.raise_for_status()
         return response.json()
 
+    def access_mode(self) -> str:
+        """Report only explicitly advertised access; legacy agents remain unknown."""
+        try:
+            capabilities = self.get("capabilities", timeout=3)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 404:
+                raise
+            return "Unknown"
+        if not isinstance(capabilities, dict) or not isinstance(
+            capabilities.get("read_only"), bool
+        ):
+            return "Unknown"
+        return "Read-only" if capabilities["read_only"] else "Writable"
+
     def read_only(self) -> bool:
         """Recognize older agents without disabling their existing write API."""
         try:

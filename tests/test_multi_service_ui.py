@@ -54,8 +54,11 @@ def test_multiple_dhcp_subnets_and_ranges_update_independently(tmp_path):
     )
     page = client.get("/dhcp")
     assert page.status_code == 200
+    assert 'id="subnets"' in page.text
+    page = client.get("/dhcp/subnets/192.0.2.0")
     assert "192.0.2.10-192.0.2.20" in page.text
     assert "192.0.2.30-192.0.2.40" in page.text
+    page = client.get("/dhcp/subnets/198.51.100.0")
     assert "198.51.100.10-198.51.100.20" in page.text
     response = client.post(
         "/dhcp/configuration",
@@ -138,4 +141,65 @@ def test_zone_failure_keeps_selection_and_offers_explicit_snapshot(tmp_path, mon
     assert "snapshot-host" in response.text
     assert "not a live zone transfer" in response.text
     assert "This agent is read-only" in response.text
-    assert "<fieldset disabled>" in response.text
+    assert 'method="post"' not in response.text.split("<main", 1)[-1].split("</main>", 1)[0]
+    assert "Add or replace record" not in response.text
+
+
+def test_subnet_detail_validates_and_blocks_read_only_writes(tmp_path):
+    app, client = admin_client(tmp_path)
+    changes = []
+    subnet = {"network": "192.0.2.0", "netmask": "255.255.255.0", "ranges": [], "options": {}}
+    remote = SimpleNamespace(
+        read_only=lambda: False,
+        get=lambda path: [subnet] if path == "configuration" else [],
+        post=lambda path, payload: changes.append((path, payload)),
+    )
+    app.extensions["netadmin_dhcp"] = remote
+    path = "/dhcp/subnets/192.0.2.0"
+    data = {
+        "network": "198.51.100.0",
+        "ranges": "192.0.2.10-192.0.2.20",
+        "options": "routers=192.0.2.1",
+    }
+    assert client.post(path, data=data).status_code == 302
+    assert changes[0][1]["network"] == "192.0.2.0"
+    assert changes[0][1]["options"] == {"routers": "192.0.2.1"}
+    data["options"] = "invalid option"
+    response = client.post(path, data=data)
+    assert response.status_code == 422
+    assert "invalid option" in response.text
+    assert len(changes) == 1
+    remote.read_only = lambda: True
+    page = client.get("/dhcp")
+    assert "Create subnet" not in page.text
+    assert "Add or update reservation" not in page.text
+    page = client.get(path)
+    assert "Remove subnet" not in page.text
+    assert "Update subnet" not in page.text
+    assert client.post(path, data=data).status_code == 403
+    assert len(changes) == 1
+    assert client.get("/dhcp/subnets/203.0.113.0").status_code == 404
+
+
+def test_read_only_radius_hides_all_write_controls(tmp_path):
+    app, client = admin_client(tmp_path)
+    app.extensions["netadmin_radius"] = SimpleNamespace(
+        read_only=lambda: True,
+        get=lambda path: {
+            "users": [{"username": "reader", "source": "netadmin"}],
+            "clients": [{"name": "gateway", "source": "clients.conf", "address": "192.0.2.1"}],
+            "migration": {"count": 1},
+        }[path],
+    )
+    page = client.get("/radius")
+    assert page.status_code == 200
+    assert "gateway" in page.text
+    assert "reader" in page.text
+    for control in (
+        "Add or update",
+        "Migrate users",
+        "Delete client",
+        "Delete user",
+        "data-edit-client",
+    ):
+        assert control not in page.text

@@ -289,6 +289,7 @@ class ConnectionResult:
 
     state: str
     message: str
+    access_mode: str = "Unknown"
 
 
 def agent_status(settings: Settings, service: str) -> ConnectionResult:
@@ -297,7 +298,7 @@ def agent_status(settings: Settings, service: str) -> ConnectionResult:
         return ConnectionResult("Disabled", "Enable this service in Settings when you need it.")
     if service == "dns" and not settings.dns_use_agent:
         return ConnectionResult(
-            DIRECT_BIND, "DNS agent is off. Test direct Bind access in Settings."
+            DIRECT_BIND, "DNS agent is off. Test direct Bind access in Settings.", DIRECT_BIND
         )
     values = connection_values(settings)
     fields = {f"{service}_agent_url", *SECTIONS[AGENT_SECURITY]}
@@ -324,6 +325,7 @@ def agent_status(settings: Settings, service: str) -> ConnectionResult:
             "Connected",
             "Agent accepted TLS and bearer authentication. "
             "Service operation permissions are checked separately in Settings.",
+            client.access_mode(),
         )
     except (httpx.HTTPError, OSError, ValueError, RuntimeError) as error:
         return ConnectionResult("Unavailable", _failure_message(error))

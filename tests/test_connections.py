@@ -450,7 +450,11 @@ def test_overview_agent_status_is_cached_and_separate_from_service_permissions(
     assert first.json["state"] == "Connected"
     assert first.headers["Cache-Control"] == "no-store"
     assert client.get(path).json == first.json
-    assert calls == [("zones" if service == "dns" else "health", {"timeout": 3})]
+    assert calls == [
+        ("zones" if service == "dns" else "health", {"timeout": 3}),
+        ("capabilities", {"timeout": 3}),
+    ]
+    assert first.json["access_mode"] == "Unknown"
     assert "agent_token" not in first.text
     # A new overview uses the cached state and continues to poll for fresh status.
     page = client.get("/")
@@ -458,7 +462,7 @@ def test_overview_agent_status_is_cached_and_separate_from_service_permissions(
     assert "Connected" in page.text
     client.application.extensions["netadmin_agent_results"][service]["checked_at"] -= 31
     client.get(path)
-    assert len(calls) == 2
+    assert len(calls) == 4
 
 
 @pytest.mark.parametrize("role,expected", [(None, 302), ("standard", 403)])

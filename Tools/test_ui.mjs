@@ -18,14 +18,14 @@ function fixture(id, count) {
 const leases = fixture('leases', 273), clients = fixture('clients', 4);
 const mode = new Element(); mode.checked = true;
 const direct = new Element(), agentField = new Element();
-let polling = [], fetchCalls = 0, connected = true;
+let polling = [], fetchCalls = 0, connected = true, accessMode = 'Read-only';
 function statusCard(url) {
-  const badge = new Element(), message = new Element(), checked = new Element();
+  const badge = new Element(), message = new Element(), checked = new Element(), access = new Element();
   const classes = new Set();
   badge.classList = { toggle(name, on) { on ? classes.add(name) : classes.delete(name); },
     add(name) { classes.add(name); }, remove(name) { classes.delete(name); } };
-  return { dataset: { connectionStatusUrl: url }, badge, message, checked, classes,
-    querySelector: selector => ({ '[data-connection-state]': badge, '[data-connection-message]': message, '[data-connection-checked]': checked })[selector] };
+  return { dataset: { connectionStatusUrl: url }, badge, message, checked, access, classes,
+    querySelector: selector => ({ '[data-connection-state]': badge, '[data-connection-message]': message, '[data-connection-checked]': checked, '[data-connection-access]': access })[selector] };
 }
 const status = statusCard('/connections/status/dhcp');
 const document = {
@@ -37,7 +37,7 @@ const document = {
 };
 vm.runInNewContext(readFileSync(new URL('../netadmin/static/app.js', import.meta.url), 'utf8'), {
   document, window: { matchMedia: () => ({ matches: false, addEventListener() {} }), setInterval(callback, delay) { assert.equal(delay, 30000); polling.push(callback); } },
-  AbortSignal, fetch: async (url, options) => { fetchCalls++; assert.equal(url, '/connections/status/dhcp'); assert.equal(options.credentials, 'same-origin'); if (connected === 'timeout') throw Object.assign(new Error('private backend data'), { name: 'TimeoutError' }); if (!connected) throw new Error('private backend data'); return { ok: true, redirected: false, json: async () => ({ state: 'Connected', message: 'Agent authenticated', checked_at: 1 }) }; },
+  AbortSignal, fetch: async (url, options) => { fetchCalls++; assert.equal(url, '/connections/status/dhcp'); assert.equal(options.credentials, 'same-origin'); if (connected === 'timeout') throw Object.assign(new Error('private backend data'), { name: 'TimeoutError' }); if (!connected) throw new Error('private backend data'); return { ok: true, redirected: false, json: async () => ({ state: 'Connected', message: 'Agent authenticated', checked_at: 1, access_mode: accessMode }) }; },
   localStorage: { getItem: () => null }, ResizeObserver: class { observe() {} },
 });
 assert.equal(leases.visible().length, 25);
@@ -73,10 +73,16 @@ console.log('Pagination, search, page-size, independent tables and direct DNS mo
 await new Promise(setImmediate);
 assert.equal(status.badge.textContent, 'Connected');
 assert.equal(status.classes.has('status-success'), true);
+assert.equal(status.access.textContent, 'Read-only');
+accessMode = 'Writable';
+polling[0]();
+await new Promise(setImmediate);
+assert.equal(status.access.textContent, 'Writable');
 connected = false;
 polling[0]();
 await new Promise(setImmediate);
 assert.equal(status.badge.textContent, 'Unavailable');
+assert.equal(status.access.textContent, 'Unknown');
 assert.equal(status.classes.has('status-success'), false);
 assert.equal(status.classes.has('status-warning'), true);
 assert.equal(status.message.textContent.includes('private backend data'), false);
