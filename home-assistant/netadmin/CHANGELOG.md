@@ -2,6 +2,8 @@
 
 ## 0.6.3
 
+- Display agent access as a badge beside connection status on the overview, replacing the separate Access line.
+
 - Default searchable tables to 10 rows per page. The 25, 50 and 100 row options remain available.
 
 ## 0.6.2
