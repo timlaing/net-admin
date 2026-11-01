@@ -65,11 +65,14 @@ services:
       RADIUS_MANAGED_CLIENTS_FILE: /etc/raddb/netadmin-clients.conf
       RADIUS_ADMIN_POOLS: pool-parent
       RADIUS_RELOAD_COMMAND: kill -HUP 1
+      RADIUS_CERT_MANAGEMENT: "true"
+      RADIUS_CERT_KEY_PASSWORD: ${RADIUS_CERT_KEY_PASSWORD:-whatever}
     volumes:
       - "./freeradius/raddb/mods-config/files/netadmin:/etc/raddb/mods-config/files/netadmin:rw"
       - "./freeradius/raddb/mods-config/files/authorize:/etc/raddb/mods-config/files/authorize:rw"
       - "./freeradius/raddb/clients.conf:/etc/raddb/clients.conf:ro"
       - "./freeradius/raddb/netadmin-clients.conf:/etc/raddb/netadmin-clients.conf:rw"
+      - "radius-certs:/etc/raddb/certs:rw"
       - "./pki/radius-agent:/pki:ro"
 
   dhcp:

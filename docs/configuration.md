@@ -112,3 +112,60 @@ the supported production Compose deployment. A health check does not test write 
 is managed by the **Require NetAdmin login through ingress** option. Setting it
 to `false` delegates trusted ingress administrator access to Home Assistant; it
 never disables direct or standalone authentication. Connection reloads preserve it.
+
+
+## RADIUS certificates
+
+Open **RADIUS → Certificates** to see the current CA and server subjects, serials,
+SHA-256 fingerprints, validity dates and revocation-list expiry. Downloads contain
+public certificates or the CRL only; private keys never leave the agent.
+
+The supported stack shares `radius-certs:/etc/raddb/certs` between RADIUS and its
+agent. Upgrade both images together. The service image runs a small PID 1 wrapper
+which keeps the PID namespace stable and restarts the RADIUS daemon when the agent
+activates a certificate transaction. Existing ordinary configuration reloads still
+use HUP. Certificate changes interrupt authentication and require a writable agent,
+its `RADIUS_CERT_MANAGEMENT=true` setting, and a matching local RSA or EC CA key.
+Self-signed local roots are supported; externally signed or offline authorities must
+be managed through their issuing CA. Missing keys, older agents/services, or invalid
+material produce an unavailable/disabled state, never invented certificate details.
+
+Agent settings:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `RADIUS_CERT_DIR` | `/etc/raddb/certs` | Shared service certificate directory. |
+| `RADIUS_CERT_MANAGEMENT` | `false` | Enable mutations; the provided Compose files set this to true. |
+| `RADIUS_CERT_KEY_PASSWORD` | packaged bootstrap password | Password for existing CA keys and generated server keys; must match the EAP private-key password. Set through deployment secrets. |
+| `RADIUS_CERT_RESTART_COMMAND` | `kill -USR1 1` | Signal the supported service wrapper. The agent waits for an acknowledgement before reporting success. |
+
+Keep the native EAP configuration on the packaged `server.pem` and `ca.pem` paths.
+Custom configurations must be mounted into the agent too, so its `radiusd -XC`
+validation checks the same service configuration. Do not point the editor at a
+different certificate directory than the service actually uses.
+
+- **Renew server certificate:** new key and serial, same subject and extensions
+  including SANs, validity up to one year capped by CA expiry. The old certificate
+  is retained as a public historical file and is not automatically revoked.
+- **Revoke and replace server certificate:** sign a CRL containing the old serial,
+  retain previous revocations, and install a replacement key and certificate.
+  Distribute the CRL to devices configured to check server revocation. Existing
+  sessions can continue until they reconnect; devices that do not check the CRL
+  will not reject the old identity solely because this button was used.
+- **Renew CA certificate:** retain its signing key/subject and issue a new ten-year
+  certificate. Existing issued certificates remain in place. Distribute the renewed
+  CA; devices' installed CA expiry is not automatically extended.
+- **Retire and replace CA:** an explicit immediate cutover to a new CA key and server
+  identity. Install the new CA and remove the old root from every device trust store.
+  Replace EAP-TLS client certificates issued by the old CA. A CRL cannot remotely
+  remove a root from devices. Old public CA/CRL files remain on the agent for recovery
+  and distribution; the former CA signing key is replaced.
+- **Refresh revocation list:** keep all entries, sign a fresh CRL with a 30-day
+  next-update date, and distribute it before clients' current CRL expires.
+
+Operations require confirmation and use certificate fingerprints to reject stale
+browser submissions. The agent validates candidate files, preserves the service
+file ownership, and restarts RADIUS. Failed validation restores the files; failed
+activation also attempts to restart the original identity. Check service status if
+a failure is reported. These operations do not modify the management agents' mTLS
+certificates in `/pki`, device trust stores, or client-certificate validation policy.

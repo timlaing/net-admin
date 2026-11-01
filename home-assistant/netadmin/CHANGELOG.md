@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add RADIUS certificate inventory, public certificate/CRL downloads, CA and server renewal, server revocation with replacement, and explicit CA retirement/replacement. Certificate transactions validate and restart RADIUS with rollback on failure; private keys remain on the agent. Upgrade the RADIUS service and agent and mount their shared certificate volume before enabling management.
+
 - Replace subnet edit links with buttons and add a structured pool and DHCP option editor, with individual Add/Remove controls, Undo and a review step before applying changes. Common options use friendly names; custom options and the text editor fallback remain available.
 
 ## 0.6.4

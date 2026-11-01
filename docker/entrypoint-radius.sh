@@ -197,4 +197,4 @@ if [[ ! -e /etc/raddb/mods-enabled/eap ]]; then
   say "enabled the packaged eap module"
 fi
 
-exec radiusd -f "$@"
+exec /usr/local/bin/radius-supervisor.sh "$@"

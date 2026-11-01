@@ -41,14 +41,14 @@ class AgentClient:
         response.raise_for_status()
         return response.json()
 
-    def post(self, path: str, payload: dict[str, Any]) -> Any:
+    def post(self, path: str, payload: dict[str, Any], *, timeout: float = 20) -> Any:
         """Post JSON to the agent."""
         with httpx.Client(verify=self._tls_context()) as client:
             response = client.post(
                 f"{self.base_url}/{path.lstrip('/')}",
                 headers=self.headers,
                 json=payload,
-                timeout=20,
+                timeout=timeout,
             )
         response.raise_for_status()
         return response.json()

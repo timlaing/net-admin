@@ -127,3 +127,5 @@ summary { cursor:pointer; }summary:focus-visible { outline-offset:-4px; }details
 
 .subnet-identity { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 14px; color:var(--muted); font-size:.8rem; margin-bottom:24px; }
 .subnet-identity dt { font-weight:500; }.subnet-identity dd { margin:0 16px 0 0; overflow-wrap:anywhere; }
+
+.certificate-metadata dd { overflow-wrap:anywhere; margin-bottom:14px; }.certificate-metadata dt { color:var(--muted); font-size:.75rem; font-weight:500; }

@@ -36,6 +36,7 @@ from netadmin.forms import (
 )
 from netadmin.ingress import configure_ingress, session_cookie_secure
 from netadmin.presentation import display_time
+from netadmin.radius_certificates_web import certificate_web
 from netadmin.services.agents import AgentClient
 from netadmin.services.dns import AgentDnsService, BindService, DnsRecord
 from netadmin.settings_web import connection_web
@@ -540,6 +541,7 @@ def create_app(settings: Settings | None = None) -> Flask:
     app.before_request(load_identity)
     app.register_blueprint(web)
     app.register_blueprint(connection_web)
+    app.register_blueprint(certificate_web)
 
     @app.context_processor
     def connection_context() -> dict[str, Any]:
