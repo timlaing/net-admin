@@ -9,7 +9,7 @@ class Element {
 }
 function fixture(id, count) {
   const rows = Array.from({ length: count }, (_, i) => ({ textContent: `device-${i} ${i % 2 ? 'odd' : 'even'}` }));
-  const size = new Element('25'), previous = new Element(), next = new Element(), position = new Element(), counter = new Element();
+  const size = new Element('10'), previous = new Element(), next = new Element(), position = new Element(), counter = new Element();
   const tools = { querySelector: selector => ({ '[data-page-size]': size, '[data-page-previous]': previous, '[data-page-next]': next, '[data-page-position]': position })[selector] };
   const input = new Element(); input.dataset = { tableFilter: id }; input.closest = () => tools;
   return { input, size, previous, next, position, counter, rows,
@@ -40,15 +40,15 @@ vm.runInNewContext(readFileSync(new URL('../netadmin/static/app.js', import.meta
   AbortSignal, fetch: async (url, options) => { fetchCalls++; assert.equal(url, '/connections/status/dhcp'); assert.equal(options.credentials, 'same-origin'); if (connected === 'timeout') throw Object.assign(new Error('private backend data'), { name: 'TimeoutError' }); if (!connected) throw new Error('private backend data'); return { ok: true, redirected: false, json: async () => ({ state: 'Connected', message: 'Agent authenticated', checked_at: 1, access_mode: accessMode }) }; },
   localStorage: { getItem: () => null }, ResizeObserver: class { observe() {} },
 });
-assert.equal(leases.visible().length, 25);
-assert.equal(leases.position.textContent, 'Page 1 of 11');
+assert.equal(leases.visible().length, 10);
+assert.equal(leases.position.textContent, 'Page 1 of 28');
 assert.equal(leases.previous.disabled, true);
 leases.next.fire('click');
-assert.equal(leases.visible()[0].textContent, 'device-25 odd');
+assert.equal(leases.visible()[0].textContent, 'device-10 even');
 assert.equal(clients.visible().length, 4); // Tables have independent pages.
 leases.input.value = 'odd'; leases.input.fire('input');
-assert.equal(leases.visible().length, 25);
-assert.equal(leases.position.textContent, 'Page 1 of 6');
+assert.equal(leases.visible().length, 10);
+assert.equal(leases.position.textContent, 'Page 1 of 14');
 leases.size.value = '100'; leases.size.fire('change');
 assert.equal(leases.visible().length, 100);
 leases.next.fire('click');

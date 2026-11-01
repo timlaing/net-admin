@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.3
+
+- Default searchable tables to 10 rows per page. The 25, 50 and 100 row options remain available.
+
 ## 0.6.2
 
 - Show agent access mode (Read-only, Writable or Unknown) alongside automatically refreshed connection status. Older agents without capability reporting remain Unknown.
