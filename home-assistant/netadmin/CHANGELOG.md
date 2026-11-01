@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.4
 
 - Sort table columns in ascending or descending order, with keyboard controls, numeric ordering and sort indicators. Sorting works with search and pagination.
 
