@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0
+
+- Add an exclusive Use DNS agent toggle: agent mode needs only the agent URL and shared agent security; direct mode uses Bind/TSIG settings. Inactive settings are preserved and ignored.
+- Route DNS record reads, updates and deletes through the DNS agent, using its locally declared Bind key. Existing agent URLs select agent mode on upgrade unless explicitly overridden.
+- Upgrade the DNS agent to 0.6.0 before the web app when using agent mode; older agents do not provide the record API.
+
 ## 0.5.1
 
 - Consolidate DNS/DHCP/RADIUS connection settings in NetAdmin Settings. Import legacy Home Assistant option values without overwriting saved settings, then remove the retired options. Keep the ingress login policy in Home Assistant Configuration.

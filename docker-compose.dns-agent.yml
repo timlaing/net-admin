@@ -15,4 +15,5 @@ services:
       - rndc-shared:/run/rndc:ro
   netadmin:
     environment:
+      NETADMIN_DNS_USE_AGENT: "true"
       NETADMIN_DNS_AGENT_URL: https://dns:8083

@@ -34,12 +34,20 @@ edited).
 
 | Variable                      | Default       | Purpose                                                                |
 | ----------------------------- | ------------- | ---------------------------------------------------------------------- |
+| `NETADMIN_DNS_USE_AGENT` | inferred from agent URL if unset | Select agent (`true`) or direct Bind (`false`); only the selected transport is used |
+| `NETADMIN_DNS_AGENT_URL` | _(empty)_ | Agent HTTPS URL, using shared agent TLS and token settings |
 | `NETADMIN_DNS_SERVER`         | `dns`         | Bind service host                                                      |
 | `NETADMIN_DNS_CONFIG_PATH`    | _(unset)_     | `named.conf` path (compose: `/bind-config/named.conf`)                 |
 | `NETADMIN_DNS_ZONES`          | _(empty)_     | Comma-separated zone list carried from setup                           |
 | `NETADMIN_DNS_TSIG_NAME`      | `rndc-key`    | TSIG key name                                                          |
 | `NETADMIN_DNS_TSIG_SECRET`    | _(empty)_     | Base64 TSIG secret; the DNS container seeds or generates it when empty |
 | `NETADMIN_DNS_TSIG_ALGORITHM` | `hmac-sha256` | TSIG algorithm                                                         |
+
+Agent mode requires a matching 0.6.0+ DNS agent and shared agent security. Direct
+Bind fields above are unused in agent mode. The agent reads its TSIG key from
+local Bind configuration and uses `DNS_SERVER`/`DNS_PORT` (defaults `127.0.0.1`/`53`).
+Set `DNS_UPDATE_KEY` only when the declared key name differs from `rndc-key`
+(or its `NETADMIN_DNS_TSIG_NAME` fallback). Upgrade the agent before the web app.
 
 ## RADIUS authentication
 

@@ -142,7 +142,7 @@ def dns_index() -> Any:
         delete_form=DeleteDnsForm(),
         rpi_form=RpiRecordForm(),
         zone_form=DnsZoneForm(),
-        zone_management=bool(_settings().dns_agent_url),
+        zone_management=_settings().dns_use_agent,
     )
 
 

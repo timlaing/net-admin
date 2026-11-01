@@ -6,6 +6,7 @@ import ipaddress
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlencode
 
 import dns.name
 import dns.query
@@ -49,7 +50,7 @@ def discover_zones(text: str) -> list[DnsZone]:
     return result
 
 
-class BindService:
+class BindService:  # pylint: disable=too-many-instance-attributes
     """Read and mutate authoritative Bind zones."""
 
     def __init__(
@@ -60,9 +61,11 @@ class BindService:
         algorithm: str = "hmac-sha256",
         config_path: Path | None = None,
         configured_zones: tuple[str, ...] = (),
+        port: int = 53,
     ) -> None:
         self.zone_agent: AgentClient | None = None
         self.server = server
+        self.port = port
         self.key_name = key_name
         self.keyring = dns.tsigkeyring.from_text({key_name: key_secret}) if key_secret else None
         self.algorithm = algorithm
@@ -89,6 +92,7 @@ class BindService:
             keyname=self.key_name if self.keyring else None,
             relativize=True,
             lifetime=10,
+            port=self.port,
         )
         zone = dns.zone.from_xfr(transfer)
         records: list[DnsRecord] = []
@@ -111,7 +115,7 @@ class BindService:
             keyalgorithm=self.algorithm,
         )
         update.replace(name, ttl, record_type, value)
-        response = dns.query.tcp(update, self.server, timeout=10)
+        response = dns.query.tcp(update, self.server, port=self.port, timeout=10)
         if response.rcode() != 0:
             raise RuntimeError(f"DNS update failed with rcode {response.rcode()}")
 
@@ -127,7 +131,7 @@ class BindService:
             update.delete(name, record_type, value)
         else:
             update.delete(name, record_type)
-        response = dns.query.tcp(update, self.server, timeout=10)
+        response = dns.query.tcp(update, self.server, port=self.port, timeout=10)
         if response.rcode() != 0:
             raise RuntimeError(f"DNS delete failed with rcode {response.rcode()}")
 
@@ -147,3 +151,33 @@ class BindService:
         except Exception:
             self.delete(forward_zone, forward_name, "A", str(parsed))
             raise
+
+
+class AgentDnsService(BindService):
+    """Keep zone and record operations behind the authenticated DNS agent."""
+
+    def __init__(self, client: AgentClient) -> None:
+        super().__init__("", "", "")
+        self.zone_agent = client
+        self.client = client
+
+    def records(self, zone_name: str) -> list[DnsRecord]:
+        """Read records without exposing Bind transport credentials to the app."""
+        return [
+            DnsRecord(**item)
+            for item in self.client.get("records?" + urlencode({"zone": zone_name}))
+        ]
+
+    def upsert(self, zone: str, name: str, record_type: str, ttl: int, value: str) -> None:
+        """Replace one RRset through the agent."""
+        self.client.post(
+            "records",
+            {"zone": zone, "name": name, "record_type": record_type, "ttl": ttl, "value": value},
+        )
+
+    def delete(self, zone: str, name: str, record_type: str, value: str = "") -> None:
+        """Remove a record through the agent."""
+        self.client.post(
+            "records/delete",
+            {"zone": zone, "name": name, "record_type": record_type, "value": value},
+        )

@@ -80,7 +80,7 @@ def test_web_zone_operations_use_agent_and_do_not_write_service_files(tmp_path, 
     from netadmin.config import Settings
 
     settings = Settings(secret_key="synthetic", root_password_hash="unused", data_dir=tmp_path)  # noqa: S106
-    app = create_app(replace(settings, dns_agent_url="https://dns:8083"))
+    app = create_app(replace(settings, dns_use_agent=True, dns_agent_url="https://dns:8083"))
     app.config.update(TESTING=True, WTF_CSRF_ENABLED=False)
     calls = []
     remote = app.extensions["netadmin_dns"].zone_agent

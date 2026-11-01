@@ -18,16 +18,23 @@ from wtforms.validators import Length, Regexp  # pylint: disable=wrong-import-or
 
 from netadmin.config import Settings
 from netadmin.services.agents import AgentClient
-from netadmin.services.dns import BindService
+from netadmin.services.dns import AgentDnsService, BindService
 
 SECRET_FIELDS = ("dns_tsig_secret", "radius_secret", "agent_token")
 PATH_FIELDS = ("dns_config_path", "agent_ca", "agent_cert", "agent_key")
 SECTIONS = {
-    "DNS": ("dns_enabled", "dns_server", "dns_agent_url", "dns_zones", "dns_tsig_secret"),
+    "DNS": ("dns_enabled", "dns_use_agent", "dns_agent_url"),
     "DHCP": ("dhcp_enabled", "dhcp_agent_url", "dhcp_backend"),
     "RADIUS": ("radius_enabled", "radius_agent_url", "radius_host", "radius_secret"),
     "Agent security": ("agent_token", "agent_ca", "agent_cert", "agent_key"),
-    "Advanced DNS": ("dns_tsig_name", "dns_tsig_algorithm", "dns_config_path"),
+    "Direct Bind": (
+        "dns_server",
+        "dns_zones",
+        "dns_tsig_secret",
+        "dns_tsig_name",
+        "dns_tsig_algorithm",
+        "dns_config_path",
+    ),
 }
 CONNECTION_FIELDS = tuple(field for fields in SECTIONS.values() for field in fields)
 
@@ -64,7 +71,7 @@ def settings_with_connections(settings: Settings, values: dict[str, str]) -> Set
     """Replace only connection fields, keeping accounts and sessions intact."""
     changes: dict[str, Any] = dict(values)
     for field in CONNECTION_FIELDS:
-        if field.endswith("_enabled"):
+        if field.endswith("_enabled") or field == "dns_use_agent":
             changes[field] = values[field] == "true"
         elif field in PATH_FIELDS:
             changes[field] = Path(values[field]) if values[field] else None
@@ -78,14 +85,7 @@ def connection_extensions(settings: Settings) -> dict[str, Any]:
     extensions: dict[str, Any] = {
         "netadmin_connection_results": {},
         "netadmin_settings": settings,
-        "netadmin_dns": BindService(
-            settings.dns_server,
-            settings.dns_tsig_name,
-            settings.dns_tsig_secret if settings.dns_enabled else "",
-            settings.dns_tsig_algorithm,
-            settings.dns_config_path,
-            settings.dns_zones,
-        ),
+        "netadmin_dns": dns_service(settings),
         "netadmin_dhcp": AgentClient(
             settings.dhcp_agent_url,
             settings.agent_token,
@@ -101,15 +101,29 @@ def connection_extensions(settings: Settings) -> dict[str, Any]:
             settings.agent_key,
         ),
     }
-    if settings.dns_agent_url:
-        extensions["netadmin_dns"].zone_agent = AgentClient(
-            settings.dns_agent_url,
-            settings.agent_token,
-            settings.agent_ca,
-            settings.agent_cert,
-            settings.agent_key,
-        )
     return extensions
+
+
+def dns_service(settings: Settings) -> BindService:
+    """Select exactly one transport; inactive credentials are never interpreted."""
+    if settings.dns_use_agent:
+        return AgentDnsService(
+            AgentClient(
+                settings.dns_agent_url,
+                settings.agent_token,
+                settings.agent_ca,
+                settings.agent_cert,
+                settings.agent_key,
+            )
+        )
+    return BindService(
+        settings.dns_server,
+        settings.dns_tsig_name,
+        settings.dns_tsig_secret if settings.dns_enabled else "",
+        settings.dns_tsig_algorithm,
+        settings.dns_config_path,
+        settings.dns_zones,
+    )
 
 
 def text_field(label: str, maximum: int = 253) -> StringField:
@@ -121,7 +135,8 @@ class ConnectionForm(FlaskForm):  # type: ignore[misc]
     """One administrator form for all service connections."""
 
     dns_enabled = BooleanField("Enable DNS administration")
-    dns_agent_url = text_field("DNS agent HTTPS URL (automatic discovery and zone management)")
+    dns_use_agent = BooleanField("Use DNS agent")
+    dns_agent_url = text_field("DNS agent HTTPS URL")
     dns_server = text_field("Bind server")
     dns_zones = text_field("Authoritative zones (comma separated)", 1024)
     dns_tsig_secret = PasswordField("TSIG secret", validators=[Length(max=512)])
@@ -176,12 +191,16 @@ def configuration_errors(values: dict[str, str]) -> dict[str, str]:
         field = f"{service}_enabled"
         if values[field] not in {"true", "false"}:
             errors[field] = "Choose true or false."
+    if values["dns_use_agent"] not in {"true", "false"}:
+        errors["dns_use_agent"] = "Choose true or false."
     if values["dhcp_backend"] not in {"isc", "kea"}:
         errors["dhcp_backend"] = "Choose ISC DHCPD or Kea."
     for field in SECRET_FIELDS:
         if any(char in values[field] for char in "\r\n\x00"):
             errors[field] = "Use a single-line secret."
     for field in PATH_FIELDS:
+        if field == "dns_config_path" and values["dns_use_agent"] == "true":
+            continue
         value = values[field]
         if value and (not Path(value).is_absolute() or ".." in Path(value).parts):
             errors[field] = "Use an absolute path without '..'."
@@ -216,7 +235,7 @@ def _agent_errors(values: dict[str, str]) -> dict[str, str]:
     """Validate agent transport and RADIUS authentication requirements."""
     errors: dict[str, str] = {}
     for service in ("dns", "dhcp", "radius"):
-        if service == "dns" and not values["dns_agent_url"]:
+        if service == "dns" and values["dns_use_agent"] != "true":
             continue
         if values[f"{service}_enabled"] != "true":
             continue
@@ -242,7 +261,7 @@ def _agent_errors(values: dict[str, str]) -> dict[str, str]:
 def _dns_errors(values: dict[str, str]) -> dict[str, str]:
     """Validate the authoritative DNS connection."""
     errors: dict[str, str] = {}
-    if values["dns_enabled"] == "true":
+    if values["dns_enabled"] == "true" and values["dns_use_agent"] != "true":
         for name in ("dns_server", "dns_tsig_name", "dns_tsig_secret"):
             if not values[name]:
                 errors[name] = "Required for authenticated Bind administration."
@@ -276,8 +295,8 @@ def test_connection(settings: Settings, service: str) -> ConnectionResult:
         return ConnectionResult("Disabled", "Enable this service in Settings when you need it.")
     errors = configuration_errors(values)
     fields = set(SECTIONS[service.upper()])
-    if service == "dns":
-        fields.update(SECTIONS["Advanced DNS"])
+    if service == "dns" and not settings.dns_use_agent:
+        fields.update(SECTIONS["Direct Bind"])
     else:
         fields.update(SECTIONS["Agent security"])
     relevant = [message for field, message in errors.items() if field in fields]
@@ -321,23 +340,9 @@ def _failure_message(error: Exception) -> str:
 def _probe(settings: Settings, service: str) -> ConnectionResult:
     """Resolve and probe one active service within the request timeout."""
     if service == "dns":
-        socket.getaddrinfo(settings.dns_server, 53, type=socket.SOCK_STREAM)
-        bind = BindService(
-            settings.dns_server,
-            settings.dns_tsig_name,
-            settings.dns_tsig_secret,
-            settings.dns_tsig_algorithm,
-            settings.dns_config_path,
-            settings.dns_zones,
-        )
-        if settings.dns_agent_url:
-            bind.zone_agent = AgentClient(
-                settings.dns_agent_url,
-                settings.agent_token,
-                settings.agent_ca,
-                settings.agent_cert,
-                settings.agent_key,
-            )
+        if not settings.dns_use_agent:
+            socket.getaddrinfo(settings.dns_server, 53, type=socket.SOCK_STREAM)
+        bind = dns_service(settings)
         zones = bind.zones()
         if not zones:
             return ConnectionResult(

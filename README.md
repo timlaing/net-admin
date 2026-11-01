@@ -84,6 +84,13 @@ reachable through ingress and locks itself once configured; the file is never in
 the repository or options schema. To migrate an existing pre-NetAdmin stack, run
 `scripts/cutover.sh` from a repo checkout on the server.
 
+### DNS connection modes
+
+DNS supports two exclusive connection modes in Settings: **Use DNS agent** uses
+the agent URL and shared mTLS/token settings for zones and records; turning it off
+reveals direct Bind/TSIG settings. Upgrade the DNS agent to 0.6.0 before the app
+when using agent mode.
+
 ### Kea DHCP backend
 
 `docker-compose.kea.yml` is a complete standalone alternative stack running Kea DHCP;

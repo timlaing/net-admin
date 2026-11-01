@@ -5,13 +5,89 @@ from __future__ import annotations
 import os
 import re
 import subprocess  # nosec B404 - fixed daemon tools, no shell
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, cast
 
-from flask import Flask, current_app, jsonify
+import dns.exception
+import dns.name
+import dns.rdatatype
+from flask import Flask, current_app, jsonify, request  # pylint: disable=wrong-import-order
 
 from netadmin.agents.common import configured_path, create_agent, json_object, validated_transaction
-from netadmin.services.dns import discover_zones
+from netadmin.services.dns import BindService, discover_zones
+
+
+def _record_backend(zone: str) -> BindService:
+    """Use only authoritative zones and the agent's locally declared update key."""
+    canonical = _canonical()
+    _zone_blocks(canonical)
+    if zone.lower().rstrip(".") not in {item.name.lower() for item in discover_zones(canonical)}:
+        raise ValueError("Unknown authoritative zone")
+    key = str(current_app.config["DNS_UPDATE_KEY"])
+    declaration = re.search(r'\bkey\s+"' + re.escape(key) + r'"\s*\{([^}]+)\}', canonical)
+    if declaration is None:
+        raise ValueError("Declare the agent's TSIG update key in Bind configuration")
+    algorithm = re.search(r'\balgorithm\s+"?([\w.-]+)"?\s*;', declaration[1])
+    secret = re.search(r'\bsecret\s+"([A-Za-z0-9+/=]+)"\s*;', declaration[1])
+    if algorithm is None or secret is None:
+        raise ValueError("Bind update key requires an algorithm and base64 secret")
+    return BindService(
+        str(current_app.config["DNS_SERVER"]),
+        key,
+        secret[1],
+        algorithm[1],
+        port=int(current_app.config["DNS_PORT"]),
+    )
+
+
+def _records() -> Any:
+    zone = request.args.get("zone", "")
+    return jsonify([asdict(item) for item in _record_backend(zone).records(zone)])
+
+
+def _record_change(delete: bool = False) -> Any:
+    body = json_object()
+    zone = str(body.get("zone", ""))
+    backend = _record_backend(zone)
+    name = str(body.get("name", ""))
+    try:
+        origin = dns.name.from_text(zone)
+        owner = dns.name.from_text(name, origin=origin)
+        kind = dns.rdatatype.from_text(str(body.get("record_type", "")).upper())
+    except dns.exception.DNSException as error:
+        raise ValueError("Invalid record name or type") from error
+    if not name or not owner.is_subdomain(origin):
+        raise ValueError("Record name must belong to the selected zone")
+    record_type = kind.name
+    if kind in {
+        dns.rdatatype.SOA,
+        dns.rdatatype.NS,
+        dns.rdatatype.ANY,
+        dns.rdatatype.AXFR,
+        dns.rdatatype.IXFR,
+        dns.rdatatype.OPT,
+        dns.rdatatype.TSIG,
+    }:
+        raise ValueError("Protected record type")
+    value = str(body.get("value", ""))
+    if delete:
+        backend.delete(zone, name, record_type, value)
+        return jsonify({"deleted": name})
+    ttl = body.get("ttl", 300)
+    if (
+        isinstance(ttl, bool)
+        or not isinstance(ttl, int)
+        or not 1 <= ttl <= 2_147_483_647
+        or not value
+    ):
+        raise ValueError("Record requires a positive TTL and value")
+    backend.upsert(zone, name, record_type, ttl, value)
+    return jsonify({"saved": name})
+
+
+def _delete_record() -> Any:
+    return _record_change(delete=True)
 
 
 def _canonical() -> str:
@@ -150,6 +226,9 @@ def create_dns_agent() -> Flask:
         raise ValueError("Invalid DNS_UPDATE_KEY")
     app = create_agent(__name__)
     app.config.update(
+        MAX_CONTENT_LENGTH=1_048_576,
+        DNS_SERVER=os.getenv("DNS_SERVER", "127.0.0.1"),
+        DNS_PORT=int(os.getenv("DNS_PORT", "53")),
         DNS_UPDATE_KEY=update_key,
         DNS_MAIN=configured_path("DNS_MAIN_CONFIG", "/etc/bind/named.conf"),
         DNS_MANAGED=configured_path("DNS_MANAGED_CONFIG", "/etc/bind/netadmin.conf"),
@@ -164,7 +243,18 @@ def create_dns_agent() -> Flask:
     def rejected(_error: subprocess.CalledProcessError) -> Any:
         return jsonify({"error": "Bind rejected the operation; configuration was rolled back"}), 502
 
+    @app.errorhandler(dns.exception.DNSException)
+    @app.errorhandler(RuntimeError)
+    @app.errorhandler(OSError)
+    def dns_failed(_error: Exception) -> Any:
+        return jsonify(
+            {"error": "Bind record operation failed; check agent and Bind configuration"}
+        ), 502
+
     app.add_url_rule("/zones", view_func=_zones, methods=["GET"])
     app.add_url_rule("/zones", view_func=_create, methods=["POST"])
     app.add_url_rule("/zones/delete", view_func=_delete, methods=["POST"])
+    app.add_url_rule("/records", view_func=_records, methods=["GET"])
+    app.add_url_rule("/records", view_func=_record_change, methods=["POST"])
+    app.add_url_rule("/records/delete", view_func=_delete_record, methods=["POST"])
     return app

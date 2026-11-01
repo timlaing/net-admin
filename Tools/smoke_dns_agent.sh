@@ -32,7 +32,7 @@ with tempfile.TemporaryDirectory() as directory:
             time.sleep(.1)
         else:
             raise AssertionError('Bind control channel did not start')
-        os.environ.update(NETADMIN_AGENT_TOKEN='synthetic', DNS_UPDATE_KEY='test', DNS_MAIN_CONFIG=str(main),
+        os.environ.update(NETADMIN_AGENT_TOKEN='synthetic', DNS_UPDATE_KEY='test', DNS_PORT='9153', DNS_MAIN_CONFIG=str(main),
                           DNS_MANAGED_CONFIG=str(root/'managed.conf'), DNS_ZONE_DIR=str(root/'zones'))
         client = create_dns_agent().test_client()
         headers = {'Authorization':'Bearer synthetic'}
@@ -43,12 +43,22 @@ with tempfile.TemporaryDirectory() as directory:
         update = dns.update.Update('example.net', keyring=dns.tsigkeyring.from_text({'test':'YWJj'}))
         update.add('client',300,'A','192.0.2.2')
         assert dns.query.tcp(update,'127.0.0.1',port=9153,timeout=5).rcode() == 0
+        records = client.get('/records?zone=example.net', headers=headers)
+        assert records.status_code == 200, records.json
+        assert any(item['name'] == 'client' for item in records.json)
+        record = {'zone':'example.net','name':'agent-client','record_type':'A','ttl':600,'value':'192.0.2.3'}
+        assert client.post('/records', headers=headers, json=record).status_code == 200
+        records = client.get('/records?zone=example.net', headers=headers).json
+        assert any(item['name'] == 'agent-client' and item['value'] == '192.0.2.3' and item['ttl'] == 600 for item in records)
+        assert client.post('/records/delete', headers=headers, json=record).status_code == 200
+        assert not any(item['name'] == 'agent-client' for item in client.get('/records?zone=example.net', headers=headers).json)
+        assert client.get('/records?zone=unmanaged.example', headers=headers).status_code == 400
         original = (root/'managed.conf').read_bytes()
         assert client.post('/zones', headers=headers, json={'name':'bad.example','content':'invalid zone'}).status_code == 502
         assert (root/'managed.conf').read_bytes() == original
         assert client.post('/zones/delete', headers=headers, json={'name':'example.net'}).status_code == 200
         assert (root/'zones/example.net.zone').exists()
-        print('Real Bind discovery, creation, rollback and removal passed')
+        print('Real Bind discovery, zone lifecycle, agent record reads/updates/deletes and rollback passed')
     finally:
         daemon.terminate()
         daemon.wait(timeout=10)

@@ -42,6 +42,7 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     radius_standard_value: str = "netadmin-standard"
     radius_role_attribute: str = "Filter-Id"
     dns_agent_url: str = ""
+    dns_use_agent: bool = False
     dns_server: str = "dns"
     dns_tsig_name: str = "rndc-key"
     dns_tsig_secret: str = ""
@@ -75,6 +76,12 @@ class Settings:  # pylint: disable=too-many-instance-attributes
             radius_standard_value=os.getenv("NETADMIN_RADIUS_STANDARD_VALUE", "netadmin-standard"),
             radius_role_attribute=os.getenv("NETADMIN_RADIUS_ROLE_ATTRIBUTE", "Filter-Id"),
             dns_agent_url=os.getenv("NETADMIN_DNS_AGENT_URL", ""),
+            dns_use_agent=_choice(
+                "NETADMIN_DNS_USE_AGENT",
+                "true" if os.getenv("NETADMIN_DNS_AGENT_URL") else "false",
+                {"true", "false"},
+            )
+            == "true",
             dns_server=os.getenv("NETADMIN_DNS_SERVER", "dns"),
             dns_tsig_name=os.getenv("NETADMIN_DNS_TSIG_NAME", "rndc-key"),
             dns_tsig_secret=os.getenv("NETADMIN_DNS_TSIG_SECRET", ""),

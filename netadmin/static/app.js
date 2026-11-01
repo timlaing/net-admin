@@ -14,6 +14,15 @@
   apply();
   system.addEventListener('change', apply);
   document.addEventListener('DOMContentLoaded', () => {
+    const dnsMode = document.getElementById('dns_use_agent');
+    if (dnsMode) {
+      const updateDnsMode = () => {
+        document.querySelectorAll('[data-direct-dns]').forEach(section => { section.hidden = dnsMode.checked; });
+        document.querySelectorAll('[data-dns-agent-field]').forEach(field => { field.hidden = !dnsMode.checked; });
+      };
+      dnsMode.addEventListener('change', updateDnsMode);
+      updateDnsMode();
+    }
     document.querySelectorAll('[data-scroll-region]').forEach(region => {
       // Native scrolling accepts arrow keys once focused. Avoid extra Tab stops
       // when the complete table already fits in the available width.

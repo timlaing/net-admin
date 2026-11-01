@@ -50,7 +50,9 @@ def settings_page() -> Any:
         for field, value in active.items()
     }
     data = {
-        field: value == "true" if field.endswith("_enabled") else value
+        field: value == "true"
+        if (field.endswith("_enabled") or field == "dns_use_agent")
+        else value
         for field, value in previous.items()
         if field not in SECRET_FIELDS
     }

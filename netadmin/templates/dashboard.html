@@ -10,12 +10,12 @@
 {% if g.identity.role == 'admin' %}
 <div class="metric-strip" aria-label="Configuration summary">
   <div class="metric"><strong>{{ enabled_count }}<span class="visually-hidden"> of 3</span></strong><span>Services enabled</span></div>
-  <div class="metric"><strong>{{ 'Agent discovery' if service_settings.dns_agent_url else service_settings.dns_zones|length if not service_settings.dns_config_path else 'Local file' }}</strong><span>Configured DNS zones</span></div>
+  <div class="metric"><strong>{{ 'Agent discovery' if service_settings.dns_use_agent else service_settings.dns_zones|length if not service_settings.dns_config_path else 'Local file' }}</strong><span>Configured DNS zones</span></div>
   <div class="metric"><strong>{{ service_settings.dhcp_backend|upper }}</strong><span>DHCP backend</span></div>
 </div>
 <div class="section-heading"><h2>Network services</h2><span class="form-text">Connection tests are run on demand</span></div>
 <div class="service-grid">
-{% for title, text, endpoint, address in [('DNS','Names & records','web.dns_index', service_settings.dns_server),('DHCP','Addresses & reservations','web.dhcp_index', service_settings.dhcp_agent_url),('RADIUS','Users & access','web.radius_index', service_settings.radius_agent_url)] %}
+{% for title, text, endpoint, address in [('DNS','Names & records','web.dns_index', service_settings.dns_agent_url if service_settings.dns_use_agent else service_settings.dns_server),('DHCP','Addresses & reservations','web.dhcp_index', service_settings.dhcp_agent_url),('RADIUS','Users & access','web.radius_index', service_settings.radius_agent_url)] %}
 {% set key = title|lower %}{% set enabled = service_settings|attr(key ~ '_enabled') %}{% set check = checks.get(key) %}
 <article class="service-card">
   <div class="service-card-top"><span class="service-glyph">{{ icon(key) }}</span><span class="status {{ 'status-success' if enabled and check and check.result.state == 'Connected' else 'status-warning' if enabled and check else '' }}">{{ check.result.state if enabled and check else 'Not tested' if enabled else 'Disabled' }}</span></div>

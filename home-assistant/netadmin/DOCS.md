@@ -61,9 +61,9 @@ Settings groups everyday connection fields by service. Advanced sections contain
   verification is never disabled. Both agents must trust the client certificate.
 - **RADIUS:** enter both the administration agent URL and the authentication host,
   plus the existing shared secret configured in FreeRADIUS's client entry.
-- **Advanced DNS:** set the TSIG name/algorithm if they differ from your existing
-  key. Use the optional DNS agent for automatic zone discovery and management. Without
-  an agent, enter zone names or provide a readable local Bind configuration.
+- **DNS connection mode:** turn **Use DNS agent** on for an agent URL and shared
+  agent security. Turn it off for **Direct Bind**, including server, zones and TSIG
+  settings. Only the selected mode is used; switching preserves the other values.
 
 Each diagnostic tests the **active** settings. Saving validates and applies connection
 changes immediately without a process restart. **Reload saved connections** applies
@@ -141,10 +141,26 @@ of this option. The app does not publish an additional direct port automatically
 
 ## DNS agent and automatic zone discovery
 
-Deploy the DNS agent alongside Bind, then enter its HTTPS URL under NetAdmin
-**Settings → DNS**. It uses the shared agent token and client mTLS credentials.
-When configured, its inventory replaces the manual zone list; zones need not be
-specified up front. Record reads and updates still use Bind's AXFR/RFC 2136 interface.
+Deploy the DNS agent alongside Bind, turn on **Settings → DNS → Use DNS agent**
+and enter its HTTPS URL. It uses the shared agent token and client mTLS credentials.
+Agent mode discovers zones and routes all zone and record operations through the
+agent. The web app does not need a Bind address, zone list, TSIG secret or local
+Bind configuration path in this mode.
+
+The agent connects locally to Bind (`DNS_SERVER=127.0.0.1`, `DNS_PORT=53`) and reads
+the selected TSIG key and algorithm from Bind's expanded configuration. The key
+must permit AXFR and RFC 2136 updates for each managed zone. Neither its secret
+nor the expanded configuration is returned by the API. Keep these settings on the
+Bind/agent deployment. Record writes are limited to discovered authoritative zones;
+SOA/NS and protocol control record types are protected.
+
+Turn **Use DNS agent** off to use direct Bind access. The retained agent URL is
+ignored, and the Direct Bind section appears. Agent mode ignores retained direct
+Bind settings. Existing deployments infer agent mode from a configured agent URL
+until the toggle is explicitly saved.
+
+Upgrade the DNS agent to **0.6.0 or newer before updating the web app** in agent
+mode. Agents from 0.5.x lack the record API; there is no silent direct-Bind fallback.
 
 Zone creation takes a zone name and complete zone file (SOA and NS included).
 Zone removal stops serving that zone but retains the zone file and journal.
