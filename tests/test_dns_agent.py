@@ -112,3 +112,45 @@ def test_agent_uses_configured_tsig_name_unless_explicitly_overridden(monkeypatc
     assert create_dns_agent().config["DNS_UPDATE_KEY"] == "custom-update"
     monkeypatch.setenv("DNS_UPDATE_KEY", "explicit-update")
     assert create_dns_agent().config["DNS_UPDATE_KEY"] == "explicit-update"
+
+
+def test_zone_snapshot_uses_journal_without_writing_or_reconfiguring(tmp_path, monkeypatch):
+    client, main = agent(tmp_path, monkeypatch)
+    zone = (
+        "$TTL 300\n@ IN SOA ns.existing.example. hostmaster.existing.example. "
+        "(1 3600 600 86400 300)\n@ IN NS ns.existing.example.\n"
+        "ns IN A 192.0.2.1\n"
+    )
+    calls = []
+
+    def command(args, **kwargs):
+        calls.append(args)
+        if args[0].endswith("named-checkconf"):
+            return SimpleNamespace(
+                stdout=f'options {{ directory "{tmp_path}"; }}; '
+                'zone "existing.example" { type primary; file "existing.zone"; };'
+            )
+        return SimpleNamespace(stdout=zone)
+
+    monkeypatch.setattr("netadmin.agents.dns.subprocess.run", command)
+    before = main.read_bytes()
+    response = client.get("/records?zone=existing.example&source=file", headers=AUTH)
+    assert response.status_code == 200
+    assert any(r["name"] == "ns" and r["value"] == "192.0.2.1" for r in response.json)
+    assert calls[-1] == [
+        "/usr/bin/named-compilezone",
+        "-j",
+        "-q",
+        "-D",
+        "-o",
+        "-",
+        "existing.example",
+        str(tmp_path / "existing.zone"),
+    ]
+    assert main.read_bytes() == before
+    assert not (tmp_path / "managed.conf").exists()
+    assert (
+        client.get("/records?zone=unconfigured.example&source=file", headers=AUTH).status_code
+        == 400
+    )
+    assert sum(c[0].endswith("named-compilezone") for c in calls) == 1

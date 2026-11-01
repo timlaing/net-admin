@@ -258,7 +258,25 @@ with TemporaryDirectory() as directory:
     assert delegated.get("/").status_code == 302
     assert delegated.get("/", headers=identity,
                          environ_overrides={"REMOTE_ADDR": "127.0.0.1"}).status_code == 403
+    # HTTP ingress needs a usable CSRF cookie, while HTTPS and direct cookies
+    # remain Secure. The test action reads configuration without changing it.
+    http_ingress = app.test_client()
+    http_ingress.environ_base["REMOTE_ADDR"] = "172.30.32.2"
+    http_headers = {**identity, "X-Forwarded-Proto": "http"}
+    http_base = "http://localhost" + prefix
+    response = http_ingress.get("/settings", base_url=http_base, headers=http_headers)
+    cookie = response.headers["Set-Cookie"]
+    assert "; Secure;" not in cookie and "Path=" + prefix in cookie
+    csrf = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', response.text).group(1)
+    assert http_ingress.post("/settings/test/dns", base_url=http_base,
+                             headers=http_headers).status_code == 400
+    response = http_ingress.post("/settings/test/dns", base_url=http_base,
+                                 headers=http_headers, data={"csrf_token": csrf})
+    assert response.status_code == 200 and "Disabled" in response.text
+    response = app.test_client().get("/login", base_url="http://localhost")
+    assert "; Secure;" in response.headers["Set-Cookie"]
 print("Configured add-on ingress checks passed")
+print("HTTP ingress CSRF and direct Secure cookie checks passed")
 print("Packaged settings and CSRF-protected diagnostics checks passed")
 print("Connection save/reload without restart check passed")
 print("Delegated ingress authentication and direct-access isolation checks passed")

@@ -16,7 +16,7 @@ Before making changes through NetAdmin, configure:
 
 ## First start
 
-1. Install and start NetAdmin, then open its interface through Home Assistant over HTTPS.
+1. Install and start NetAdmin, then open its interface through Home Assistant ingress.
 2. Create an emergency `root` password of at least 12 characters.
 3. Restart NetAdmin from Home Assistant and sign in as `root`.
 4. Open **Settings**. Enable DNS, DHCP and/or RADIUS and enter their connection details.
@@ -83,15 +83,15 @@ Set `NETADMIN_DNS_ENABLED`, `NETADMIN_DHCP_ENABLED` and `NETADMIN_RADIUS_ENABLED
 
 ## Access and troubleshooting
 
-Open NetAdmin through Home Assistant ingress over HTTPS. Session cookies are
-always Secure, so plain HTTP is unsuitable for login. NetAdmin requires its own login by default. The optional ingress login policy
+Open NetAdmin through Home Assistant ingress using HTTP or HTTPS. Ingress cookies
+follow the frontend's scheme and remain scoped to NetAdmin's ingress path.
+NetAdmin requires its own login by default. The optional ingress login policy
 below can delegate administrator authentication to Home Assistant. RADIUS users
 with `Filter-Id` set to `netadmin-admin` can administer services; users with
 `netadmin-standard` can change only their own password.
 
-The HTTPS notice is hidden through trusted ingress. For direct HTTP access, open
-NetAdmin using HTTPS. When HTTPS terminates at a reverse proxy, ensure it forwards
-the original protocol. Do not disable Secure cookies to work around this.
+The HTTPS requirement applies to direct access, whose cookies remain Secure.
+When HTTPS terminates at a reverse proxy, ensure it forwards the original protocol.
 Ingress navigation, form actions and session cookies stay under NetAdmin's own
 Home Assistant ingress path.
 
@@ -133,8 +133,8 @@ fall back to NetAdmin login. A non-administrator identity is denied.
 
 Delegated access does not issue a reusable NetAdmin administrator session cookie.
 Audit records identify the Home Assistant user by stable user ID. Sign-out and
-password changes belong to Home Assistant when using this mode. CSRF protection and
-Secure cookies remain enabled: continue using HTTPS for the Home Assistant frontend.
+password changes belong to Home Assistant when using this mode. CSRF protection
+remains enabled over both HTTP and HTTPS ingress. HTTPS ingress cookies remain Secure.
 
 Standalone containers and direct requests always retain NetAdmin login, regardless
 of this option. The app does not publish an additional direct port automatically.
@@ -205,3 +205,37 @@ in Bind's configuration (not only in its separate RNDC key file). The agent uses
 rejects creation if that key is not declared. Custom non-root/AppArmor deployments
 must provision `DNS_ZONE_DIR` with daemon write access for dynamic-update journals;
 the bundled container test verifies authenticated updates in the supplied image.
+
+### Read-only agents and zone snapshots (0.6.1)
+
+Set `NETADMIN_AGENT_READ_ONLY=true` on each service agent for inventory-only access.
+Agents reject write requests even if a caller bypasses the interface. NetAdmin
+reads `/capabilities` and disables service mutation forms. Keep configuration
+mounts read-only and omit reload/PID access for these deployments. Older agents
+without the capability endpoint retain their existing behavior.
+
+When **Load live zone** fails, the DNS page remains available and explains the
+zone-transfer requirement. With DNS agent 0.6.1 or newer, **Read local zone
+snapshot** reads the configured zone file plus its journal through Bind's native
+compiler. This does not reload Bind or change its transfer policy. Snapshots can
+lag unpersisted in-memory changes. Mount the zone files, journals and any included
+files at the paths declared in Bind's configuration. Direct Bind mode still
+requires authenticated AXFR for live record reads.
+
+RADIUS agent 0.6.1 reports each client's source and supports updating or deleting
+simple client definitions in the configured main clients file or managed include.
+Use **Edit** to populate the form. Leave the shared secret blank to preserve it;
+new clients require a secret of at least 16 characters. Updates preserve unrelated
+attributes. Duplicate client names and nested client blocks require native editing.
+The agent must have the complete validation configuration, a writable directory
+mount for the target file and working reload access before enabling changes.
+Individual file mounts can prevent atomic replacement; read-only deployments
+remain inventory-only. Existing EAP settings, certificates and passwords do not
+need migration for client management.
+
+The overview checks agent connectivity automatically and refreshes every 30 seconds
+while the page is visible. Status checks require an administrator session and use
+short HTTP timeouts with a 30-second server-side cache. A connected DNS agent does
+not imply that Bind allows AXFR, and a connected RADIUS agent does not verify a
+RADIUS user's login. Use the Settings diagnostics to check those service operations.
+Direct Bind mode is labelled separately because no DNS agent is configured.

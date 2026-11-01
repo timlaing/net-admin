@@ -39,7 +39,14 @@
 <div class="table-tools" hidden data-filter-tools>
   <label class="visually-hidden" for="filter-{{ id }}">Search {{ label }}</label>
   <input class="form-control table-search" id="filter-{{ id }}" type="search" placeholder="Search {{ label }}…" data-table-filter="{{ id }}">
+  <label for="page-size-{{ id }}">Rows per page</label>
+  <select class="form-select w-auto" id="page-size-{{ id }}" data-page-size><option>10</option><option selected>25</option><option>50</option><option>100</option></select>
   <span class="form-text" data-filter-count="{{ id }}" aria-live="polite"></span>
+  <div class="d-flex align-items-center gap-2" role="group" aria-label="{{ label|capitalize }} pagination">
+    <button type="button" class="btn btn-sm btn-outline-secondary" data-page-previous aria-label="Previous page of {{ label }}">Previous</button>
+    <span class="form-text" data-page-position aria-live="polite"></span>
+    <button type="button" class="btn btn-sm btn-outline-secondary" data-page-next aria-label="Next page of {{ label }}">Next</button>
+  </div>
 </div>
 {%- endmacro %}
 

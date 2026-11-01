@@ -48,7 +48,9 @@ file-backed changes.
 5. Run `docker compose up --build -d`.
 6. Put the application behind HTTPS and open port 8099 through the reverse proxy.
 
-The cookie is always `Secure`, so plain HTTP is intentionally unsuitable for login.
+Direct-access cookies are always `Secure`, so direct HTTP is unsuitable for login.
+Verified Home Assistant ingress supports its frontend's HTTP or HTTPS connection;
+ingress cookies stay scoped to the app's ingress path.
 
 ### Key material
 

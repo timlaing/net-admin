@@ -85,6 +85,7 @@ def connection_extensions(settings: Settings) -> dict[str, Any]:
     """Construct replacements before changing any active app references."""
     extensions: dict[str, Any] = {
         "netadmin_connection_results": {},
+        "netadmin_agent_results": {},
         "netadmin_settings": settings,
         "netadmin_dns": dns_service(settings),
         "netadmin_dhcp": AgentClient(
@@ -284,6 +285,44 @@ class ConnectionResult:
 
     state: str
     message: str
+
+
+def agent_status(settings: Settings, service: str) -> ConnectionResult:
+    """Check agent transport without requiring DNS transfer or RADIUS login permissions."""
+    if not getattr(settings, f"{service}_enabled"):
+        return ConnectionResult("Disabled", "Enable this service in Settings when you need it.")
+    if service == "dns" and not settings.dns_use_agent:
+        return ConnectionResult(
+            "Direct Bind", "DNS agent is off. Test direct Bind access in Settings."
+        )
+    values = connection_values(settings)
+    fields = {f"{service}_agent_url", *SECTIONS["Agent security"]}
+    errors = configuration_errors(values)
+    if relevant := [message for field, message in errors.items() if field in fields]:
+        return ConnectionResult("Not configured", relevant[0])
+    client = AgentClient(
+        getattr(settings, f"{service}_agent_url"),
+        settings.agent_token,
+        settings.agent_ca,
+        settings.agent_cert,
+        settings.agent_key,
+    )
+    try:
+        response = client.get("zones" if service == "dns" else "health", timeout=3)
+        valid = (
+            isinstance(response, list)
+            if service == "dns"
+            else (isinstance(response, dict) and response.get("status") == "ok")
+        )
+        if not valid:
+            return ConnectionResult("Unavailable", "Unexpected agent response. Check its URL.")
+        return ConnectionResult(
+            "Connected",
+            "Agent accepted TLS and bearer authentication. "
+            "Service operation permissions are checked separately in Settings.",
+        )
+    except (httpx.HTTPError, OSError, ValueError, RuntimeError) as error:
+        return ConnectionResult("Unavailable", _failure_message(error))
 
 
 def test_connection(settings: Settings, service: str) -> ConnectionResult:

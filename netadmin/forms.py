@@ -104,8 +104,10 @@ class RadiusClientForm(FlaskForm):
 
     name = StringField("Name", validators=[DataRequired(), Regexp(r"^[A-Za-z0-9_.-]+$")])
     address = StringField("IP address or CIDR", validators=[DataRequired(), Length(max=128)])
-    shortname = StringField("Short name", validators=[DataRequired(), Length(max=128)])
-    secret = PasswordField("Shared secret", validators=[DataRequired(), Length(min=16, max=1024)])
+    shortname = StringField("Short name", validators=[Length(max=128)])
+    secret = PasswordField(
+        "Shared secret (blank keeps the existing secret)", validators=[Length(max=1024)]
+    )
     submit = SubmitField("Save client")
 
 

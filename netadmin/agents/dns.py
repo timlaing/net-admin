@@ -11,7 +11,9 @@ from typing import Any, cast
 
 import dns.exception
 import dns.name
+import dns.query
 import dns.rdatatype
+import dns.zone
 from flask import Flask, current_app, jsonify, request  # pylint: disable=wrong-import-order
 
 from netadmin.agents.common import configured_path, create_agent, json_object, validated_transaction
@@ -43,7 +45,49 @@ def _record_backend(zone: str) -> BindService:
 
 def _records() -> Any:
     zone = request.args.get("zone", "")
-    return jsonify([asdict(item) for item in _record_backend(zone).records(zone)])
+    if request.args.get("source") == "file":
+        return _file_records(zone)
+    try:
+        return jsonify([asdict(item) for item in _record_backend(zone).records(zone)])
+    except dns.query.TransferError:
+        return jsonify({"error": "zone_transfer_refused"}), 502
+
+
+def _file_records(zone: str) -> Any:
+    """Read a configured zone and its journal without changing Bind or its policy."""
+    canonical = _canonical()
+    _zone_blocks(canonical)
+    selected = next((item for item in discover_zones(canonical) if item.name == zone), None)
+    if selected is None or not selected.file:
+        raise ValueError("Unknown authoritative zone or missing zone file")
+    directory = re.search(r'\bdirectory\s+"([^"]+)"\s*;', canonical)
+    filename = Path(selected.file)
+    if not filename.is_absolute():
+        if directory is None:
+            raise ValueError("Relative zone file requires an explicit Bind directory")
+        filename = Path(directory[1]) / filename
+    result = subprocess.run(  # noqa: S603 - configured Bind file, fixed executable, no shell.
+        ["/usr/bin/named-compilezone", "-j", "-q", "-D", "-o", "-", zone, str(filename)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        cwd=directory[1] if directory else filename.parent,
+    )
+    snapshot = dns.zone.from_text(result.stdout, origin=zone, relativize=True)
+    return jsonify(
+        [
+            {
+                "name": name.to_text(),
+                "ttl": dataset.ttl,
+                "record_type": dataset.rdtype.name,
+                "value": record.to_text(),
+            }
+            for name, node in snapshot.nodes.items()
+            for dataset in node.rdatasets
+            for record in dataset
+        ]
+    )
 
 
 def _record_change(delete: bool = False) -> Any:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import secrets
@@ -20,6 +21,7 @@ from netadmin.agents.common import (
     validated_transaction,
 )
 from netadmin.services.radius_files import (
+    edit_client,
     migrate_authorize,
     migrate_to_managed,
     parse_authorize,
@@ -246,20 +248,21 @@ def _change_password() -> Any:
 
 
 def _clients() -> Any:
-    values = parse_clients(_path("RADIUS_CLIENTS").read_text(encoding="utf-8"))
-    managed_clients = _path("RADIUS_MANAGED_CLIENTS")
-    if managed_clients.exists():
-        values += parse_clients(managed_clients.read_text(encoding="utf-8"))
     return jsonify(
         [
-            {"name": item.name, "address": item.address, "shortname": item.shortname}
-            for item in values
+            {
+                "name": item.name,
+                "address": item.address,
+                "shortname": item.shortname,
+                "source": source,
+            }
+            for source, path in [
+                ("clients.conf", _path("RADIUS_CLIENTS")),
+                ("netadmin", _path("RADIUS_MANAGED_CLIENTS")),
+            ]
+            for item in parse_clients(_managed_text(path))
         ]
     )
-
-
-def _client_entries_or_empty(managed_clients: Path) -> dict[str, tuple[str, str, str]]:
-    return _client_entries(_managed_text(managed_clients))
 
 
 def _save_client() -> Any:
@@ -268,37 +271,76 @@ def _save_client() -> Any:
     address = str(body.get("address", ""))
     shortname = str(body.get("shortname", name))
     secret_value = str(body.get("secret", ""))
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name) or not secret_value:
-        return jsonify({"error": "Valid name and secret required"}), 400
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+        return jsonify({"error": "Valid client name required"}), 400
+    try:
+        ipaddress.ip_network(address, strict=False)
+    except ValueError:
+        return jsonify({"error": "Valid IP address or CIDR required"}), 400
+    if any(char in shortname + secret_value for char in '\r\n\x00"\\'):
+        return jsonify({"error": "Client values contain unsupported characters"}), 400
+    existing = _client_target(name)
+    if existing:
+        values = {"ipaddr": address, "shortname": shortname}
+        if secret_value:
+            values["secret"] = secret_value
+        _install_client(existing, edit_client(_managed_text(existing), name, values))
+        return jsonify({"name": name, "address": address, "shortname": shortname})
+    if len(secret_value) < 16:
+        return jsonify({"error": "New clients require a secret of at least 16 characters"}), 400
     managed_clients = _path("RADIUS_MANAGED_CLIENTS")
-    entries = _client_entries_or_empty(managed_clients)
-    entries[name] = (address, shortname, secret_value)
-    atomic_validated_write(
-        managed_clients,
-        render_clients(entries),
-        _stage_for(managed_clients),
-        _reload(),
+    content = (
+        _managed_text(managed_clients)
+        + "\n"
+        + render_clients({name: (address, shortname, secret_value)})
     )
+    _install_client(managed_clients, content)
     return jsonify({"name": name, "address": address, "shortname": shortname})
 
 
 def _delete_client() -> Any:
     name = str(json_object().get("name", ""))
-    managed_clients = _path("RADIUS_MANAGED_CLIENTS")
-    entries = _client_entries_or_empty(managed_clients)
-    entries.pop(name, None)
-    atomic_validated_write(
-        managed_clients,
-        render_clients(entries),
-        _stage_for(managed_clients),
-        _reload(),
-    )
+    target = _client_target(name)
+    if target is None:
+        return jsonify({"error": "Client not found"}), 404
+    _install_client(target, edit_client(_managed_text(target), name, None))
     return jsonify({"deleted": name})
+
+
+def _client_target(name: str) -> Path | None:
+    matches = [
+        path
+        for path in sorted({_path("RADIUS_CLIENTS"), _path("RADIUS_MANAGED_CLIENTS")})
+        for item in parse_clients(_managed_text(path))
+        if item.name == name
+    ]
+    if len(matches) > 1:
+        raise ValueError("Duplicate client names require native configuration editing")
+    return matches[0] if matches else None
+
+
+def _install_client(target: Path, content: str) -> None:
+    validated_transaction(
+        {target: content},
+        _validate_radius,
+        _reload(),
+        allowed_roots=(_path("RADIUS_CLIENTS").parent, _path("RADIUS_MANAGED_CLIENTS").parent),
+    )
 
 
 def create_radius_agent() -> Flask:
     """Create the FreeRADIUS management agent."""
     app = create_agent(__name__)
+
+    @app.errorhandler(ValueError)
+    def invalid_client(_error: ValueError) -> Any:
+        return jsonify(
+            {
+                "error": "Invalid or ambiguous configuration; "
+                "nested client definitions require native editing"
+            }
+        ), 400
+
     app.config.update(
         RADIUS_MANAGED=configured_path(
             "RADIUS_MANAGED_FILE", "/etc/raddb/mods-config/files/netadmin"

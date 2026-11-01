@@ -7,7 +7,16 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 import dns.exception
-from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for  # pylint: disable=wrong-import-order
+from flask import (  # pylint: disable=wrong-import-order
+    Blueprint,
+    current_app,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 
 from netadmin.auth import admin_required, current_identity, extension
 from netadmin.config import Settings
@@ -17,6 +26,7 @@ from netadmin.connections import (
     SECRET_FIELDS,
     SECTIONS,
     ConnectionForm,
+    agent_status,
     configuration_errors,
     connection_extensions,
     connection_values,
@@ -83,7 +93,10 @@ def settings_page() -> Any:
     return render_template(
         "settings.html",
         form=form,
-        sections=SECTIONS,
+        sections={
+            name: SECTIONS[name]
+            for name in ("DNS", "Direct Bind", "DHCP", "RADIUS", "Agent security")
+        },
         secrets={name: bool(previous[name]) for name in SECRET_FIELDS},
         editable=editable,
         pending=pending,
@@ -101,6 +114,22 @@ def connection_test(service: str) -> Any:
         "checked_at": int(datetime.now(UTC).timestamp()),
     }
     return render_template("connection_test.html", service=service.upper(), result=result)
+
+
+@connection_web.get("/connections/status/<any(dns,dhcp,radius):service>")
+@admin_required
+def connection_status(service: str) -> Any:
+    """Read-only, short-lived status cache shared by overview polling clients."""
+    now = int(datetime.now(UTC).timestamp())
+    cache = current_app.extensions["netadmin_agent_results"]
+    entry = cache.get(service)
+    if entry is None or not 0 <= now - entry["checked_at"] < 30:
+        result = agent_status(cast(Settings, extension("netadmin_settings")), service)
+        entry = {"state": result.state, "message": result.message, "checked_at": now}
+        cache[service] = entry
+    response = jsonify(entry)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @connection_web.route("/settings/reload", methods=["POST"])

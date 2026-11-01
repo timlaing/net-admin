@@ -5,9 +5,10 @@ from __future__ import annotations
 import os
 from typing import Any, cast
 
-import httpx
-from flask import Blueprint, Flask, flash, g, redirect, render_template, request, url_for
-from flask_wtf import CSRFProtect
+import dns.exception
+import httpx  # pylint: disable=wrong-import-order
+from flask import Blueprint, Flask, flash, g, redirect, render_template, request, url_for  # pylint: disable=wrong-import-order
+from flask_wtf import CSRFProtect  # pylint: disable=wrong-import-order
 
 from netadmin.auth import (
     admin_required,
@@ -33,9 +34,10 @@ from netadmin.forms import (
     ReservationForm,
     RpiRecordForm,
 )
-from netadmin.ingress import configure_ingress
+from netadmin.ingress import configure_ingress, session_cookie_secure
 from netadmin.presentation import display_time
 from netadmin.services.agents import AgentClient
+from netadmin.services.dns import AgentDnsService
 from netadmin.settings_web import connection_web
 from netadmin.store import Store
 
@@ -87,7 +89,7 @@ def login() -> Any:
             response.set_cookie(
                 "netadmin_session",
                 session_id,
-                secure=True,
+                secure=session_cookie_secure(),
                 httponly=True,
                 samesite="Strict",
                 max_age=None,
@@ -123,6 +125,7 @@ def dashboard() -> Any:
         "dashboard.html",
         enabled_count=sum((runtime.dns_enabled, runtime.dhcp_enabled, runtime.radius_enabled)),
         checks=extension("netadmin_connection_results"),
+        agent_checks=extension("netadmin_agent_results"),
         events=_store().recent_audit(5) if current_identity().role == "admin" else [],
     )
 
@@ -132,10 +135,28 @@ def dashboard() -> Any:
 def dns_index() -> Any:
     """Show records for a selected authoritative zone."""
     zone = request.args.get("zone", "")
-    records = extension("netadmin_dns").records(zone) if zone else []
+    bind = extension("netadmin_dns")
+    zones = bind.zones()
+    records = []
+    zone_error = ""
+    snapshot = request.args.get("source") == "file" and isinstance(bind, AgentDnsService)
+    if zone:
+        if zone not in {item.name for item in zones}:
+            zone_error = "Select a configured authoritative zone."
+        else:
+            try:
+                records = bind.snapshot_records(zone) if snapshot else bind.records(zone)
+            except (httpx.HTTPError, dns.exception.DNSException, OSError, ValueError):
+                zone_error = (
+                    "Could not read the zone file and journal. "
+                    "Check the DNS agent's file mounts and permissions."
+                    if snapshot
+                    else "Could not load live records. Bind must allow authenticated zone "
+                    "transfers (AXFR) for this connection. Check its transfer policy and TSIG key."
+                )
     return render_template(
         "dns.html",
-        zones=extension("netadmin_dns").zones(),
+        zones=zones,
         zone=zone,
         records=records,
         record_form=DnsRecordForm(),
@@ -143,6 +164,9 @@ def dns_index() -> Any:
         rpi_form=RpiRecordForm(),
         zone_form=DnsZoneForm(),
         zone_management=_settings().dns_use_agent,
+        zone_error=zone_error,
+        snapshot=snapshot,
+        read_only=bind.client.read_only() if isinstance(bind, AgentDnsService) else False,
     )
 
 
@@ -253,6 +277,7 @@ def dhcp_index() -> Any:
         leases=client.get("leases"),
         subnets=client.get("configuration"),
         backend=_settings().dhcp_backend,
+        read_only=client.read_only(),
     )
 
 
@@ -347,6 +372,7 @@ def radius_index() -> Any:
         users=client.get("users"),
         clients=client.get("clients"),
         migration=client.get("migration"),
+        read_only=client.read_only(),
     )
 
 

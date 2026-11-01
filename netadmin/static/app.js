@@ -14,10 +14,41 @@
   apply();
   system.addEventListener('change', apply);
   document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('[data-connection-status-url]').forEach(card => {
+      const badge = card.querySelector('[data-connection-state]');
+      const message = card.querySelector('[data-connection-message]');
+      const checked = card.querySelector('[data-connection-checked]');
+      const update = async () => {
+        if (document.hidden) return;
+        try {
+          const response = await fetch(card.dataset.connectionStatusUrl, {
+            credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(6000),
+          });
+          if (!response.ok || response.redirected) throw new Error('Status unavailable');
+          const result = await response.json();
+          badge.textContent = result.state;
+          badge.classList.toggle('status-success', result.state === 'Connected');
+          badge.classList.toggle('status-warning', result.state !== 'Connected');
+          message.textContent = result.message;
+          checked.textContent = `Checked ${new Date(result.checked_at * 1000).toLocaleTimeString()}`;
+        } catch (_) {
+          badge.textContent = 'Unavailable';
+          badge.classList.remove('status-success');
+          badge.classList.add('status-warning');
+          message.textContent = 'Could not check this connection. Open Settings for diagnostics.';
+          checked.textContent = 'Last check failed';
+        }
+      };
+      update();
+      window.setInterval(update, 30000);
+    });
     const dnsMode = document.getElementById('dns_use_agent');
     if (dnsMode) {
       const updateDnsMode = () => {
-        document.querySelectorAll('[data-direct-dns]').forEach(section => { section.hidden = dnsMode.checked; });
+        document.querySelectorAll('[data-direct-dns]').forEach(section => {
+          section.hidden = dnsMode.checked;
+          section.open = !dnsMode.checked;
+        });
         document.querySelectorAll('[data-dns-agent-field]').forEach(field => { field.hidden = !dnsMode.checked; });
       };
       dnsMode.addEventListener('change', updateDnsMode);
@@ -48,14 +79,50 @@
       if (!table) return;
       const rows = [...table.querySelectorAll('[data-filter-row]')];
       const count = document.querySelector(`[data-filter-count="${table.id}"]`);
-      const filter = () => {
+      const tools = input.closest('[data-filter-tools]');
+      const size = tools.querySelector('[data-page-size]');
+      const previous = tools.querySelector('[data-page-previous]');
+      const next = tools.querySelector('[data-page-next]');
+      const position = tools.querySelector('[data-page-position]');
+      let page = 1;
+      const render = () => {
         const query = input.value.trim().toLocaleLowerCase();
-        let visible = 0;
-        rows.forEach(row => { row.hidden = !row.textContent.toLocaleLowerCase().includes(query); if (!row.hidden) visible++; });
-        if (count) count.textContent = `${visible} of ${rows.length} shown`;
+        const matching = rows.filter(row => row.textContent.toLocaleLowerCase().includes(query));
+        const pageSize = Number(size.value);
+        const pages = Math.max(1, Math.ceil(matching.length / pageSize));
+        page = Math.min(page, pages);
+        const start = (page - 1) * pageSize;
+        rows.forEach(row => { row.hidden = true; });
+        matching.slice(start, start + pageSize).forEach(row => { row.hidden = false; });
+        if (count) count.textContent = matching.length ? `${start + 1}–${Math.min(start + pageSize, matching.length)} of ${matching.length} (${rows.length} total)` : `0 of ${rows.length} matches`;
+        position.textContent = `Page ${page} of ${pages}`;
+        previous.disabled = page === 1;
+        next.disabled = page === pages;
       };
-      input.addEventListener('input', filter);
-      filter();
+      input.addEventListener('input', () => { page = 1; render(); });
+      size.addEventListener('change', () => { page = 1; render(); });
+      previous.addEventListener('click', () => { page--; render(); });
+      next.addEventListener('click', () => { page++; render(); });
+      render();
+    });
+    document.querySelectorAll('[data-edit-client]').forEach(button => {
+      button.addEventListener('click', () => {
+        const form = document.getElementById('client-form');
+        ['name', 'address', 'shortname'].forEach(name => { form.elements[name].value = button.dataset[name] || ''; });
+        form.elements.name.readOnly = true;
+        form.elements.secret.value = '';
+        form.closest('details').open = true;
+        form.scrollIntoView({ block: 'center' });
+        form.elements.address.focus();
+      });
+    });
+    document.querySelectorAll('[data-new-client]').forEach(button => {
+      button.addEventListener('click', () => {
+        const form = document.getElementById('client-form');
+        form.reset();
+        form.elements.name.readOnly = false;
+        form.elements.name.focus();
+      });
     });
     document.querySelectorAll('form[data-confirm]').forEach(form => {
       form.addEventListener('submit', event => {

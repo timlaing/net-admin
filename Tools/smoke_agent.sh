@@ -81,3 +81,15 @@ if curl -fsS --cacert "$pki/ca.crt" "$url" >/dev/null 2>&1; then
   exit 1
 fi
 echo "Agent container mTLS and token smoke checks passed"
+docker exec -i "$name" python3 - "$port" <<'PY'
+import sys
+from pathlib import Path
+from netadmin.services.agents import AgentClient
+
+client = AgentClient(
+    'https://127.0.0.1:' + sys.argv[1], 'smoke-test-agent-token',
+    Path('/pki/ca.crt'), Path('/pki/client.crt'), Path('/pki/client.key'),
+)
+assert client.get('health')['status'] == 'ok'
+print('Application HTTPX client passed real mTLS with an explicit CA file')
+PY

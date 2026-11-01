@@ -29,10 +29,21 @@ def create_agent(name: str) -> Flask:
         raise RuntimeError("NETADMIN_AGENT_TOKEN must be set")
 
     @app.before_request
-    def authenticate() -> None:
+    def authenticate() -> Any:
         supplied = request.headers.get("Authorization", "").removeprefix("Bearer ")
         if not hmac.compare_digest(supplied, expected):
             abort(401)
+        if os.getenv("NETADMIN_AGENT_READ_ONLY", "false") == "true" and request.method not in {
+            "GET",
+            "HEAD",
+            "OPTIONS",
+        }:
+            return jsonify({"error": "Agent is configured read-only"}), 403
+        return None
+
+    @app.get("/capabilities")
+    def capabilities() -> Any:
+        return jsonify({"read_only": os.getenv("NETADMIN_AGENT_READ_ONLY", "false") == "true"})
 
     @app.errorhandler(TransactionPathError)
     def unsafe_path(_error: TransactionPathError) -> tuple[Any, int]:

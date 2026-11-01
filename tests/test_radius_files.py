@@ -56,3 +56,24 @@ def test_migration_moves_legacy_users_to_managed_entries() -> None:
     )
     assert "alice" not in remaining
     assert entries == {"alice": ("hash-plain", "netadmin-admin", False)}
+
+
+def test_client_edit_rejects_nested_and_duplicate_definitions():
+    import pytest
+
+    from netadmin.services.radius_files import edit_client
+
+    nested = "client router {\n ipaddr = 192.0.2.1\n tls {\n  mode = required\n }\n}\n"
+    with pytest.raises(ValueError, match="Nested"):
+        edit_client(nested, "router", None)
+    duplicate = "client router {\n ipaddr = 192.0.2.1\n}\n" * 2
+    with pytest.raises(ValueError, match="unambiguous"):
+        edit_client(duplicate, "router", None)
+    text = (
+        'client router {\n ipaddr = 192.0.2.1\n shortname = "Home gateway"\n secret = hidden\n}\n'
+    )
+    assert parse_clients(text)[0].shortname == "Home gateway"
+    changed = edit_client(text, "router", {"ipaddr": "192.0.2.10"})
+    assert changed.startswith("client router {\n")
+    assert 'shortname = "Home gateway"' in changed
+    assert "secret = hidden" in changed

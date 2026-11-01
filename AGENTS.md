@@ -79,7 +79,10 @@ Security invariants (deliberate, tested — do not weaken):
 - Agents do not mount the Docker socket.
 - Standard RADIUS users can change only their own password; mutating routes are
   `@admin_required`.
-- Session cookie is always `Secure`; plain HTTP login is intentionally broken.
+- Direct-access session cookies are always `Secure`; direct plain HTTP login is
+  intentionally broken. Verified Supervisor ingress cookies follow the external
+  HTTP/HTTPS scheme and are scoped to the app's ingress path. Never trust ingress
+  headers from other peers or disable CSRF protection.
 - Ruff `S` (security) rules are enabled; `noqa: S603/S104` and `# nosec` comments on
   subprocess/bind code are deliberate — follow the same pattern, don't remove them.
 

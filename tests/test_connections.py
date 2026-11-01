@@ -421,3 +421,66 @@ def test_supervisor_authentication_option_overrides_environment_file(tmp_path, m
         check=True,
     )
     assert result.stdout == "true"
+
+
+@pytest.mark.parametrize("service", ["dns", "dhcp", "radius"])
+def test_overview_agent_status_is_cached_and_separate_from_service_permissions(
+    agent_settings, monkeypatch, service
+):
+    settings = replace(
+        agent_settings,
+        dns_enabled=True,
+        dhcp_enabled=True,
+        radius_enabled=True,
+        dns_use_agent=True,
+        dns_agent_url="https://dns.example:8083",
+        radius_secret="",
+    )
+    client = client_for(settings, monkeypatch)
+    calls = []
+
+    def get(_client, path, **kwargs):
+        calls.append((path, kwargs))
+        return [] if path == "zones" else {"status": "ok"}
+
+    monkeypatch.setattr("netadmin.connections.AgentClient.get", get)
+    path = f"/connections/status/{service}"
+    first = client.get(path)
+    assert first.status_code == 200
+    assert first.json["state"] == "Connected"
+    assert first.headers["Cache-Control"] == "no-store"
+    assert client.get(path).json == first.json
+    assert calls == [("zones" if service == "dns" else "health", {"timeout": 3})]
+    assert "agent_token" not in first.text
+    # A new overview uses the cached state and continues to poll for fresh status.
+    page = client.get("/")
+    assert f'data-connection-status-url="{path}"' in page.text
+    assert "Connected" in page.text
+    client.application.extensions["netadmin_agent_results"][service]["checked_at"] -= 31
+    client.get(path)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("role,expected", [(None, 302), ("standard", 403)])
+def test_overview_status_requires_admin(runtime, monkeypatch, role, expected):
+    client = client_for(runtime, monkeypatch, role=role)
+    monkeypatch.setattr(
+        "netadmin.connections.AgentClient.get", lambda *a, **k: pytest.fail("probe")
+    )
+    assert client.get("/connections/status/dhcp").status_code == expected
+
+
+def test_overview_status_disabled_direct_and_unavailable(runtime, agent_settings, monkeypatch):
+    from netadmin.connections import agent_status
+
+    assert agent_status(runtime, "dhcp").state == "Disabled"
+    assert agent_status(replace(runtime, dns_enabled=True), "dns").state == "Direct Bind"
+
+    def fail(*a, **k):
+        raise httpx.ConnectError("private connection detail")
+
+    monkeypatch.setattr("netadmin.connections.AgentClient.get", fail)
+    client = client_for(agent_settings, monkeypatch)
+    response = client.get("/connections/status/dhcp")
+    assert response.json["state"] == "Unavailable"
+    assert "private connection detail" not in response.text

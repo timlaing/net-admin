@@ -259,6 +259,108 @@ def test_delegated_mutations_require_csrf_and_use_stable_audit_identity(
     assert client.application.extensions["netadmin_settings"].ingress_require_login is False
 
 
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_ingress_local_login_and_csrf_follow_frontend_scheme(tmp_path, monkeypatch, scheme):
+    client = delegated_client(tmp_path, monkeypatch, require_login=True)
+    client.application.config["WTF_CSRF_ENABLED"] = True
+    headers = {**HEADERS, "X-Forwarded-Proto": scheme}
+    base_url = f"{scheme}://localhost{PREFIX}"
+    page = client.get("/login", base_url=base_url, headers=headers)
+    cookie = page.headers["Set-Cookie"]
+    assert ("; Secure;" in cookie) == (scheme == "https")
+    assert f"Path={PREFIX}" in cookie
+    assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
+    token = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', page.text).group(1)
+    action_headers = {**headers, "Referer": base_url + "/login"}
+    assert client.post("/login", base_url=base_url, headers=action_headers).status_code == 400
+    response = client.post(
+        "/login",
+        base_url=base_url,
+        headers=action_headers,
+        data={
+            "csrf_token": token,
+            "username": "root",
+            "password": "correct-horse-battery-staple",
+        },
+    )
+    assert response.status_code == 302
+    cookie = next(
+        c for c in response.headers.getlist("Set-Cookie") if c.startswith("netadmin_session=")
+    )
+    assert ("; Secure;" in cookie) == (scheme == "https")
+    assert f"Path={PREFIX}" in cookie
+    assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
+    assert client.get("/", base_url=base_url, headers=headers).status_code == 200
+    assert client.get("/", base_url=f"{scheme}://localhost").status_code == 302
+
+
+def test_http_delegated_ingress_supports_csrf_protected_posts(tmp_path, monkeypatch):
+    client = delegated_client(tmp_path, monkeypatch)
+    client.application.config["WTF_CSRF_ENABLED"] = True
+    headers = {**ADMIN, "X-Forwarded-Proto": "http"}
+    base_url = "http://localhost" + PREFIX
+    response = client.get("/settings", base_url=base_url, headers=headers)
+    assert "; Secure;" not in response.headers["Set-Cookie"]
+    token = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', response.text).group(1)
+    for data in ({}, {"csrf_token": "invalid"}):
+        assert (
+            client.post("/settings", base_url=base_url, headers=headers, data=data).status_code
+            == 400
+        )
+    response = client.post(
+        "/settings", base_url=base_url, headers=headers, data={"csrf_token": token}
+    )
+    assert response.status_code == 302
+    assert client.application.extensions["netadmin_settings"].dns_enabled is False
+
+
+@pytest.mark.parametrize("addon", [False, True])
+def test_direct_http_cookies_stay_secure(tmp_path, monkeypatch, addon):
+    monkeypatch.setenv("NETADMIN_ADDON", "1" if addon else "0")
+    client = make_app(tmp_path).test_client()
+    client.application.config["WTF_CSRF_ENABLED"] = True
+    # A forwarded scheme without a verified ingress path does not opt out.
+    headers = {"X-Forwarded-Proto": "http"}
+    response = client.get("/login", base_url="http://localhost", headers=headers)
+    assert "; Secure;" in response.headers["Set-Cookie"]
+    client.application.config["WTF_CSRF_ENABLED"] = False
+    response = client.post(
+        "/login",
+        base_url="http://localhost",
+        headers=headers,
+        data={"username": "root", "password": "correct-horse-battery-staple"},
+    )
+    assert "; Secure;" in response.headers["Set-Cookie"]
+
+
+def test_http_setup_cookie_supports_csrf_protected_account_creation(tmp_path, monkeypatch):
+    monkeypatch.setenv("NETADMIN_ENV_FILE", str(tmp_path / "netadmin.env"))
+    app = create_setup_app()
+    app.test_client_class = SupervisorClient
+    app.config.update(TESTING=True, APPLICATION_ROOT=PREFIX)
+    client = app.test_client()
+    headers = {"X-Ingress-Path": PREFIX, "X-Forwarded-Proto": "http"}
+    base_url = "http://localhost" + PREFIX
+    response = client.get("/", base_url=base_url, headers=headers)
+    assert "; Secure;" not in response.headers["Set-Cookie"]
+    assert f"Path={PREFIX}" in response.headers["Set-Cookie"]
+    token = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', response.text).group(1)
+    assert client.post("/", base_url=base_url, headers=headers).status_code == 400
+    response = client.post(
+        "/",
+        base_url=base_url,
+        headers=headers,
+        data={
+            "csrf_token": token,
+            "password": "long-setup-password",
+            "confirm": "long-setup-password",
+        },
+    )
+    assert response.status_code == 200
+    assert b"Setup complete" in response.data
+    assert (tmp_path / "netadmin.env").is_file()
+
+
 @pytest.mark.parametrize("version", ["", "2026.10.0", "2026.10.4", "2026.11.0.dev0", "unknown"])
 def test_old_or_unknown_supervisor_never_trusts_group_headers(
     tmp_path, monkeypatch, version

@@ -36,6 +36,8 @@ jobs:
         run: .venv/bin/python -m mypy
       - name: pylint
         run: .venv/bin/python -m pylint netadmin
+      - name: UI behavior checks
+        run: node Tools/test_ui.mjs
 
   tests:
     name: Python ${{ matrix.python }}

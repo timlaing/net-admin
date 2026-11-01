@@ -168,6 +168,15 @@ class AgentDnsService(BindService):
             for item in self.client.get("records?" + urlencode({"zone": zone_name}))
         ]
 
+    def snapshot_records(self, zone_name: str) -> list[DnsRecord]:
+        """Read the persisted zone file and journal, which may lag in-memory state."""
+        return [
+            DnsRecord(**item)
+            for item in self.client.get(
+                "records?" + urlencode({"zone": zone_name, "source": "file"})
+            )
+        ]
+
     def upsert(self, zone: str, name: str, record_type: str, ttl: int, value: str) -> None:
         """Replace one RRset through the agent."""
         self.client.post(

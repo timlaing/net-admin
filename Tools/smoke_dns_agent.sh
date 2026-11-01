@@ -46,6 +46,11 @@ with tempfile.TemporaryDirectory() as directory:
         records = client.get('/records?zone=example.net', headers=headers)
         assert records.status_code == 200, records.json
         assert any(item['name'] == 'client' for item in records.json)
+        # Read persisted zone data plus live journal updates without changing
+        # transfer ACLs, syncing the daemon, or reconfiguring it.
+        snapshot = client.get('/records?zone=example.net&source=file', headers=headers)
+        assert snapshot.status_code == 200, snapshot.json
+        assert any(item['name'] == 'client' and item['value'] == '192.0.2.2' for item in snapshot.json)
         record = {'zone':'example.net','name':'agent-client','record_type':'A','ttl':600,'value':'192.0.2.3'}
         assert client.post('/records', headers=headers, json=record).status_code == 200
         records = client.get('/records?zone=example.net', headers=headers).json
@@ -58,6 +63,9 @@ with tempfile.TemporaryDirectory() as directory:
         assert (root/'managed.conf').read_bytes() == original
         assert client.post('/zones/delete', headers=headers, json={'name':'example.net'}).status_code == 200
         assert (root/'zones/example.net.zone').exists()
+        os.environ['NETADMIN_AGENT_READ_ONLY'] = 'true'
+        assert client.get('/capabilities', headers=headers).json['read_only'] is True
+        assert client.post('/zones', headers=headers, json={'name':'blocked.example','content':zone}).status_code == 403
         print('Real Bind discovery, zone lifecycle, agent record reads/updates/deletes and rollback passed')
     finally:
         daemon.terminate()

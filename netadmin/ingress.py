@@ -26,11 +26,19 @@ def supports_ingress_identity() -> bool:
     return bool(version and tuple(map(int, version.groups())) >= (2026, 10, 5))
 
 
+def session_cookie_secure() -> bool:
+    """Allow HTTP cookies only behind the verified Supervisor ingress boundary."""
+    return not request.environ.get("netadmin.trusted_ingress") or request.is_secure
+
+
 class IngressSessionInterface(SecureCookieSessionInterface):
     """Keep the CSRF session cookie within the app's ingress path."""
 
     def get_cookie_path(self, app: Flask) -> str:
         return request.script_root or super().get_cookie_path(app)
+
+    def get_cookie_secure(self, app: Flask) -> bool:
+        return session_cookie_secure()
 
 
 def configure_ingress(app: Flask) -> None:

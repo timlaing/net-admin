@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.1
+
+- Automatically show DNS/DHCP/RADIUS agent connection status on the overview, refresh every 30 seconds and keep live DNS transfer/RADIUS login diagnostics separate from agent connectivity.
+- Support HTTP and HTTPS through verified Home Assistant ingress, including CSRF-protected forms, local login and first-run setup. Direct-access cookies remain Secure.
+- Paginate searchable tables with 25 rows by default, selectable page sizes and independent controls for each table.
+- Keep the DNS page available when live transfers fail, explain AXFR requirements and offer an explicit zone-file snapshot including its journal. Snapshots can lag Bind's in-memory state and do not change transfer policy.
+- Show direct Bind settings immediately below the DNS section and expand them when disabling DNS agent mode.
+- Add RADIUS client edit/delete controls and source labels. Update existing simple client blocks in place, preserve blank secrets and unrelated attributes, reject ambiguous/nested definitions, and roll back failed validation or reloads.
+- Expose read-only agent capabilities with `NETADMIN_AGENT_READ_ONLY=true`; reject mutations server-side and disable their UI controls.
+- Fix HTTPX client certificate loading when using a custom CA file, keeping certificate and hostname verification enabled.
+- Upgrade DNS and RADIUS agents to 0.6.1 for zone snapshots, existing client management and read-only capability reporting. Existing agents remain compatible with their previous APIs; client editing requires the newer agent's source metadata.
+
 ## 0.6.0
 
 - Add an exclusive Use DNS agent toggle: agent mode needs only the agent URL and shared agent security; direct mode uses Bind/TSIG settings. Inactive settings are preserved and ignored.

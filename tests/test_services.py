@@ -93,9 +93,16 @@ def test_agent_client_uses_mtls(monkeypatch, tmp_path: Path) -> None:  # type: i
             return Response()
 
     monkeypatch.setattr(httpx, "Client", Client)
+    tls = SimpleNamespace(load_cert_chain=lambda *paths: captured.update(client_chain=paths))
+    monkeypatch.setattr(
+        "netadmin.services.agents.ssl.create_default_context",
+        lambda **kwargs: captured.update(context_options=kwargs) or tls,
+    )
     client = AgentClient(
         "https://agent", "token", tmp_path / "ca", tmp_path / "cert", tmp_path / "key"
     )
     client.get("health")
-    assert captured["verify"] == str(tmp_path / "ca")
-    assert captured["cert"] == (str(tmp_path / "cert"), str(tmp_path / "key"))
+    assert captured["verify"] is tls
+    assert captured["context_options"] == {"cafile": str(tmp_path / "ca")}
+    assert captured["client_chain"] == (str(tmp_path / "cert"), str(tmp_path / "key"))
+    assert "cert" not in captured

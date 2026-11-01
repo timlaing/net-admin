@@ -48,6 +48,7 @@ def test_multiple_dhcp_subnets_and_ranges_update_independently(tmp_path):
         },
     ]
     app.extensions["netadmin_dhcp"] = SimpleNamespace(
+        read_only=lambda: False,
         get=lambda path: subnets if path == "configuration" else [],
         post=lambda path, payload: changes.append((path, payload)),
     )
@@ -81,6 +82,7 @@ def test_subnet_create_and_remove_controls_use_agent(tmp_path):
     app, client = admin_client(tmp_path)
     calls = []
     app.extensions["netadmin_dhcp"] = SimpleNamespace(
+        read_only=lambda: False,
         get=lambda path: [],
         post=lambda path, payload: calls.append((path, payload)),
     )
@@ -95,3 +97,45 @@ def test_subnet_create_and_remove_controls_use_agent(tmp_path):
     ]
     app.config["WTF_CSRF_ENABLED"] = True
     assert client.post("/dhcp/subnets", data={"cidr": "198.51.100.0/24"}).status_code == 400
+
+
+def test_zone_failure_keeps_selection_and_offers_explicit_snapshot(tmp_path, monkeypatch):
+    import httpx
+
+    from netadmin.services.agents import AgentClient
+    from netadmin.services.dns import AgentDnsService
+
+    app, client = admin_client(tmp_path)
+    remote = AgentClient("https://synthetic", "synthetic")
+    service = AgentDnsService(remote)
+    app.extensions["netadmin_dns"] = service
+    from dataclasses import replace
+
+    app.extensions["netadmin_settings"] = replace(
+        app.extensions["netadmin_settings"], dns_use_agent=True
+    )
+
+    def get(path):
+        if path == "capabilities":
+            return {"read_only": True}
+        if path == "zones":
+            return [{"name": "example.net", "file": "zone", "dynamic": True}]
+        if "source=file" in path:
+            return [{"name": "snapshot-host", "ttl": 300, "record_type": "A", "value": "192.0.2.1"}]
+        request = httpx.Request("GET", "https://synthetic/records")
+        response = httpx.Response(502, request=request)
+        raise httpx.HTTPStatusError("private backend details", request=request, response=response)
+
+    monkeypatch.setattr(remote, "get", get)
+    response = client.get("/dns?zone=example.net")
+    assert response.status_code == 200
+    assert "authenticated zone transfers (AXFR)" in response.text
+    assert "Read local zone snapshot" in response.text
+    assert "private backend details" not in response.text
+    assert 'value="example.net" selected' in response.text
+    response = client.get("/dns?zone=example.net&source=file")
+    assert response.status_code == 200
+    assert "snapshot-host" in response.text
+    assert "not a live zone transfer" in response.text
+    assert "This agent is read-only" in response.text
+    assert "<fieldset disabled>" in response.text
