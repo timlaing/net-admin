@@ -13,6 +13,54 @@
   };
   apply();
   system.addEventListener('change', apply);
+  const missingSortValue = text => !text || text === '—';
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+  const setupTableSorting = table => {
+    const body = table.tBodies[0];
+    if (!body || !table.tHead) return;
+    const headers = [...table.tHead.rows[0].cells];
+    headers.forEach((header, column) => {
+      const label = header.textContent.trim();
+      if (header.dataset.sort === 'none' || ['Actions', 'Details'].includes(label)) return;
+      header.scope = 'col';
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'table-sort';
+      button.textContent = label;
+      const indicator = document.createElement('span');
+      indicator.className = 'sort-indicator';
+      indicator.setAttribute('aria-hidden', 'true');
+      indicator.textContent = '↕';
+      button.append(indicator);
+      header.replaceChildren(button);
+      header.setAttribute('aria-sort', 'none');
+      button.addEventListener('click', () => {
+        const descending = header.getAttribute('aria-sort') === 'ascending';
+        const value = row => {
+          const cell = row.cells[column];
+          const text = cell.dataset.sortValue ?? cell.textContent.trim();
+          // ISC lease dates include a weekday number before the year.
+          return label === 'Ends' ? text.replace(/^[0-6]\s+(?=\d{4}\/\d{2}\/\d{2})/, '') : text;
+        };
+        const rows = [...body.rows];
+        rows.sort((a, b) => {
+          const left = value(a), right = value(b);
+          // Missing values remain last in either direction.
+          if (missingSortValue(left) || missingSortValue(right)) return Number(missingSortValue(left)) - Number(missingSortValue(right));
+          return collator.compare(left, right) * (descending ? -1 : 1);
+        });
+        rows.forEach(row => body.append(row));
+        headers.forEach(other => {
+          if (!other.hasAttribute('aria-sort')) return;
+          other.setAttribute('aria-sort', 'none');
+          other.querySelector('.sort-indicator').textContent = '↕';
+        });
+        header.setAttribute('aria-sort', descending ? 'descending' : 'ascending');
+        indicator.textContent = descending ? '↓' : '↑';
+        table.dispatchEvent(new Event('table-sorted'));
+      });
+    });
+  };
   document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('[data-connection-status-url]').forEach(card => {
       const badge = card.querySelector('[data-connection-state]');
@@ -77,54 +125,7 @@
         apply();
       });
     });
-    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
-    document.querySelectorAll('table').forEach(table => {
-      const body = table.tBodies[0];
-      if (!body || !table.tHead) return;
-      const headers = [...table.tHead.rows[0].cells];
-      headers.forEach((header, column) => {
-        const label = header.textContent.trim();
-        if (header.dataset.sort === 'none' || ['Actions', 'Details'].includes(label)) return;
-        header.scope = 'col';
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'table-sort';
-        button.textContent = label;
-        const indicator = document.createElement('span');
-        indicator.className = 'sort-indicator';
-        indicator.setAttribute('aria-hidden', 'true');
-        indicator.textContent = '↕';
-        button.append(indicator);
-        header.replaceChildren(button);
-        header.setAttribute('aria-sort', 'none');
-        button.addEventListener('click', () => {
-          const descending = header.getAttribute('aria-sort') === 'ascending';
-          const value = row => {
-            const cell = row.cells[column];
-            const text = cell.dataset.sortValue ?? cell.textContent.trim();
-            // ISC lease dates include a weekday number before the year.
-            return label === 'Ends' ? text.replace(/^[0-6]\s+(?=\d{4}\/\d{2}\/\d{2})/, '') : text;
-          };
-          const rows = [...body.rows];
-          rows.sort((a, b) => {
-            const left = value(a), right = value(b);
-            // Missing values remain last in either direction.
-            const missing = text => !text || text === '—';
-            if (missing(left) || missing(right)) return Number(missing(left)) - Number(missing(right));
-            return collator.compare(left, right) * (descending ? -1 : 1);
-          });
-          rows.forEach(row => body.append(row));
-          headers.forEach(other => {
-            if (!other.hasAttribute('aria-sort')) return;
-            other.setAttribute('aria-sort', 'none');
-            other.querySelector('.sort-indicator').textContent = '↕';
-          });
-          header.setAttribute('aria-sort', descending ? 'descending' : 'ascending');
-          indicator.textContent = descending ? '↓' : '↑';
-          table.dispatchEvent(new Event('table-sorted'));
-        });
-      });
-    });
+    document.querySelectorAll('table').forEach(setupTableSorting);
     document.querySelectorAll('[data-filter-tools]').forEach(control => { control.hidden = false; });
     document.querySelectorAll('[data-table-filter]').forEach(input => {
       const table = document.getElementById(input.dataset.tableFilter);
