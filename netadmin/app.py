@@ -406,15 +406,21 @@ def radius_index() -> Any:
     client = cast(AgentClient, extension("netadmin_radius"))
     form = RadiusUserForm()
     if form.validate_on_submit():
-        client.post(
-            "users",
-            {
-                "username": form.username.data,
-                "password": form.password.data,
-                "role": form.role.data,
-                "disabled": form.disabled.data,
-            },
-        )
+        try:
+            client.post(
+                "users",
+                {
+                    "username": form.username.data,
+                    "password": form.password.data,
+                    "role": form.role.data,
+                    "disabled": form.disabled.data,
+                },
+            )
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 409:
+                raise
+            flash("Migrate this legacy user before editing its account.", "warning")
+            return redirect(url_for(RADIUS_INDEX))
         _audit("radius.user.upsert", form.username.data or "")
         flash("RADIUS user saved.", "success")
         return redirect(url_for(RADIUS_INDEX))
@@ -473,7 +479,7 @@ def radius_client_delete() -> Any:
 @admin_required
 def radius_migrate() -> Any:
     """Hash legacy passwords and install explicit role attributes."""
-    result = cast(AgentClient, extension("netadmin_radius")).post("migration", {})
+    result = cast(AgentClient, extension("netadmin_radius")).post("migration", {}, timeout=80)
     _audit("radius.users.migrate", str(result.get("count", 0)))
     flash(f"Migrated {result.get('count', 0)} RADIUS users.", "success")
     return redirect(url_for(RADIUS_INDEX))

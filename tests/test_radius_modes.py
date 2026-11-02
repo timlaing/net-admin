@@ -77,11 +77,13 @@ def test_invalid_modes_rejected(enabled, preferred):
 def test_complex_or_duplicate_configuration_rejected():
     with pytest.raises(ValueError):
         configure(EAP + EAP, INNER, ["peap"], "peap")
+    custom_inner = INNER.replace("  eap\n", "  other_eap\n")
     with pytest.raises(ValueError):
-        configure(EAP, INNER.replace("  eap\n", "  other_eap\n"), ["peap"], "peap")
+        configure(EAP, custom_inner, ["peap"], "peap")
+    included = EAP.replace(" default_eap_type = md5", "$INCLUDE custom\n default_eap_type = md5")
     with pytest.raises(ValueError):
         configure(
-            EAP.replace(" default_eap_type = md5", "$INCLUDE custom\n default_eap_type = md5"),
+            included,
             INNER,
             ["peap"],
             "peap",
@@ -111,7 +113,10 @@ def test_agent_edits_validate_revision_and_hide_config_values(tmp_path, monkeypa
     payload = {"enabled": ["mschapv2"], "preferred": "mschapv2", "revision": status["revision"]}
     assert client.post("/authentication", headers=AUTH, json=payload).status_code == 200
     assert inventory(eap.read_text(), inner.read_text())["uses_certificates"] is False
-    assert client.post("/authentication", headers=AUTH, json=payload).status_code == 409
+    assert (
+        client.post("/authentication", headers=AUTH, json=payload).json["status"]
+        == "already-applied"
+    )
     monkeypatch.setenv("NETADMIN_AGENT_READ_ONLY", "true")
     assert client.post("/authentication", headers=AUTH, json=payload).status_code == 403
 
@@ -132,7 +137,8 @@ def test_agent_failed_validation_rolls_back_both_files(tmp_path, monkeypatch):
         json={"enabled": ["mschapv2"], "preferred": "mschapv2", "revision": status["revision"]},
     )
     assert response.status_code == 502
-    assert eap.read_text() == EAP and inner.read_text() == INNER
+    assert eap.read_text() == EAP
+    assert inner.read_text() == INNER
 
 
 def test_ui_hides_unused_certificates_and_allows_explicit_preparation(tmp_path):
@@ -220,8 +226,10 @@ def test_agent_failed_activation_restores_files_and_restarts_original(tmp_path, 
         json={"enabled": ["mschapv2"], "preferred": "mschapv2", "revision": status["revision"]},
     )
     assert response.status_code == 502
-    assert len(attempts) == 2 and attempts[-1] == EAP
-    assert eap.read_text() == EAP and inner.read_text() == INNER
+    assert len(attempts) == 2
+    assert attempts[-1] == EAP
+    assert eap.read_text() == EAP
+    assert inner.read_text() == INNER
 
 
 def test_expired_certificates_block_tls_modes_before_config_write(tmp_path, monkeypatch):
@@ -245,5 +253,6 @@ def test_expired_certificates_block_tls_modes_before_config_write(tmp_path, monk
         json={"enabled": ["peap"], "preferred": "peap", "revision": status["revision"]},
     )
     assert response.status_code == 400
-    assert "Renew expired certificates" in response.json["error"]
-    assert eap.read_text() == EAP and inner.read_text() == INNER
+    assert "prepare valid certificates" in response.json["error"]
+    assert eap.read_text() == EAP
+    assert inner.read_text() == INNER

@@ -75,8 +75,15 @@ def index() -> Any:
             client.post("authentication", payload, timeout=60)
             success = True
         except httpx.HTTPStatusError as error:
-            if error.response.status_code not in {400, 409}:
+            if error.response.status_code not in {400, 409, 502}:
                 raise
+            if error.response.status_code == 502:
+                flash(
+                    "The authentication change failed and rollback was attempted. "
+                    "Check the RADIUS service status before trying again.",
+                    "warning",
+                )
+                return redirect(url_for("radius_modes.index"))
             flash(
                 "Settings could not be applied. Reload the page, check your selection and "
                 "make sure certificates are valid before enabling PEAP or EAP-TLS.",

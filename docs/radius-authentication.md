@@ -52,3 +52,34 @@ without breaking PEAP. Tunneled replies retain user pool and address assignments
 The agent checks configuration revisions, validates using `radiusd -XC`, and
 restores both files on validation or activation failure. Read-only agents reject
 all writes. No privileged configuration writes occur in the web app.
+
+## Safe upgrades and recovery
+
+This credential format requires an exclusive writer. Stop **every old RADIUS
+agent instance** before starting the upgraded agent or migrating/resetting users;
+do not use a rolling deployment with mixed agent versions sharing these files.
+Keep the old image stopped for rollback. Back up both `authorize` and `netadmin`
+before the first paired-hash write. To downgrade, first restore that complete
+pre-upgrade backup while agents are stopped. An old agent cannot safely edit the
+new paired records; merely switching the image back is not a supported downgrade.
+
+All user mutations are serialized across workers. Multi-file user and EAP
+transactions persist a private `0600` rollback journal before replacing files.
+On startup, an interrupted transaction is restored and the original service
+configuration activated before requests are accepted. Keep the configuration
+directories persistent, including their hidden journal files. A read-only agent
+refuses pending recovery instead of modifying files. Do not remove a pending
+journal to suppress a startup failure: restore write/restart access and let
+recovery finish. Native editors should use the corresponding advisory lock;
+changes observed before replacement reject the candidate rather than overwrite
+an administrator's edits.
+
+Migration hashes within a bounded ten-second batch budget (with five-second
+limits per hashing subprocess) and the web request allows 80 seconds for hashing,
+validation and reload. If a legacy file exceeds that budget, split it into smaller
+batches before retrying; incomplete hashing never installs user changes.
+
+Python callers needing a crypt string can continue using `hash_password`.
+`hash_passwords` returns the paired credentials. Legacy string-returning migration
+callbacks are accepted and preserve crypt-only records; use the paired callback
+to add NT hashes during cleartext migration.

@@ -17,7 +17,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from netadmin.agents.radius import create_radius_agent, hash_password
+from netadmin.agents.radius import create_radius_agent, hash_passwords
 from netadmin.services.radius_users import ManagedUser, PasswordHashes, managed_entries, render_users
 
 root = Path('/etc/raddb')
@@ -49,7 +49,7 @@ os.environ.update(NETADMIN_AGENT_TOKEN='synthetic', RADIUS_RELOAD_COMMAND='/bin/
 client = create_radius_agent().test_client()
 auth = {'Authorization': 'Bearer synthetic'}
 # Published NT hash vector confirms the algorithm and byte encoding independently.
-assert hash_password('password', minimum_length=1).nt == '8846f7eaee8fb117ad06bdd830b7586c'
+assert hash_passwords('password', minimum_length=1).nt == '8846f7eaee8fb117ad06bdd830b7586c'
 password = 'Synthetic-password-123'
 response = client.post('/users', headers=auth, json={'username': 'smoke', 'password': password})
 assert response.status_code == 200, response.json

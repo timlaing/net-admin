@@ -9,7 +9,14 @@ from wtforms import (
     SubmitField,
     TextAreaField,
 )
-from wtforms.validators import DataRequired, EqualTo, Length, Optional, Regexp
+from wtforms.validators import DataRequired, EqualTo, Length, Optional, Regexp, ValidationError
+
+
+def password_bytes(_form: FlaskForm, field: PasswordField) -> None:
+    """Match the agent's byte limit and reject input OpenSSL cannot hash intact."""
+    value = field.data or ""
+    if len(value.encode("utf-8")) > 256 or any(char in value for char in "\x00\r\n"):
+        raise ValidationError("Use at most 256 UTF-8 bytes without line breaks or null characters.")
 
 
 class LoginForm(FlaskForm):
@@ -26,7 +33,7 @@ class PasswordForm(FlaskForm):
     current_password = PasswordField("Current password", validators=[DataRequired()])
     new_password = PasswordField(
         "New password",
-        validators=[DataRequired(), Length(min=12, max=256)],
+        validators=[DataRequired(), Length(min=12, max=256), password_bytes],
         description="12 or more characters, up to 256 UTF-8 bytes.",
     )
     confirm_password = PasswordField(
@@ -97,7 +104,7 @@ class RadiusUserForm(FlaskForm):
     username = StringField("Username", validators=[DataRequired(), Regexp(r"^[A-Za-z0-9_.@-]+$")])
     password = PasswordField(
         "Password",
-        validators=[Optional(strip_whitespace=False), Length(min=12, max=256)],
+        validators=[Optional(strip_whitespace=False), Length(min=12, max=256), password_bytes],
         description="Blank keeps the existing password. New passwords use crypt and NT hashes; "
         "12 or more characters, up to 256 UTF-8 bytes.",
     )

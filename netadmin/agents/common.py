@@ -19,6 +19,10 @@ class TransactionPathError(ValueError):
     """A discovered service filename is outside the agent's write boundary."""
 
 
+class ConfigurationChanged(ValueError):
+    """A native editor changed configuration while a candidate was being prepared."""
+
+
 def create_agent(name: str) -> Flask:
     """Create an internal agent protected by a bearer token."""
     # Agents authenticate with a bearer token over mTLS: there are no cookie
@@ -95,6 +99,7 @@ def validated_transaction(
     reload_command: list[str],
     *,
     allowed_roots: tuple[Path, ...],
+    expected_originals: dict[Path, bytes | None] | None = None,
 ) -> None:
     """Install a group of files with validation and complete rollback on failure."""
     roots = tuple(root.resolve() for root in allowed_roots)
@@ -102,7 +107,10 @@ def validated_transaction(
     # Resolve links before every transaction and reject all paths before any writes.
     changes = {_transaction_path(path, roots): content for path, content in changes.items()}
     originals = {path: path.read_bytes() if path.exists() else None for path in changes}
+    if expected_originals is not None and originals != expected_originals:
+        raise ConfigurationChanged("Configuration changed before staging")
     candidates: dict[Path, Path] = {}
+    installed = False
     try:
         for path, content in changes.items():
             descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -113,13 +121,17 @@ def validated_transaction(
             candidate = Path(name)
             candidate.chmod(0o640)
             candidates[path] = candidate
+        current = {path: path.read_bytes() if path.exists() else None for path in changes}
+        if current != originals:
+            raise ConfigurationChanged("Configuration changed before installation")
         for path, candidate in candidates.items():
             os.replace(candidate, path)
+            installed = True
         validate()
         if reload_command:
             subprocess.run(reload_command, check=True, timeout=30)  # noqa: S603
     except Exception:
-        for path, original in originals.items():
+        for path, original in originals.items() if installed else ():
             if original is None:
                 path.unlink(missing_ok=True)
             else:

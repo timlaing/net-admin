@@ -107,38 +107,58 @@ def _value(attribute: re.Match[str]) -> str:
     return str(json.loads(value)) if value.startswith('"') else value
 
 
-def _record(
-    block: str,
-    hasher: Callable[[str], PasswordHashes] | None,
-    default_role: str,
-) -> ManagedUser:
-    attributes, comment = _attributes(block)
+def _check_items(
+    attributes: list[re.Match[str]], default_role: str
+) -> tuple[dict[str, str], list[str], str]:
     passwords = {}
     checks = []
+    roles = [
+        item
+        for item in attributes
+        if item.group("name") == "Filter-Id" and item.group("op") == ":="
+    ]
+    if len(roles) > 1:
+        raise ValueError("Multiple role assignments require native editing")
+    role = _value(roles[0]) if roles else default_role
     for attribute in attributes:
         name = attribute.group("name")
         if name in PASSWORD_NAMES:
             if name in passwords or attribute.group("op") != ":=":
                 raise ValueError("Ambiguous password attributes")
             passwords[name] = _value(attribute)
-        elif name != "Filter-Id":
+        elif attribute not in roles:
             checks.append(attribute.group(0))
+    return passwords, checks, role
+
+
+def _credentials(
+    passwords: dict[str, str], hasher: Callable[[str], PasswordHashes | str] | None
+) -> PasswordHashes:
     if "Cleartext-Password" in passwords:
         if hasher is None:
             raise ValueError("Managed cleartext entries require migration")
-        hashes = hasher(passwords["Cleartext-Password"])
-    else:
-        nt = passwords.get("NT-Password", "").removeprefix("0x")
-        if nt and not re.fullmatch(r"[0-9a-fA-F]{32}", nt):
-            raise ValueError("Invalid NT password encoding")
-        hashes = PasswordHashes(passwords.get("Crypt-Password", ""), nt.lower())
+        hashed = hasher(passwords["Cleartext-Password"])
+        return PasswordHashes(hashed) if isinstance(hashed, str) else hashed
+    nt = passwords.get("NT-Password", "").removeprefix("0x")
+    if nt and not re.fullmatch(r"[0-9a-fA-F]{32}", nt):
+        raise ValueError("Invalid NT password encoding")
+    return PasswordHashes(passwords.get("Crypt-Password", ""), nt.lower())
+
+
+def _record(
+    block: str,
+    hasher: Callable[[str], PasswordHashes | str] | None,
+    default_role: str,
+) -> ManagedUser:
+    attributes, comment = _attributes(block)
+    passwords, checks, role = _check_items(attributes, default_role)
+    hashes = _credentials(passwords, hasher)
     if not hashes.kind:
         raise ValueError("User has no supported password attribute")
-    role = ROLE.search(block)
     _, separator, replies = block.partition("\n")
     return ManagedUser(
         hashes,
-        role.group(1) if role else default_role,
+        role,
         checks=tuple(checks),
         replies=separator + replies,
         comment=comment,
@@ -233,7 +253,7 @@ def parse_authorize(text: str, source: str) -> list[RadiusUser]:
 
 def migrate_to_managed(
     text: str,
-    password_hasher: Callable[[str], PasswordHashes],
+    password_hasher: Callable[[str], PasswordHashes | str],
     admin_pools: set[str],
     admin_role: str,
     standard_role: str,
@@ -255,7 +275,7 @@ def migrate_to_managed(
 
 def migrate_authorize(
     text: str,
-    password_hasher: Callable[[str], PasswordHashes],
+    password_hasher: Callable[[str], PasswordHashes | str],
     admin_pools: set[str],
     admin_role: str,
     standard_role: str,

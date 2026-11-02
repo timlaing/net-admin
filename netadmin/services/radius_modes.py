@@ -10,6 +10,7 @@ MODES = {"mschapv2": "EAP-MSCHAPv2", "peap": "PEAP with MSCHAPv2", "tls": "EAP-T
 DISABLED = "#NETADMIN-EAP-OFF "
 INNER = "netadmin_inner"
 INNER_MARKER = "# NetAdmin inner EAP instance\n"
+TLS_CONFIG_PREFIX = "tls-config "
 TLS_METHODS = {"tls", "peap", "ttls", "fast", "teap"}
 
 
@@ -105,7 +106,7 @@ def revision(eap: str, inner: str) -> str:
 def inventory(eap: str, inner: str) -> dict[str, object]:
     """Report enabled module methods; no keys, certificates or passwords."""
     outer = _outer(eap)
-    methods = [s.name for s in _children(eap, outer) if not s.name.startswith("tls-config ")]
+    methods = [s.name for s in _children(eap, outer) if not s.name.startswith(TLS_CONFIG_PREFIX)]
     if any(not re.fullmatch(r"[a-z0-9_-]+", name) for name in methods):
         raise ValueError("Complex EAP methods require native editing")
     return {
@@ -166,9 +167,9 @@ def configure(eap: str, inner: str, enabled: list[str], preferred: str) -> tuple
         eap = eap.split(INNER_MARKER, 1)[0]
     eap = "".join(line.removeprefix(DISABLED) for line in eap.splitlines(keepends=True))
     outer = _outer(eap)
-    methods = {s.name: s for s in _children(eap, outer) if not s.name.startswith("tls-config ")}
+    methods = {s.name: s for s in _children(eap, outer) if not s.name.startswith(TLS_CONFIG_PREFIX)}
     if len(methods) != len(
-        [s for s in _children(eap, outer) if not s.name.startswith("tls-config ")]
+        [s for s in _children(eap, outer) if not s.name.startswith(TLS_CONFIG_PREFIX)]
     ):
         raise ValueError("Duplicate EAP method blocks")
     if not set(MODES) <= methods.keys():
@@ -176,15 +177,7 @@ def configure(eap: str, inner: str, enabled: list[str], preferred: str) -> tuple
     mschap = eap[methods["mschapv2"].start : methods["mschapv2"].end]
     for name, section in sorted(methods.items(), key=lambda item: item[1].start, reverse=True):
         block = eap[section.start : section.end]
-        if name == "peap":
-            for key, value in (
-                ("default_eap_type", "mschapv2"),
-                ("virtual_server", "inner-tunnel"),
-                ("use_tunneled_reply", "yes"),
-            ):
-                block = _setting(block, _sections(block)[0], key, value)
-        if name == "tls":
-            block = _setting(block, _sections(block)[0], "configurable_client_cert", "no")
+        block = _method_settings(name, block)
         if name not in enabled:
             block = "".join(DISABLED + line for line in block.splitlines(keepends=True))
         eap = eap[: section.start] + block + eap[section.end :]
@@ -194,3 +187,17 @@ def configure(eap: str, inner: str, enabled: list[str], preferred: str) -> tuple
         + f"\n\n{INNER_MARKER}eap {INNER} {{\n\tdefault_eap_type = mschapv2\n{mschap}\n}}\n"
     )
     return eap, _inner(inner)
+
+
+def _method_settings(name: str, block: str) -> str:
+    """Apply the fixed settings required by each selectable authentication method."""
+    if name == "peap":
+        for key, value in (
+            ("default_eap_type", "mschapv2"),
+            ("virtual_server", "inner-tunnel"),
+            ("use_tunneled_reply", "yes"),
+        ):
+            block = _setting(block, _sections(block)[0], key, value)
+    if name == "tls":
+        block = _setting(block, _sections(block)[0], "configurable_client_cert", "no")
+    return block

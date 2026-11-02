@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from netadmin.agents.radius import create_radius_agent, hash_password
+from netadmin.agents.radius import create_radius_agent, hash_passwords
 from netadmin.services.radius_users import (
     ManagedUser,
     PasswordHashes,
@@ -15,7 +15,7 @@ from netadmin.services.radius_users import (
 )
 
 
-def test_hash_password_encodes_nt_as_utf16_and_checks_both_results(monkeypatch):
+def test_hash_passwords_encodes_nt_as_utf16_and_checks_both_results(monkeypatch):
     calls = []
 
     def run(args, **kwargs):
@@ -23,7 +23,7 @@ def test_hash_password_encodes_nt_as_utf16_and_checks_both_results(monkeypatch):
         return SimpleNamespace(stdout="$6$salt$synthetic\n" if len(calls) == 1 else bytes(16))
 
     monkeypatch.setattr("netadmin.agents.radius.subprocess.run", run)
-    result = hash_password("pässword-🔑-long")
+    result = hash_passwords("pässword-🔑-long")
     assert result == PasswordHashes("$6$salt$synthetic", "0" * 32)
     assert calls[0][1]["input"] == "pässword-🔑-long"
     assert calls[1][1]["input"] == "pässword-🔑-long".encode("utf-16-le")
@@ -40,7 +40,7 @@ def test_invalid_password_does_not_run_hashing(password, monkeypatch):
 
     monkeypatch.setattr("netadmin.agents.radius.subprocess.run", unexpected)
     with pytest.raises(ValueError):
-        hash_password(password)
+        hash_passwords(password)
 
 
 def test_disabled_pair_preserves_checks_replies_and_comments():
@@ -103,7 +103,7 @@ def test_agent_updates_both_hashes_preserves_replies_and_hides_values(tmp_path, 
     monkeypatch.setenv("RADIUS_MANAGED_FILE", str(managed))
     monkeypatch.setattr("netadmin.agents.radius.subprocess.run", lambda *a, **kw: None)
     monkeypatch.setattr(
-        "netadmin.agents.radius.hash_password", lambda *a, **kw: PasswordHashes("$6$new", "b" * 32)
+        "netadmin.agents.radius.hash_passwords", lambda *a, **kw: PasswordHashes("$6$new", "b" * 32)
     )
     client = create_radius_agent().test_client()
     auth = {"Authorization": "Bearer synthetic"}
@@ -120,7 +120,8 @@ def test_agent_updates_both_hashes_preserves_replies_and_hides_values(tmp_path, 
     assert record.role == "netadmin-admin"
     response = client.get("/users", headers=auth)
     assert response.json[0]["needs_password_reset"] is False
-    assert "$6$new" not in response.text and "b" * 32 not in response.text
+    assert "$6$new" not in response.text
+    assert "b" * 32 not in response.text
 
 
 def test_agent_migration_failure_leaves_both_files_unchanged(tmp_path, monkeypatch):
@@ -135,7 +136,7 @@ def test_agent_migration_failure_leaves_both_files_unchanged(tmp_path, monkeypat
     monkeypatch.setenv("RADIUS_AUTHORIZE_FILE", str(authorize))
     monkeypatch.setenv("RADIUS_MANAGED_FILE", str(managed))
     monkeypatch.setattr(
-        "netadmin.agents.radius.hash_password", lambda *a, **kw: PasswordHashes("$6$new", "b" * 32)
+        "netadmin.agents.radius.hash_passwords", lambda *a, **kw: PasswordHashes("$6$new", "b" * 32)
     )
 
     def fail(*args, **kwargs):
@@ -144,7 +145,8 @@ def test_agent_migration_failure_leaves_both_files_unchanged(tmp_path, monkeypat
     monkeypatch.setattr("netadmin.agents.radius.subprocess.run", fail)
     app = create_radius_agent()
     app.config["TESTING"] = True
+    client = app.test_client()
     with pytest.raises(subprocess.CalledProcessError):
-        app.test_client().post("/migration", headers={"Authorization": "Bearer synthetic"}, json={})
+        client.post("/migration", headers={"Authorization": "Bearer synthetic"}, json={})
     assert authorize.read_text() == source
     assert managed.read_text() == "# Existing managed file\n"

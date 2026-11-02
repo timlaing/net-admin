@@ -133,7 +133,7 @@ def test_radius_agent_workflow(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     from netadmin.services.radius_users import PasswordHashes
 
     monkeypatch.setattr(
-        "netadmin.agents.radius.hash_password",
+        "netadmin.agents.radius.hash_passwords",
         lambda value, **kwargs: PasswordHashes(f"$6${value}", "a" * 32),
     )
     monkeypatch.setattr(

@@ -12,9 +12,12 @@ from typing import Any, cast
 from cryptography import x509
 from flask import Flask, current_app, jsonify
 
-from netadmin.agents.common import configured_path, json_object, validated_transaction
+from netadmin.agents.common import configured_path, json_object
 from netadmin.agents.radius_certificates import _protocol_ready, _restart
+from netadmin.agents.radius_state import file_lock, recover, transaction
 from netadmin.services.radius_modes import configure, inventory, revision
+
+EAP_JOURNAL = ".netadmin-eap-transaction.json"
 
 
 def _paths() -> tuple[Path, Path]:
@@ -66,7 +69,7 @@ def _certificates_ready() -> None:
             raise ValueError("Renew expired certificates before enabling PEAP or EAP-TLS")
 
 
-def _apply(eap: Path, inner: Path, changes: tuple[str, str]) -> None:
+def _apply(eap: Path, inner: Path, changes: tuple[str, str], original: tuple[str, str]) -> None:
     metadata = {path: path.stat() for path in (eap, inner)}
     restart_attempted = False
 
@@ -79,17 +82,40 @@ def _apply(eap: Path, inner: Path, changes: tuple[str, str]) -> None:
         restart_attempted = True
         _restart()
 
-    try:
-        validated_transaction(
-            dict(zip((eap, inner), changes, strict=True)),
-            activate,
-            [],
-            allowed_roots=(eap.parent, inner.parent),
-        )
-    except Exception:
+    def rollback() -> None:
         if restart_attempted:
             _restart()
-        raise
+
+    transaction(
+        dict(zip((eap, inner), changes, strict=True)),
+        activate,
+        [],
+        journal=eap.parent / EAP_JOURNAL,
+        rollback=rollback,
+        expected={path: text.encode() for path, text in zip((eap, inner), original, strict=True)},
+    )
+
+
+def _recover_modes() -> None:
+    eap, inner = _paths()
+    journal = eap.parent / EAP_JOURNAL
+
+    def activate() -> None:
+        subprocess.run(["/usr/sbin/radiusd", "-XC"], check=True, capture_output=True, timeout=20)
+        _restart()
+
+    recover(journal, {eap, inner}, activate)
+
+
+def _stale_response(original: tuple[str, str], modes: list[str], preferred: str) -> Any:
+    active = inventory(*original)
+    if (
+        set(cast(list[str], active["enabled"])) == set(modes)
+        and active["preferred"] == preferred
+        and not active["other_methods"]
+    ):
+        return jsonify({"status": "already-applied"})
+    return jsonify({"error": "Settings changed; reload this page before saving"}), 409
 
 
 def _post() -> Any:
@@ -110,17 +136,23 @@ def _post() -> Any:
             raise ValueError("Unsafe lock file")
         with lock_path.open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
+            _recover_modes()
             eap, inner = _paths()
             original = (eap.read_text(), inner.read_text())
             if body.get("revision") != revision(*original):
-                return jsonify({"error": "Settings changed; reload this page before saving"}), 409
+                return _stale_response(original, modes, preferred)
             changes = configure(*original, modes, preferred)
             if {"peap", "tls"}.intersection(modes):
                 _certificates_ready()
-            _apply(eap, inner, changes)
+            _apply(eap, inner, changes, original)
         return jsonify({"status": "applied"})
-    except ValueError as error:
-        return jsonify({"error": str(error)}), 400
+    except ValueError:
+        return jsonify(
+            {
+                "error": "Invalid settings or configuration. Select enabled modes and "
+                "prepare valid certificates before enabling TLS methods."
+            }
+        ), 400
     except (OSError, RuntimeError, subprocess.SubprocessError):
         return jsonify(
             {
@@ -139,5 +171,11 @@ def register_modes(app: Flask) -> None:
             "RADIUS_INNER_TUNNEL_FILE", "/etc/raddb/sites-enabled/inner-tunnel"
         ),
     )
+    with app.app_context():
+        eap, _ = _paths()
+        if (eap.parent / EAP_JOURNAL).exists():
+            lock = Path(app.config["RADIUS_CERT_DIR"]) / ".netadmin-cert-lock"
+            with file_lock(lock):
+                _recover_modes()
     app.add_url_rule("/authentication", view_func=_get, methods=["GET"])
     app.add_url_rule("/authentication", view_func=_post, methods=["POST"])
