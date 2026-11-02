@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.7.2
+
+- Correct the release/add-on version alignment after v0.7.1 container publishing was blocked. No v0.7.1 images were published.
+- Add optional step-ca certificate issuance, inventory, revocation and CRLs, plus automatic RADIUS certificate renewal with staged validation and rollback. Support configurable local server certificate names, SANs and lifetimes.
+- Preserve uncertain issuance request identity and audit outcomes; validate returned certificate IDs before recording success.
+- Add service log and RADIUS session pages.
 
 - Add RADIUS authentication mode toggles for EAP-MSCHAPv2, PEAP with MSCHAPv2 and EAP-TLS, with coexistence, a preferred mode, native validation and restart rollback. Hide unused certificate details while retaining explicit certificate preparation before migration.
 
