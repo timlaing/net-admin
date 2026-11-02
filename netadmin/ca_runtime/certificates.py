@@ -28,6 +28,17 @@ SUBJECT_FIELDS = {
 }
 
 
+def _subject_attribute(field: str, value: Any) -> str:
+    """Bound individual attributes before building X.509 subject objects."""
+    if (
+        not isinstance(value, str)
+        or len(value.encode()) > 128
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        raise CAInputError(f"Invalid {field}")
+    return value.strip()
+
+
 def options(body: dict[str, Any]) -> dict[str, Any]:
     """Bound certificate identity, validity, hierarchy and policy inputs."""
     try:
@@ -42,14 +53,7 @@ def options(body: dict[str, Any]) -> dict[str, Any]:
         if not (0 if field == "path_length" else 1) <= result[field] <= maximum:
             raise CAInputError(f"Invalid {field}")
     for field in SUBJECT_FIELDS:
-        value = body.get(field, "")
-        if (
-            not isinstance(value, str)
-            or len(value.encode()) > 128
-            or any(ord(char) < 32 or ord(char) == 127 for char in value)
-        ):
-            raise CAInputError(f"Invalid {field}")
-        result[field] = value.strip()
+        result[field] = _subject_attribute(field, body.get(field, ""))
     if result["country"] and (
         len(result["country"]) != 2
         or not result["country"].isascii()
@@ -96,14 +100,8 @@ def load_key(data: bytes, password: bytes) -> SigningKey:
     return key
 
 
-def create_certificate(
-    values: dict[str, Any],
-    key: SigningKey,
-    parent: x509.Certificate | None = None,
-    parent_key: SigningKey | None = None,
-    public_key: Any = None,
-) -> x509.Certificate:
-    """Sign a CA with enforced path length and validity bounds."""
+def _validity(values: dict[str, Any], parent: x509.Certificate | None) -> tuple[datetime, datetime]:
+    """Constrain a child's entire lifetime and delegation depth to its parent."""
     now = datetime.now(UTC).replace(microsecond=0)
     start, end = now - timedelta(minutes=1), now + timedelta(days=values["days"])
     if parent:
@@ -115,6 +113,18 @@ def create_certificate(
         if constraints.path_length is not None and values["path_length"] >= constraints.path_length:
             raise CAInputError("Parent path-length constraint does not permit this subordinate")
         start = max(start, parent.not_valid_before_utc)
+    return start, end
+
+
+def create_certificate(
+    values: dict[str, Any],
+    key: SigningKey,
+    parent: x509.Certificate | None = None,
+    parent_key: SigningKey | None = None,
+    public_key: Any = None,
+) -> x509.Certificate:
+    """Sign a CA with enforced path length and validity bounds."""
+    start, end = _validity(values, parent)
     name = subject(values)
     builder = (
         x509.CertificateBuilder()

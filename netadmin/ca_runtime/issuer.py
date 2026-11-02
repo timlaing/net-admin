@@ -17,6 +17,9 @@ from netadmin.ca_runtime.certificates import CAInputError
 from netadmin.ca_runtime.store import AuthorityStore, durable
 from netadmin.services.radius_certificates import certificate_options
 
+PROVISIONER_CREDENTIAL_FILE = "provisioner.password"
+ROOT_TRUST_FILE = "root.crt"
+
 
 def run(arguments: list[str]) -> str:
     """Execute bounded fixed CLI commands; never log their potentially secret output."""
@@ -106,7 +109,7 @@ def configure(store: AuthorityStore, authority_id: str, body: dict[str, Any]) ->
     host = service_host(body)
     configured = list((store.root / "authorities").glob("*/config.json"))
     port = 9100 + len(configured)
-    password_path = directory / "provisioner.password"
+    password_path = directory / PROVISIONER_CREDENTIAL_FILE
     durable(password_path, secrets.token_urlsafe(48).encode())
     run(
         [
@@ -125,7 +128,7 @@ def configure(store: AuthorityStore, authority_id: str, body: dict[str, Any]) ->
     )
     root_cert = store.chain(authority_id)
     durable(
-        directory / "root.crt",
+        directory / ROOT_TRUST_FILE,
         x509.load_pem_x509_certificates(root_cert)[-1].public_bytes(Encoding.PEM),
     )
     chain = x509.load_pem_x509_certificates(root_cert)
@@ -143,7 +146,7 @@ def configure(store: AuthorityStore, authority_id: str, body: dict[str, Any]) ->
         "crlDistributionPoints": [f"https://{host}:{port}/1.0/crl"],
     }
     config: dict[str, Any] = {
-        "root": str(directory / "root.crt"),
+        "root": str(directory / ROOT_TRUST_FILE),
         "crt": str(directory / "issuing-chain.pem"),
         "key": str(directory / "ca.key"),
         "address": f":{port}",
@@ -264,11 +267,11 @@ def sign(store: AuthorityStore, authority_id: str, body: dict[str, Any]) -> dict
             "--ca-url",
             f"https://localhost:{metadata['port']}",
             "--root",
-            str(directory / "root.crt"),
+            str(directory / ROOT_TRUST_FILE),
             "--provisioner",
             "netadmin",
             "--provisioner-password-file",
-            str(directory / "provisioner.password"),
+            str(directory / PROVISIONER_CREDENTIAL_FILE),
         ]
     )
     certificate = issued_matches_csr(output.read_bytes(), csr)
@@ -290,7 +293,7 @@ def revocation(store: AuthorityStore, authority_id: str, body: dict[str, Any]) -
         "--ca-url",
         f"https://localhost:{metadata['port']}",
         "--root",
-        str(directory / "root.crt"),
+        str(directory / ROOT_TRUST_FILE),
     ]
     if revoked(store, authority_id, number):
         return {"revoked": True}
@@ -304,7 +307,7 @@ def revocation(store: AuthorityStore, authority_id: str, body: dict[str, Any]) -
             "--provisioner",
             "netadmin",
             "--provisioner-password-file",
-            str(directory / "provisioner.password"),
+            str(directory / PROVISIONER_CREDENTIAL_FILE),
         ]
     )
     run(
@@ -332,7 +335,7 @@ def crl(store: AuthorityStore, authority_id: str) -> x509.CertificateRevocationL
 
     directory = store.directory(authority_id)
     metadata = store.metadata(authority_id)
-    context = ssl.create_default_context(cafile=str(directory / "root.crt"))
+    context = ssl.create_default_context(cafile=str(directory / ROOT_TRUST_FILE))
     with httpx.Client(verify=context, trust_env=False) as client:
         response = client.get(f"https://localhost:{metadata['port']}/1.0/crl", timeout=10)
         response.raise_for_status()

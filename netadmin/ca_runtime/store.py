@@ -29,6 +29,11 @@ from netadmin.ca_runtime.certificates import (
 )
 from netadmin.services.radius_certificates import SigningKey, certificate_info
 
+ROOT_WRAP_FILE = "root.password"
+ROOT_PRIVATE_FILE = "root.key"
+AUTHORITY_CERT_FILE = "ca.crt"
+METADATA_FILE = "metadata.json"
+
 
 def durable(path: Path, data: bytes) -> None:
     """Publish a restricted file only after flushing its complete contents."""
@@ -71,12 +76,12 @@ class AuthorityStore:
                         "Existing step-ca state requires explicit migration; no root generated"
                     )
                 # Interrupted first boot must be inspected, never silently re-keyed.
-                if (root / "root.key").exists() or (root / "root.password").exists():
+                if (root / ROOT_PRIVATE_FILE).exists() or (root / ROOT_WRAP_FILE).exists():
                     raise CAInputError("Incomplete initial root state; recovery required")
                 password = secrets.token_urlsafe(48).encode()
-                durable(root / "root.password", password)
+                durable(root / ROOT_WRAP_FILE, password)
                 key = new_key()
-                durable(root / "root.key", key_bytes(key, password))
+                durable(root / ROOT_PRIVATE_FILE, key_bytes(key, password))
                 public = key.public_key().public_bytes(
                     serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
                 )
@@ -94,9 +99,9 @@ class AuthorityStore:
             if self.manifest.get("version") != 1:
                 raise CAInputError("Unsupported CA state version")
             if self.manifest.get("root_archived"):
-                (root / "root.key").unlink(missing_ok=True)
-                (root / "root.password").unlink(missing_ok=True)
-            elif not (root / "root.key").exists() or not (root / "root.password").exists():
+                (root / ROOT_PRIVATE_FILE).unlink(missing_ok=True)
+                (root / ROOT_WRAP_FILE).unlink(missing_ok=True)
+            elif not (root / ROOT_PRIVATE_FILE).exists() or not (root / ROOT_WRAP_FILE).exists():
                 raise CAInputError("Missing root material; recovery required")
 
     @contextlib.contextmanager
@@ -113,16 +118,16 @@ class AuthorityStore:
     def certificate(self, authority_id: str) -> x509.Certificate:
         """Load an existing public authority certificate."""
         return x509.load_pem_x509_certificate(
-            (self.directory(authority_id) / "ca.crt").read_bytes()
+            (self.directory(authority_id) / AUTHORITY_CERT_FILE).read_bytes()
         )
 
     def key(self, authority_id: str, recovery: dict[str, Any]) -> SigningKey:
         """Use a local key, or decrypt uploaded archived root material in memory."""
         if authority_id == self.manifest["root_id"]:
-            if (self.root / "root.key").exists():
+            if (self.root / ROOT_PRIVATE_FILE).exists():
                 return load_key(
-                    (self.root / "root.key").read_bytes(),
-                    (self.root / "root.password").read_bytes(),
+                    (self.root / ROOT_PRIVATE_FILE).read_bytes(),
+                    (self.root / ROOT_WRAP_FILE).read_bytes(),
                 )
             key = load_key(
                 str(recovery.get("recovery_key", "")).encode(),
@@ -141,7 +146,7 @@ class AuthorityStore:
     def metadata(self, authority_id: str) -> dict[str, Any]:
         """Read public identity and issuer configuration metadata."""
         return cast(
-            dict[str, Any], json.loads((self.directory(authority_id) / "metadata.json").read_text())
+            dict[str, Any], json.loads((self.directory(authority_id) / METADATA_FILE).read_text())
         )
 
     def status(self) -> dict[str, Any]:
@@ -164,7 +169,7 @@ class AuthorityStore:
         return {
             **self.manifest,
             "state": "ready" if authorities else "key_ready",
-            "root_online": (self.root / "root.key").exists(),
+            "root_online": (self.root / ROOT_PRIVATE_FILE).exists(),
             "authorities": authorities,
         }
 
@@ -219,9 +224,9 @@ class AuthorityStore:
         key = self.key(root_id, {})
         certificate = create_certificate(values, key)
         directory.mkdir(mode=0o700)
-        durable(directory / "ca.crt", certificate.public_bytes(PEM))
+        durable(directory / AUTHORITY_CERT_FILE, certificate.public_bytes(PEM))
         durable(
-            directory / "metadata.json",
+            directory / METADATA_FILE,
             json.dumps(
                 {
                     "parent_id": None,
@@ -264,7 +269,7 @@ class AuthorityStore:
         authority_id = uuid.uuid4().hex
         directory = self.directory(authority_id)
         directory.mkdir(mode=0o700)
-        durable(directory / "ca.crt", certificate.public_bytes(PEM))
+        durable(directory / AUTHORITY_CERT_FILE, certificate.public_bytes(PEM))
         durable(directory / "chain.pem", certificate.public_bytes(PEM) + self.chain(parent_id))
         if not csr_pem:
             password = secrets.token_urlsafe(48).encode()
@@ -277,14 +282,16 @@ class AuthorityStore:
             "common_name": values["common_name"],
             "path_length": values["path_length"],
         }
-        durable(directory / "metadata.json", json.dumps(metadata).encode())
+        durable(directory / METADATA_FILE, json.dumps(metadata).encode())
         return {"id": authority_id}
 
     def chain(self, authority_id: str) -> bytes:
         """Return the public chain through the root."""
         directory = self.directory(authority_id)
         path = directory / "chain.pem"
-        return path.read_bytes() if path.exists() else (directory / "ca.crt").read_bytes()
+        return (
+            path.read_bytes() if path.exists() else (directory / AUTHORITY_CERT_FILE).read_bytes()
+        )
 
     def export_root(self, body: dict[str, Any]) -> dict[str, Any]:
         """Re-encrypt root recovery material with an independent operator passphrase."""
@@ -315,6 +322,6 @@ class AuthorityStore:
             raise CAInputError("Recovery key does not match the root")
         self.manifest["root_archived"] = True
         durable(self.root / "manifest.json", json.dumps(self.manifest).encode())
-        (self.root / "root.key").unlink(missing_ok=True)
-        (self.root / "root.password").unlink(missing_ok=True)
+        (self.root / ROOT_PRIVATE_FILE).unlink(missing_ok=True)
+        (self.root / ROOT_WRAP_FILE).unlink(missing_ok=True)
         return {"archived": True}

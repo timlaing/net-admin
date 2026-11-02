@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 
 
 def register_lifecycle(app: Flask) -> None:
@@ -34,10 +34,10 @@ def register_lifecycle(app: Flask) -> None:
                     json=request.get_json(silent=True) if request.method == "POST" else None,
                     timeout=90,
                 )
-            return (
+            return Response(
                 response.content,
-                response.status_code,
-                {"Content-Type": "application/json", "Cache-Control": "no-store"},
+                status=response.status_code,
+                headers={"Content-Type": "application/json", "Cache-Control": "no-store"},
             )
         except httpx.HTTPError:
             return jsonify(

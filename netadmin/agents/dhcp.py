@@ -204,7 +204,10 @@ def _lease_list() -> Any:
 
 
 def _save_reservation() -> Any:
-    item = _validate_item(json_object())
+    try:
+        item = _validate_item(json_object())
+    except ValueError:
+        return jsonify({"error": "Invalid reservation hostname, MAC address or IPv4 address"}), 400
     managed = _path("DHCP_MANAGED")
     main_config = _path("DHCP_MAIN")
     all_items = _all_reservations(main_config)

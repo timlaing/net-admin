@@ -8,12 +8,12 @@ import signal
 import subprocess  # nosec B404
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
-from flask import Flask, jsonify, request
+from flask import Blueprint, Flask, current_app, jsonify, request
 from werkzeug.serving import make_server
 
 from netadmin.ca_runtime import issuer
@@ -21,138 +21,173 @@ from netadmin.ca_runtime.certificates import CAInputError
 from netadmin.ca_runtime.store import AuthorityStore, identifier
 from netadmin.services.radius_certificates import certificate_info
 
+controller = Blueprint("ca_controller", __name__)
+
+
+def _store() -> AuthorityStore:
+    return cast(AuthorityStore, current_app.extensions["ca_store"])
+
+
+def _body() -> dict[str, Any]:
+    body = request.get_json()
+    if not isinstance(body, dict):
+        raise CAInputError("Expected JSON object")
+    return cast(dict[str, Any], body)
+
+
+@controller.before_request
+def authenticate() -> Any:
+    """Require the independent lifecycle scope on every controller request."""
+    token = current_app.config["CA_MANAGEMENT_TOKEN"]
+    if not hmac.compare_digest(request.headers.get("X-CA-Management-Token", ""), token):
+        return jsonify({"error": "Management authentication required"}), 403
+    return None
+
+
+@controller.after_request
+def no_cache(response: Any) -> Any:
+    """Prevent caching of status and encrypted recovery responses."""
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@controller.errorhandler(CAInputError)
+def input_error(error: CAInputError) -> Any:
+    """Return only bounded validation messages."""
+    return jsonify({"error": str(error), "outcome": "rejected"}), 400
+
+
+@controller.errorhandler(ValueError)
+@controller.errorhandler(OSError)
+@controller.errorhandler(KeyError)
+@controller.errorhandler(subprocess.SubprocessError)
+@controller.errorhandler(httpx.HTTPError)
+def operation_error(_error: Exception) -> Any:
+    """Hide private diagnostics and preserve uncertain operation outcomes."""
+    return jsonify(
+        {
+            "error": "Operation rejected or incomplete. "
+            "Refresh authority state and operation status before retrying."
+        }
+    ), 409
+
+
+@controller.get("/authorities")
+def authorities() -> Any:
+    """Return public identities and child process status."""
+    state = _store().status()
+    processes = current_app.extensions["ca_issuers"].processes
+    for authority in state["authorities"]:
+        process = processes.get(authority["id"])
+        authority["running"] = bool(process and process.poll() is None)
+    return jsonify(state)
+
+
+@controller.get("/operations/<operation_id>")
+def operation_status(operation_id: str) -> Any:
+    """Read durable status without replaying a mutation."""
+    import json  # pylint: disable=import-outside-toplevel
+
+    record = _store().root / "operations" / (identifier(operation_id) + ".json")
+    if not record.exists():
+        return jsonify({"state": "not_found"}), 404
+    result = json.loads(record.read_text())
+    return jsonify({"state": result["state"], "result": result.get("result")})
+
+
+def _subordinate(store: AuthorityStore, body: dict[str, Any]) -> dict[str, Any]:
+    limits = None
+    parent_id = str(body.get("parent_id", ""))
+    if not body.get("csr") or body.get("dns_suffixes") or body.get("ip_ranges"):
+        limits = issuer.policy(body)
+        issuer.check_parent_policy(store, parent_id, limits)
+    elif store.metadata(parent_id).get("policy"):
+        raise CAInputError("External child requires explicit inherited issuance scope")
+    if not body.get("csr"):
+        issuer.service_host(body)
+        if len(list((store.root / "authorities").glob("*/config.json"))) >= 16:
+            raise CAInputError("At most 16 managed issuers are supported")
+    result = store.create_subordinate({**body, "effective_policy": limits})
+    if not body.get("csr"):
+        issuer.configure(store, result["id"], body)
+    return result
+
+
+@controller.post("/authorities/<action>")
+def mutate(action: str) -> Any:
+    """Dispatch an allowlisted lifecycle operation under its stable identity."""
+    body = _body()
+    store = _store()
+    if action == "export-root":
+        with store.lock():
+            return jsonify(store.export_root(body))
+    actions = {
+        "root": store.create_root,
+        "subordinate": lambda payload: _subordinate(store, payload),
+        "archive-root": store.archive_root,
+    }
+    if action not in actions:
+        return jsonify({"error": "Unknown operation"}), 404
+    return jsonify(store.operation({**body, "action": action}, lambda: actions[action](body)))
+
+
+@controller.post("/authorities/<authority_id>/issue")
+def issue(authority_id: str) -> Any:
+    """Issue a leaf using the explicitly selected native issuer."""
+    body = _body()
+    identifier(authority_id)
+    payload = {**body, "issuer_id": authority_id}
+    store = _store()
+    return jsonify(store.operation(payload, lambda: issuer.sign(store, authority_id, payload)))
+
+
+@controller.post("/authorities/<authority_id>/revoke")
+def revoke(authority_id: str) -> Any:
+    """Reconcile issuer-specific revocation under the original operation ID."""
+    body = _body()
+    identifier(authority_id)
+    payload = {**body, "issuer_id": authority_id, "action": "revoke"}
+    store = _store()
+    return jsonify(
+        store.operation(payload, lambda: issuer.revocation(store, authority_id, payload))
+    )
+
+
+@controller.get("/authorities/<authority_id>/crl")
+def download_crl(authority_id: str) -> Any:
+    """Return the selected issuer's authoritative signed CRL."""
+    return jsonify({"pem": issuer.crl(_store(), authority_id).public_bytes(Encoding.PEM).decode()})
+
+
+@controller.get("/authorities/<authority_id>/certificates")
+def certificates(authority_id: str) -> Any:
+    """List public leaf certificates recorded by this issuer."""
+    result = []
+    for path in sorted(_store().directory(authority_id).glob("*.pem")):
+        if len(path.stem) == 32:
+            cert = x509.load_pem_x509_certificate(path.read_bytes())
+            result.append({**certificate_info(cert), "pem": path.read_text()})
+    return jsonify({"certificates": result})
+
+
+@controller.get("/authorities/<authority_id>/chain")
+def chain(authority_id: str) -> Any:
+    """Return the selected public authority chain."""
+    return jsonify({"pem": _store().chain(authority_id).decode()})
+
 
 def create_runtime(root: Path, token: str) -> Flask:
-    """Create a controller; signing keys and subprocesses stay within this runtime."""
+    """Create a private, non-cookie API; UI CSRF remains enforced in the web app."""
     if len(token) < 32:
         raise CAInputError("A separate management token of at least 32 characters is required")
-    app = Flask(__name__)
-    app.config["MAX_CONTENT_LENGTH"] = 131072
+    # This API accepts only a scoped bearer credential over a private Unix socket.
+    # It has no browser sessions/cookies; the browser-facing app enforces CSRF.
+    app = Flask(__name__)  # NOSONAR
+    app.config.update(MAX_CONTENT_LENGTH=131072, CA_MANAGEMENT_TOKEN=token)
     store = AuthorityStore(root)
     app.extensions["ca_store"] = store
     app.extensions["ca_issuers"] = issuer.Issuers(store)
-
-    @app.before_request
-    def authenticate() -> Any:
-        if not hmac.compare_digest(request.headers.get("X-CA-Management-Token", ""), token):
-            return jsonify({"error": "Management authentication required"}), 403
-        return None
-
-    @app.after_request
-    def no_cache(response: Any) -> Any:
-        response.headers["Cache-Control"] = "no-store"
-        return response
-
-    @app.errorhandler(CAInputError)
-    def input_error(error: CAInputError) -> Any:
-        return jsonify({"error": str(error), "outcome": "rejected"}), 400
-
-    @app.errorhandler(ValueError)
-    @app.errorhandler(OSError)
-    @app.errorhandler(KeyError)
-    @app.errorhandler(subprocess.SubprocessError)
-    @app.errorhandler(httpx.HTTPError)
-    def operation_error(_error: Exception) -> Any:
-        # Never echo subprocess, decryption, filesystem or submitted secret values.
-        return jsonify(
-            {
-                "error": "Operation rejected or incomplete. "
-                "Refresh authority state and operation status before retrying."
-            }
-        ), 409
-
-    @app.get("/authorities")
-    def authorities() -> Any:
-        state = store.status()
-        processes = app.extensions["ca_issuers"].processes
-        for authority in state["authorities"]:
-            process = processes.get(authority["id"])
-            authority["running"] = bool(process and process.poll() is None)
-        return jsonify(state)
-
-    @app.get("/operations/<operation_id>")
-    def operation_status(operation_id: str) -> Any:
-        import json  # pylint: disable=import-outside-toplevel
-
-        record = root / "operations" / (identifier(operation_id) + ".json")
-        if not record.exists():
-            return jsonify({"state": "not_found"}), 404
-        result = json.loads(record.read_text())
-        return jsonify({"state": result["state"], "result": result.get("result")})
-
-    @app.post("/authorities/<action>")
-    def mutate(action: str) -> Any:
-        body = request.get_json()
-        if not isinstance(body, dict):
-            return jsonify({"error": "Expected JSON object"}), 400
-        if action == "export-root":
-            with store.lock():
-                return jsonify(store.export_root(body))
-        actions = {
-            "root": store.create_root,
-            "subordinate": subordinate,
-            "archive-root": store.archive_root,
-        }
-        if action not in actions:
-            return jsonify({"error": "Unknown operation"}), 404
-        return jsonify(store.operation({**body, "action": action}, lambda: actions[action](body)))
-
-    def subordinate(body: dict[str, Any]) -> dict[str, Any]:
-        # Validate policy, endpoint and capacity before generating any certificate.
-        limits = None
-        parent_id = str(body.get("parent_id", ""))
-        if not body.get("csr") or body.get("dns_suffixes") or body.get("ip_ranges"):
-            limits = issuer.policy(body)
-            issuer.check_parent_policy(store, parent_id, limits)
-        elif store.metadata(parent_id).get("policy"):
-            raise CAInputError("External child requires explicit inherited issuance scope")
-        if not body.get("csr"):
-            issuer.service_host(body)
-            if len(list((store.root / "authorities").glob("*/config.json"))) >= 16:
-                raise CAInputError("At most 16 managed issuers are supported")
-        result = store.create_subordinate({**body, "effective_policy": limits})
-        if not body.get("csr"):
-            issuer.configure(store, result["id"], body)
-        return result
-
-    @app.post("/authorities/<authority_id>/issue")
-    def issue(authority_id: str) -> Any:
-        body = request.get_json()
-        if not isinstance(body, dict):
-            return jsonify({"error": "Expected JSON object"}), 400
-        identifier(authority_id)
-        payload = {**body, "issuer_id": authority_id}
-        return jsonify(store.operation(payload, lambda: issuer.sign(store, authority_id, payload)))
-
-    @app.post("/authorities/<authority_id>/revoke")
-    def revoke(authority_id: str) -> Any:
-        body = request.get_json()
-        if not isinstance(body, dict):
-            return jsonify({"error": "Expected JSON object"}), 400
-        identifier(authority_id)
-        payload = {**body, "issuer_id": authority_id, "action": "revoke"}
-        return jsonify(
-            store.operation(payload, lambda: issuer.revocation(store, authority_id, payload))
-        )
-
-    @app.get("/authorities/<authority_id>/crl")
-    def download_crl(authority_id: str) -> Any:
-        return jsonify({"pem": issuer.crl(store, authority_id).public_bytes(Encoding.PEM).decode()})
-
-    @app.get("/authorities/<authority_id>/certificates")
-    def certificates(authority_id: str) -> Any:
-        directory = store.directory(authority_id)
-        certificates = []
-        for path in sorted(directory.glob("*.pem")):
-            if len(path.stem) == 32:
-                cert = x509.load_pem_x509_certificate(path.read_bytes())
-                certificates.append({**certificate_info(cert), "pem": path.read_text()})
-        return jsonify({"certificates": certificates})
-
-    @app.get("/authorities/<authority_id>/chain")
-    def chain(authority_id: str) -> Any:
-        return jsonify({"pem": store.chain(authority_id).decode()})
-
+    app.register_blueprint(controller)
     return app
 
 

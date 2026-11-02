@@ -212,6 +212,15 @@ def configuration_errors(values: dict[str, str]) -> dict[str, str]:
         value = values[field]
         if value and (not Path(value).is_absolute() or ".." in Path(value).parts):
             errors[field] = "Use an absolute path without '..'."
+    errors.update(_ca_errors(values))
+    errors.update(_agent_errors(values))
+    errors.update(_dns_errors(values))
+    return errors
+
+
+def _ca_errors(values: dict[str, str]) -> dict[str, str]:
+    """Validate CA transport and separate lifecycle scope."""
+    errors: dict[str, str] = {}
     if values["ca_agent_url"]:
         if not _valid_agent_url(values["ca_agent_url"]):
             errors["ca_agent_url"] = "Enter an HTTPS CA agent URL."
@@ -224,8 +233,6 @@ def configuration_errors(values: dict[str, str]) -> dict[str, str]:
         )
     if values["ca_management_token"] and len(values["ca_management_token"]) < 32:
         errors["ca_management_token"] = "Use a lifecycle token of at least 32 characters."  # noqa: S105
-    errors.update(_agent_errors(values))
-    errors.update(_dns_errors(values))
     return errors
 
 

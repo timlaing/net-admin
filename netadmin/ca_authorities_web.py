@@ -27,6 +27,10 @@ def unavailable(_error: Exception) -> Any:
     return render_template(CA_TEMPLATE, unavailable=True), 502
 
 
+AUTHORITY_API = "authorities/"
+PEM_CONTENT_TYPE = "application/x-pem-file"
+
+
 def client() -> AgentClient:
     """Use independent management scope in addition to existing mTLS/bearer auth."""
     settings = cast(Settings, extension("netadmin_settings"))
@@ -85,6 +89,23 @@ def load_recovery(body: dict[str, str]) -> None:
             abort(400, "Invalid recovery file")
 
 
+def _operation_failure(action: str, operation_id: str, error: httpx.HTTPError) -> Any:
+    """Distinguish rejected requests from interrupted or uncertain operations."""
+    known_rejection = isinstance(error, httpx.HTTPStatusError) and error.response.status_code in {
+        400,
+        403,
+        404,
+    }  # pylint: disable=no-member
+    message = ""
+    if known_rejection:
+        with contextlib.suppress(ValueError, AttributeError):
+            message = str(cast(httpx.HTTPStatusError, error).response.json().get("error", ""))[:300]
+    audit(action, operation_id, False if known_rejection else None)
+    return render_template(
+        CA_TEMPLATE, operation_error=True, request_id=operation_id, operation_message=message
+    ), (400 if known_rejection else 409)
+
+
 @authorities_web.post("/certificates/authorities/<action>")
 @admin_required
 def mutate(action: str) -> Any:
@@ -126,28 +147,16 @@ def mutate(action: str) -> Any:
     if request.form.get("confirm") != "yes":
         abort(400, "Confirm this operation")
     remote = client()
-    path = "authorities/" + action
+    path = AUTHORITY_API + action
     if action in {"issue", "revoke"}:
         try:
-            path = "authorities/" + identifier(request.form.get("issuer_id", "")) + "/" + action
+            path = AUTHORITY_API + identifier(request.form.get("issuer_id", "")) + "/" + action
         except ValueError:
             abort(400)
     try:
         result = remote.post(path, body, timeout=100)
     except httpx.HTTPError as error:
-        known_rejection = isinstance(
-            error, httpx.HTTPStatusError
-        ) and error.response.status_code in {400, 403, 404}  # pylint: disable=no-member
-        message = ""
-        if known_rejection:
-            with contextlib.suppress(ValueError, AttributeError):
-                message = str(cast(httpx.HTTPStatusError, error).response.json().get("error", ""))[
-                    :300
-                ]
-        audit(action, operation_id, False if known_rejection else None)
-        return render_template(
-            CA_TEMPLATE, operation_error=True, request_id=operation_id, operation_message=message
-        ), (400 if known_rejection else 409)
+        return _operation_failure(action, operation_id, error)
     audit(action, operation_id, True)
     if action == "export-root":
         return Response(
@@ -161,7 +170,7 @@ def mutate(action: str) -> Any:
     if action == "issue":
         return Response(
             result["pem"],
-            mimetype="application/x-pem-file",
+            mimetype=PEM_CONTENT_TYPE,
             headers={
                 "Content-Disposition": 'attachment; filename="certificate-chain.pem"',
                 "Cache-Control": "no-store",
@@ -178,10 +187,10 @@ def chain(authority_id: str) -> Any:
         authority_id = identifier(authority_id)
     except ValueError:
         abort(404)
-    result = client().get("authorities/" + authority_id + "/chain")
+    result = client().get(AUTHORITY_API + authority_id + "/chain")
     return Response(
         result["pem"],
-        mimetype="application/x-pem-file",
+        mimetype=PEM_CONTENT_TYPE,
         headers={
             "Content-Disposition": 'attachment; filename="ca-chain.pem"',
         },
@@ -214,7 +223,7 @@ def issued(authority_id: str) -> Any:
     try:
         remote = client()
         state = remote.get("authorities")
-        result = remote.get("authorities/" + authority_id + "/certificates")
+        result = remote.get(AUTHORITY_API + authority_id + "/certificates")
         read_only = remote.read_only()
     except httpx.HTTPError:
         return render_template(CA_TEMPLATE, unavailable=True), 502
@@ -238,10 +247,10 @@ def crl(authority_id: str) -> Any:
         authority_id = identifier(authority_id)
     except ValueError:
         abort(404)
-    result = client().get("authorities/" + authority_id + "/crl")
+    result = client().get(AUTHORITY_API + authority_id + "/crl")
     return Response(
         result["pem"],
-        mimetype="application/x-pem-file",
+        mimetype=PEM_CONTENT_TYPE,
         headers={
             "Content-Disposition": 'attachment; filename="issuer-crl.pem"',
         },

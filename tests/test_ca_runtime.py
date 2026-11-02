@@ -164,8 +164,9 @@ def test_management_auth_missing_state_and_changed_retry(runtime, tmp_path):
     ],
 )
 def test_authority_options_reject_invalid_inputs(values):
+    payload = {**body(), **values}
     with pytest.raises(ValueError):
-        options({**body(), **values})
+        options(payload)
 
 
 def test_authority_ui_empty_state_and_sensitive_exports(tmp_path, monkeypatch):
@@ -315,8 +316,9 @@ def test_parent_policy_cannot_be_expanded(tmp_path):
         {"ip_ranges": "10.0.0.0/8"},
         {"dns_suffixes": "example.test", "leaf_days": 365},
     ):
+        child_policy = policy(child)
         with pytest.raises(ValueError, match="exceeds parent"):
-            check_parent_policy(store, root_id, policy(child))
+            check_parent_policy(store, root_id, child_policy)
     for invalid in ("one.example.test,two.example.test", "*.example.test", "https://ca.test"):
         with pytest.raises(ValueError):
             service_host({"service_host": invalid})
