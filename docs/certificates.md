@@ -4,7 +4,9 @@ NetAdmin supports two RADIUS certificate backends. The default `local` backend
 uses the existing RADIUS CA. The optional `step-ca` backend delegates issuance to
 Smallstep and runs a separate renewal worker. Both install certificates through
 the RADIUS agent's configuration validation, acknowledged restart, and rollback.
-No agent mounts the Docker socket. CA signing keys never enter NetAdmin or its agents.
+No agent mounts the Docker socket. In local mode, the RADIUS agent reads its CA
+signing key from `ca.key`. With step-ca, the signing key stays in the authority
+container; NetAdmin and its agents receive no authority signing key.
 
 ## Local certificates
 
@@ -112,7 +114,8 @@ The CA agent is not published to the host. Pin root trust with
 with a certificate supplied in an issuance response.
 
 The **Certificates** navigation item appears when `NETADMIN_CA_AGENT_URL` is set.
-It supports CSR issuance, public chain/root downloads, an issuance inventory and
+It supports CSR issuance, public chain/root downloads, an issuance inventory
+paged in groups of 100 (use Next page to continue), and
 revocation with reason codes. Use **Inspect CSR** to decode the requested subject,
 SANs and public key strength before approval. **Revoke a certificate by serial**
 accepts the hexadecimal serial displayed on the RADIUS page, including the current
@@ -208,3 +211,8 @@ check; container validation alone does not prove client trust compatibility.
 References: [step-ca setup](https://smallstep.com/docs/step-ca/getting-started/),
 [renewal](https://smallstep.com/docs/step-cli/reference/ca/renew/),
 [production and CRLs](https://smallstep.com/docs/step-ca/certificate-authority-server-production/).
+
+If a CA or RADIUS certificate request times out, the audit outcome is **Unknown**, rather
+than a confirmed failure. Refresh the certificate status before retrying; a
+bounded status request may still report the agent unavailable while activation
+finishes. A status change alone does not prove which operation succeeded.

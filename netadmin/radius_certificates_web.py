@@ -14,7 +14,7 @@ from netadmin.store import Store
 certificate_web = Blueprint("radius_certificates", __name__)
 
 
-def _audit(action: str, success: bool) -> None:
+def _audit(action: str, success: bool | None) -> None:
     cast(Store, extension("netadmin_store")).audit(
         current_identity().username, f"radius.certificate.{action}", "RADIUS TLS", success
     )
@@ -74,6 +74,14 @@ def operate() -> Any:
             },
             timeout=60,
         )
+    except httpx.TimeoutException:
+        _audit(action, None)
+        flash(
+            "Certificate operation outcome is unknown. Refresh status before retrying; "
+            "the agent may still be applying it.",
+            "warning",
+        )
+        return redirect(url_for("radius_certificates.index"))
     except httpx.HTTPError:
         _audit(action, False)
         raise

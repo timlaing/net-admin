@@ -108,7 +108,7 @@ class Store:
         username: str,
         action: str,
         target: str,
-        success: bool,
+        success: bool | None,
         details: dict[str, Any] | None = None,
     ) -> None:
         """Append an audit event without storing secrets."""
@@ -121,7 +121,7 @@ class Store:
                     username,
                     action,
                     target,
-                    int(success),
+                    -1 if success is None else int(success),
                     json.dumps(details or {}, sort_keys=True),
                 ),
             )
@@ -134,7 +134,10 @@ class Store:
                 "FROM audit ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [
+            dict(row) | {"success": None if row["success"] == -1 else row["success"]}
+            for row in rows
+        ]
 
     def allow_attempt(self, bucket: str, limit: int, window_seconds: int) -> bool:
         """Consume one attempt when the sliding-window limit permits it."""

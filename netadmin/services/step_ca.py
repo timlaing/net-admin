@@ -98,6 +98,16 @@ def provisioner_flags() -> list[str]:
     ]
 
 
+def signing_configuration() -> None:
+    """Reject deterministic local configuration errors before marking an attempt."""
+    _, root = connection_settings()
+    provisioner_flags()
+    x509.load_pem_x509_certificate(root.read_bytes())
+    password = configured_path("STEP_CA_PASSWORD_FILE", "/run/secrets/provisioner-password")
+    if not password.is_file() or not os.access(password, os.R_OK):
+        raise ValueError("Provisioner credential file is unavailable")
+
+
 def validate_csr(pem: str) -> x509.CertificateSigningRequest:
     """Reject malformed requests, CA privileges and unsupported public keys."""
     if len(pem) > 32768:

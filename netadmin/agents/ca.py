@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 from cryptography import x509
 from flask import Flask, current_app, jsonify
+from flask import request as http_request
 
 from netadmin.agents.common import configured_path, create_agent, json_object
 from netadmin.services.radius_certificates import PEM, certificate_info, certificate_options
@@ -23,6 +24,7 @@ from netadmin.services.step_ca import (
     issued_matches_csr,
     revoke_certificate,
     sign_csr,
+    signing_configuration,
     validate_csr,
 )
 
@@ -36,8 +38,15 @@ def _root() -> Path:
 
 
 def _inventory() -> Any:
+    cursor = http_request.args.get("after", "")
+    if cursor and (len(cursor) != 32 or any(char not in "0123456789abcdef" for char in cursor)):
+        return jsonify({"error": "Invalid inventory cursor"}), 400
+    paths = [
+        path for path in sorted(_root().glob("*/certificate.pem")) if path.parent.name > cursor
+    ]
+    selected = paths[:101]
     certificates = []
-    for path in sorted(_root().glob("*/certificate.pem")):
+    for path in selected[:100]:
         try:
             cert = x509.load_pem_x509_certificate(path.read_bytes())
         except (OSError, ValueError):
@@ -56,7 +65,12 @@ def _inventory() -> Any:
                 or (_root() / "revocations" / format(cert.serial_number, "x")).exists(),
             }
         )
-    return jsonify({"certificates": certificates})
+    return jsonify(
+        {
+            "certificates": certificates,
+            "next_cursor": selected[99].parent.name if len(selected) > 100 else None,
+        }
+    )
 
 
 def _issue() -> Any:
@@ -81,10 +95,17 @@ def _issue() -> Any:
         # UUID.hex constructs the path component from a parsed 128-bit identifier.
         directory = _root() / uuid.UUID(hex=identifier).hex
         directory.mkdir(mode=0o700, exist_ok=True)
+        _sync_directory(_root())
         with (directory / "lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             return _issue_record(directory, pem, days, digest)
-    except (OSError, ValueError, x509.ExtensionNotFound, subprocess.SubprocessError) as error:
+    except (
+        OSError,
+        KeyError,
+        ValueError,
+        x509.ExtensionNotFound,
+        subprocess.SubprocessError,
+    ) as error:
         # Raw subprocess tracebacks can contain tokens and credential material.
         current_app.logger.error("CA issuance failed: %s", failure_category(error))  # NOSONAR
         return jsonify(
@@ -105,19 +126,18 @@ def _issue_record(directory: Path, pem: str, days: int, digest: str) -> Any:
     if not output.exists():
         if candidate.exists():
             # Recover a complete response left behind by a crash after signing.
-            issued_matches_csr(candidate.read_bytes(), csr)
-            os.replace(candidate, output)
+            _publish_certificate(candidate, output, csr)
         elif attempted.exists():
             return jsonify(
                 {"error": "Issuance outcome is uncertain; reconcile CA records before retrying"}
             ), 409
         else:
+            signing_configuration()
             _durable_write(record, json.dumps({"digest": digest}))
             _durable_write(request, pem)
             _durable_write(attempted, "1")
             sign_csr(request, candidate, days)
-            issued_matches_csr(candidate.read_bytes(), csr)
-            os.replace(candidate, output)
+            _publish_certificate(candidate, output, csr)
     certificate = issued_matches_csr(output.read_bytes(), csr)
     return jsonify(
         {
@@ -128,6 +148,16 @@ def _issue_record(directory: Path, pem: str, days: int, digest: str) -> Any:
     ), 201
 
 
+def _publish_certificate(
+    candidate: Path, output: Path, csr: x509.CertificateSigningRequest
+) -> None:
+    issued_matches_csr(candidate.read_bytes(), csr)
+    with candidate.open("rb") as certificate:
+        os.fsync(certificate.fileno())
+    os.replace(candidate, output)
+    _sync_directory(output.parent)
+
+
 def _durable_write(path: Path, content: str) -> None:
     """Publish local operation state atomically before/after authority side effects."""
     candidate = path.with_suffix(path.suffix + ".tmp")
@@ -136,6 +166,15 @@ def _durable_write(path: Path, content: str) -> None:
         record.flush()
         os.fsync(record.fileno())
     os.replace(candidate, path)
+    _sync_directory(path.parent)
+
+
+def _sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _revoke(identifier: str) -> Any:
@@ -151,7 +190,7 @@ def _revoke(identifier: str) -> Any:
         cert = x509.load_pem_x509_certificate((path / CERTIFICATE_FILE).read_bytes())
         _record_revocation(cert.serial_number, int(reason))
         return jsonify({"status": "revoked"})
-    except (OSError, ValueError, httpx.HTTPError, subprocess.SubprocessError) as error:
+    except (OSError, KeyError, ValueError, httpx.HTTPError, subprocess.SubprocessError) as error:
         # Raw subprocess tracebacks can contain tokens and credential material.
         current_app.logger.error("CA revocation failed: %s", failure_category(error))  # NOSONAR
         return jsonify({"error": REVOCATION_ERROR}), 502
@@ -189,7 +228,7 @@ def _revoke_serial() -> Any:
     try:
         _record_revocation(int(serial, 16), int(reason))
         return jsonify({"status": "revoked"})
-    except (OSError, ValueError, httpx.HTTPError, subprocess.SubprocessError) as error:
+    except (OSError, KeyError, ValueError, httpx.HTTPError, subprocess.SubprocessError) as error:
         # Raw subprocess tracebacks can contain tokens and credential material.
         current_app.logger.error("CA revocation failed: %s", failure_category(error))  # NOSONAR
         return jsonify({"error": REVOCATION_ERROR}), 502

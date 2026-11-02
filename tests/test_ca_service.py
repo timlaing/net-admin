@@ -27,6 +27,17 @@ from tests.test_radius_certificates import AUTH, PASSWORD, agent
 from tests.test_radius_certificates import material as material
 
 
+@pytest.fixture(autouse=True)
+def ca_configuration(monkeypatch, tmp_path, material):
+    """Supply synthetic local signing configuration even when the CLI is stubbed."""
+    secret = tmp_path / "provisioner-password"
+    secret.write_text("synthetic-password")
+    monkeypatch.setenv("STEP_CA_URL", "https://ca.test:9000")
+    monkeypatch.setenv("STEP_CA_PROVISIONER", "synthetic")
+    monkeypatch.setenv("STEP_CA_ROOT", str(material[0] / "ca.pem"))
+    monkeypatch.setenv("STEP_CA_PASSWORD_FILE", str(secret))
+
+
 def csr(key=None, *, ca=False):
     key = key or ec.generate_private_key(ec.SECP256R1())
     request = (
@@ -39,8 +50,10 @@ def csr(key=None, *, ca=False):
     return request.public_bytes(PEM).decode()
 
 
-@pytest.mark.parametrize("action", ["create-server", "renew-server"])
-def test_local_custom_identity_and_one_year(material, monkeypatch, action):
+@pytest.mark.parametrize(
+    "action, days", [("create-server", 365), ("renew-server", 365), ("renew-server", 30)]
+)
+def test_local_custom_identity_and_validity(material, monkeypatch, action, days):
     client, body = agent(material, monkeypatch)
     result = client.post(
         "/certificates",
@@ -50,19 +63,23 @@ def test_local_custom_identity_and_one_year(material, monkeypatch, action):
             "action": action,
             "common_name": "new.example.test",
             "sans": "new.example.test,192.0.2.15,2001:db8::1",
-            "days": "365",
+            "days": str(days),
         },
     )
     assert result.status_code == 200, result.json
     cert = x509.load_pem_x509_certificate((material[0] / "server.pem").read_bytes())
     cert.verify_directly_issued_by(material[1])
+    assert (
+        ExtendedKeyUsageOID.SERVER_AUTH
+        in cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+    )
     assert cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value == "new.example.test"
     names = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     assert [str(name.value) for name in names] == ["new.example.test", "192.0.2.15", "2001:db8::1"]
     assert (
-        timedelta(days=365)
+        timedelta(days=days)
         <= cert.not_valid_after_utc - cert.not_valid_before_utc
-        < timedelta(days=366)
+        < timedelta(days=days + 1)
     )
     assert key_matches(cert, load_signing_key((material[0] / "server.pem").read_bytes(), PASSWORD))
     assert (
@@ -372,6 +389,10 @@ def test_issuance_retries_recover_complete_output_without_resigning(
     monkeypatch.setattr("netadmin.agents.ca.sign_csr", sign)
     client = create_ca_agent().test_client()
     payload = {"csr": request_pem, "request_id": "a" * 32}
+    monkeypatch.delenv("STEP_CA_URL")
+    assert client.post("/certificates", json=payload, headers=AUTH).status_code == 502
+    assert not list((tmp_path / "ledger").glob("*/attempted"))
+    monkeypatch.setenv("STEP_CA_URL", "https://ca.test:9000")
     first = client.post("/certificates", json=payload, headers=AUTH)
     assert first.status_code == 201
     second = client.post("/certificates", json=payload, headers=AUTH)
@@ -506,6 +527,10 @@ def test_compose_limits_ca_exposure_and_shares_radius_pid_namespace():
     compose = yaml.safe_load(Path("docker-compose.step-ca.yml").read_text())
     assert compose["services"]["step-ca"]["ports"] == ["127.0.0.1:9000:9000"]
     assert compose["services"]["radius-renewal"]["pid"] == "service:radius"
+    radius = compose["services"]["radius-agent"]
+    assert radius["environment"]["RADIUS_CA_AGENT_URL"] == "https://ca-agent:8084"
+    assert "./pki/ca-agent-client:/ca-agent-client:ro" in radius["volumes"]
+    assert "./step-ca/certs/root_ca.crt:/trust/root_ca.crt:ro" in radius["volumes"]
 
 
 def test_uncertain_issuance_is_not_automatically_repeated(tmp_path, monkeypatch):
@@ -568,3 +593,156 @@ def test_issuance_request_id_cannot_escape_agent_state(tmp_path, monkeypatch):
         )
         assert result.status_code == 400
     assert list((tmp_path / "ledger").iterdir()) == []
+
+
+def test_ca_missing_configuration_returns_502_on_revocation(tmp_path, monkeypatch, material):
+    monkeypatch.setenv("NETADMIN_AGENT_TOKEN", "synthetic")
+    monkeypatch.setenv("CA_DATA_DIR", str(tmp_path / "ledger"))
+    monkeypatch.delenv("STEP_CA_PROVISIONER")
+    client = create_ca_agent().test_client()
+    directory = tmp_path / "ledger" / ("a" * 32)
+    directory.mkdir()
+    (directory / "certificate.pem").write_bytes(material[2].public_bytes(PEM))
+    assert (
+        client.post("/certificates/" + "a" * 32 + "/revoke", json={}, headers=AUTH).status_code
+        == 502
+    )
+    assert client.post("/revoke", json={"serial": "1234"}, headers=AUTH).status_code == 502
+
+
+def test_durable_ca_records_sync_file_then_parent(tmp_path, monkeypatch):
+    import os
+    import stat
+
+    from netadmin.agents.ca import _durable_write
+
+    original = os.fsync
+    synced = []
+
+    def sync(descriptor):
+        synced.append("directory" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "file")
+        original(descriptor)
+
+    monkeypatch.setattr("netadmin.agents.ca.os.fsync", sync)
+    target = tmp_path / "attempted"
+    _durable_write(target, "1")
+    assert synced == ["file", "directory"]
+    assert target.read_text() == "1"
+
+
+def test_inventory_pages_preserve_access_to_every_record(tmp_path, monkeypatch, material):
+    monkeypatch.setenv("NETADMIN_AGENT_TOKEN", "synthetic")
+    monkeypatch.setenv("CA_DATA_DIR", str(tmp_path / "ledger"))
+    client = create_ca_agent().test_client()
+    for index in range(105):
+        directory = tmp_path / "ledger" / format(index, "032x")
+        directory.mkdir()
+        (directory / "certificate.pem").write_bytes(material[2].public_bytes(PEM))
+    first = client.get("/certificates", headers=AUTH).json
+    assert len(first["certificates"]) == 100
+    second = client.get("/certificates?after=" + first["next_cursor"], headers=AUTH).json
+    assert len(second["certificates"]) == 5
+    assert second["next_cursor"] is None
+    ids = [record["id"] for record in first["certificates"] + second["certificates"]]
+    assert len(set(ids)) == 105
+    assert client.get("/certificates?after=../", headers=AUTH).status_code == 400
+
+
+def test_timed_out_radius_operation_is_audited_as_unknown(tmp_path, monkeypatch):
+    import httpx
+
+    app, client = admin_client(tmp_path)
+
+    def timeout(*args, **kwargs):
+        raise httpx.ReadTimeout("synthetic timeout")
+
+    app.extensions["netadmin_radius"] = SimpleNamespace(read_only=lambda: False, post=timeout)
+    response = client.post(
+        "/radius/certificates", data={"action": "enroll-step-ca", "confirm": "yes"}
+    )
+    assert response.status_code == 302
+    event = app.extensions["netadmin_store"].recent_audit()[0]
+    assert event["success"] is None
+    assert "Unknown" in client.get("/audit").text
+
+
+def test_unsupported_sans_are_displayed_but_not_prefilled_for_editing(material, tmp_path):
+    from netadmin.services.radius_certificates import certificate_info
+
+    _, ca, server, ca_key = material
+    key = ec.generate_private_key(ec.SECP256R1())
+    names = x509.SubjectAlternativeName(
+        [
+            x509.DNSName("radius.test"),
+            x509.UniformResourceIdentifier("spiffe://example.test/radius"),
+            x509.RFC822Name("radius@example.test"),
+        ]
+    )
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(server.subject)
+        .issuer_name(ca.subject)
+        .public_key(key.public_key())
+        .serial_number(123)
+        .not_valid_before(datetime.now(UTC) - timedelta(minutes=1))
+        .not_valid_after(datetime.now(UTC) + timedelta(days=1))
+        .add_extension(names, True)
+        .sign(ca_key, hashes.SHA256())
+    )
+    metadata = certificate_info(certificate)
+    assert metadata["editable_sans"] == "radius.test"
+    assert metadata["unsupported_sans"]
+    app, client = admin_client(tmp_path)
+    app.extensions["netadmin_radius"] = SimpleNamespace(
+        read_only=lambda: False,
+        get=lambda path: {
+            "available": True,
+            "can_manage": True,
+            "has_crl": False,
+            "ca": certificate_info(ca),
+            "server": metadata,
+        },
+    )
+    page = client.get("/radius/certificates")
+    assert "Renewal preserves all existing SANs" in page.text
+    assert 'maxlength="8192" disabled' in page.text
+    renewed = issue_certificate(certificate, key, ca, ca_key, options={"days": 1})
+    assert renewed.extensions.get_extension_for_class(x509.SubjectAlternativeName).value == names
+
+
+def test_empty_subject_replacement_san_remains_critical(material):
+    _, ca, _, ca_key = material
+    key = ec.generate_private_key(ec.SECP256R1())
+    names = x509.SubjectAlternativeName([x509.DNSName("radius.test")])
+    original = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([]))
+        .issuer_name(ca.subject)
+        .public_key(key.public_key())
+        .serial_number(124)
+        .not_valid_before(datetime.now(UTC) - timedelta(minutes=1))
+        .not_valid_after(datetime.now(UTC) + timedelta(days=1))
+        .add_extension(names, True)
+        .sign(ca_key, hashes.SHA256())
+    )
+    renewed = issue_certificate(original, key, ca, ca_key, options={"sans": names})
+    assert renewed.extensions.get_extension_for_class(x509.SubjectAlternativeName).critical
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/certificates", "/certificates/revoke-serial", "/certificates/" + "a" * 32 + "/revoke"],
+)
+def test_timed_out_ca_operations_are_audited_as_unknown(tmp_path, monkeypatch, path):
+    import httpx
+
+    app, client = admin_client(tmp_path)
+
+    def timeout(*args, **kwargs):
+        raise httpx.ReadTimeout("synthetic timeout")
+
+    monkeypatch.setattr(
+        "netadmin.ca_web._client", lambda: SimpleNamespace(read_only=lambda: False, post=timeout)
+    )
+    assert client.post(path, data={"confirm": "yes"}).status_code == 302
+    assert app.extensions["netadmin_store"].recent_audit()[0]["success"] is None

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from typing import Any, cast
+from urllib.parse import urlencode
 
 import httpx
 from cryptography import x509
@@ -35,10 +36,16 @@ def _client() -> AgentClient:
     )
 
 
-def _audit(action: str, success: bool) -> None:
+def _audit(action: str, success: bool | None) -> None:
     cast(Store, extension("netadmin_store")).audit(
         current_identity().username, f"ca.{action}", "Certificates", success
     )
+
+
+def _unknown_outcome(action: str) -> Any:
+    _audit(action, None)
+    flash("CA operation outcome is unknown. Inspect the inventory before retrying.", "warning")
+    return redirect(url_for(CA_INDEX))
 
 
 @ca_web.get("/certificates")
@@ -50,12 +57,19 @@ def index() -> Any:
 
 def _render_inventory(client: AgentClient, **context: Any) -> Any:
     try:
-        inventory = client.get("certificates")
+        cursor = request.args.get("after", "")
+        inventory = client.get(
+            "certificates" + ("?" + urlencode({"after": cursor}) if cursor else "")
+        )
         read_only = client.read_only()
     except httpx.HTTPError:
         return render_template(CA_TEMPLATE, unavailable=True, certificates=[], read_only=True), 502
     return render_template(
-        CA_TEMPLATE, certificates=inventory["certificates"], read_only=read_only, **context
+        CA_TEMPLATE,
+        certificates=inventory["certificates"],
+        read_only=read_only,
+        next_cursor=inventory.get("next_cursor"),
+        **context,
     )
 
 
@@ -114,6 +128,8 @@ def issue() -> Any:
             },
             timeout=60,
         )
+    except httpx.TimeoutException:
+        return _unknown_outcome("issue")
     except httpx.HTTPError:
         _audit("issue", False)
         raise
@@ -137,6 +153,8 @@ def revoke(identifier: str) -> Any:
             {"reason": request.form.get("reason", "0")},
             timeout=60,
         )
+    except httpx.TimeoutException:
+        return _unknown_outcome("revoke")
     except httpx.HTTPError:
         _audit("revoke", False)
         raise
@@ -163,6 +181,8 @@ def revoke_serial() -> Any:
             {"serial": request.form.get("serial", ""), "reason": request.form.get("reason", "0")},
             timeout=60,
         )
+    except httpx.TimeoutException:
+        return _unknown_outcome("revoke")
     except httpx.HTTPError:
         _audit("revoke", False)
         raise

@@ -72,9 +72,18 @@ def identity_options(certificate: x509.Certificate) -> dict[str, Any]:
     try:
         names = certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
         sans = ", ".join(str(name.value) for name in names)
+        editable = ", ".join(
+            str(name.value) for name in names if isinstance(name, x509.DNSName | x509.IPAddress)
+        )
+        unsupported = any(not isinstance(name, x509.DNSName | x509.IPAddress) for name in names)
     except x509.ExtensionNotFound:
-        sans = ""
-    return {"common_name": str(common_names[0].value) if common_names else "", "sans": sans}
+        sans, editable, unsupported = "", "", False
+    return {
+        "common_name": str(common_names[0].value) if common_names else "",
+        "sans": sans,
+        "editable_sans": editable,
+        "unsupported_sans": unsupported,
+    }
 
 
 def _signature_hash(key: SigningKey) -> hashes.SHA256 | hashes.SHA384 | hashes.SHA512:
@@ -191,7 +200,7 @@ def issue_certificate(
         }:
             builder = builder.add_extension(extension.value, extension.critical)
     if "sans" in options and not is_ca:
-        builder = builder.add_extension(options["sans"], False)
+        builder = builder.add_extension(options["sans"], _san_critical(original, subject))
     builder = builder.add_extension(
         x509.SubjectKeyIdentifier.from_public_key(key.public_key()), False
     )
@@ -199,6 +208,15 @@ def issue_certificate(
         x509.AuthorityKeyIdentifier.from_issuer_public_key(issuer_key.public_key()), False
     )
     return builder.sign(issuer_key, _signature_hash(issuer_key))
+
+
+def _san_critical(original: x509.Certificate, subject: x509.Name) -> bool:
+    if not subject:
+        return True
+    try:
+        return original.extensions.get_extension_for_class(x509.SubjectAlternativeName).critical
+    except x509.ExtensionNotFound:
+        return False
 
 
 def issue_crl(

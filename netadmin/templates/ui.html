@@ -60,6 +60,6 @@
 <table class="table align-middle" id="{{ id }}">
 <caption class="visually-hidden">Recent administrative activity</caption>
 <thead><tr><th scope="col">When (UTC)</th><th scope="col">User</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Result</th></tr></thead>
-<tbody>{% for event in events %}<tr data-filter-row><td class="text-nowrap" data-sort-value="{{ event.occurred_at }}">{{ event.occurred_at|display_time }}</td><td>{{ event.username }}</td><td>{{ event.action }}</td><td class="cell-value">{{ event.target }}</td><td><span class="status {{ 'status-success' if event.success else 'status-danger' }}">{{ 'Success' if event.success else 'Rejected' }}</span></td></tr>{% endfor %}</tbody>
+<tbody>{% for event in events %}<tr data-filter-row><td class="text-nowrap" data-sort-value="{{ event.occurred_at }}">{{ event.occurred_at|display_time }}</td><td>{{ event.username }}</td><td>{{ event.action }}</td><td class="cell-value">{{ event.target }}</td><td><span class="status {{ 'status-warning' if event.success is none else ('status-success' if event.success else 'status-danger') }}">{{ 'Unknown' if event.success is none else ('Success' if event.success else 'Rejected') }}</span></td></tr>{% endfor %}</tbody>
 </table></section>
 {%- endmacro %}
