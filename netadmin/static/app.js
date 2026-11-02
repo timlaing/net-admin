@@ -178,6 +178,14 @@
         form.elements.name.focus();
       });
     });
+    document.querySelectorAll('form[data-csr-issue]').forEach(form => {
+      const csr = form.querySelector('[name="csr"]');
+      const approval = form.querySelector('[name="confirm"]');
+      csr.addEventListener('input', () => {
+        approval.checked = false;
+        document.querySelectorAll('[data-csr-preview]').forEach(preview => { preview.hidden = true; });
+      });
+    });
     document.querySelectorAll('form[data-confirm]').forEach(form => {
       form.addEventListener('submit', event => {
         if (!window.confirm(form.dataset.confirm)) event.preventDefault();

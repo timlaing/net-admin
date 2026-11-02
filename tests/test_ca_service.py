@@ -260,9 +260,16 @@ def test_step_enrolment_and_renewal_preserve_key_and_validate_before_install(mat
     monkeypatch.setattr(radius_step_ca, "_client", lambda: SimpleNamespace(post=issue))
     with pytest.raises(ValueError):
         radius_step_ca.changes(directory, PASSWORD, {"action": "enroll-step-ca"})
+    root_reads = []
+    monkeypatch.setattr(
+        radius_step_ca,
+        "trusted_root",
+        lambda: root_reads.append(True) or (directory / "ca.pem").read_bytes(),
+    )
     files = radius_step_ca.changes(
         directory, PASSWORD, {"action": "enroll-step-ca", "confirmation": "STEP CA"}
     )
+    assert len(root_reads) == 1
     bundle = files["server.pem"].encode()
     assert radius_step_ca.managed(bundle)
     (directory / "server.pem").write_bytes(bundle)
@@ -308,6 +315,12 @@ def test_renewal_worker_checks_mode_readonly_due_and_activation(material, monkey
         assert not radius_renewal.renew_once()
         monkeypatch.delenv("NETADMIN_AGENT_READ_ONLY")
         monkeypatch.setattr(radius_renewal, "renewal_due", lambda data: False)
+        assert not radius_renewal.renew_once()
+        monkeypatch.setattr(radius_renewal, "renewal_due", lambda data: True)
+        monkeypatch.setenv("RADIUS_CERT_AUTO_RENEW", "false")
+        assert not radius_renewal.renew_once()
+        monkeypatch.setenv("RADIUS_CERT_AUTO_RENEW", "true")
+        monkeypatch.setenv("RADIUS_CERT_BACKEND", "local")
         assert not radius_renewal.renew_once()
 
 
@@ -746,7 +759,10 @@ def test_timed_out_ca_operations_are_audited_as_unknown(tmp_path, monkeypatch, p
         "netadmin.ca_web._client", lambda: SimpleNamespace(read_only=lambda: False, post=timeout)
     )
     expected = 202 if path == "/certificates" else 302
-    assert client.post(path, data={"confirm": "yes", "serial": "abc123"}).status_code == expected
+    assert (
+        client.post(path, data={"confirm": "yes", "serial": "abc123", "csr": csr()}).status_code
+        == expected
+    )
     assert app.extensions["netadmin_store"].recent_audit()[0]["success"] is None
 
 
@@ -1099,3 +1115,188 @@ def test_certificate_routes_reject_noncanonical_ids_before_calling_agent(
         == 404
     )
     assert calls == []
+
+
+@pytest.mark.parametrize("missing", ["cn", "sans"])
+def test_step_ca_enrollment_requires_explicit_missing_identity(material, monkeypatch, missing):
+    from netadmin.services.radius_certificates import private_pem
+
+    directory, ca, previous, ca_key = material
+    key = load_signing_key((directory / "server.pem").read_bytes(), PASSWORD)
+    subject = (
+        x509.Name([x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Synthetic")])
+        if missing == "cn"
+        else previous.subject
+    )
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(ca.subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(UTC) - timedelta(minutes=1))
+        .not_valid_after(datetime.now(UTC) + timedelta(days=1))
+    )
+    if missing != "sans":
+        builder = builder.add_extension(
+            previous.extensions.get_extension_for_class(x509.SubjectAlternativeName).value, False
+        )
+    certificate = builder.sign(ca_key, hashes.SHA256())
+    original = private_pem(key, PASSWORD) + certificate.public_bytes(PEM)
+    (directory / "server.pem").write_bytes(original)
+    client, _ = agent(material, monkeypatch)
+    monkeypatch.setenv("RADIUS_CERT_BACKEND", "step-ca")
+    monkeypatch.setenv("STEP_CA_ROOT", str(directory / "ca.pem"))
+    calls = []
+    monkeypatch.setattr(
+        radius_step_ca,
+        "_client",
+        lambda: SimpleNamespace(post=lambda *args, **kwargs: calls.append(args)),
+    )
+    status = client.get("/certificates", headers=AUTH).json
+    response = client.post(
+        "/certificates",
+        headers=AUTH,
+        json={
+            "action": "enroll-step-ca",
+            "confirmation": "STEP CA",
+            "expected_ca": status["ca"]["fingerprint"],
+            "expected_server": status["server"]["fingerprint"],
+        },
+    )
+    assert response.status_code == 502
+    assert "Previous files were retained" in response.json["error"]
+    assert calls == []
+    assert (directory / "server.pem").read_bytes() == original
+    explicit = certificate_options({"common_name": "radius.test", "sans": "radius.test"})
+    subject, sans = radius_step_ca._enrollment_identity(certificate, explicit)
+    assert subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value == "radius.test"
+    assert sans == x509.SubjectAlternativeName([x509.DNSName("radius.test")])
+
+
+def test_revocation_retry_removes_and_syncs_stale_pending_marker(tmp_path, monkeypatch):
+    from netadmin.agents.ca import _record_revocation
+
+    monkeypatch.setenv("CA_DATA_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("NETADMIN_AGENT_TOKEN", "synthetic")
+    app = create_ca_agent()
+    directory = tmp_path / "ledger" / "revocations"
+    directory.mkdir()
+    (directory / "beef").write_text("4")
+    pending = directory / "beef.pending"
+    pending.write_text("4")
+    synced, calls = [], []
+    monkeypatch.setattr("netadmin.agents.ca._sync_directory", synced.append)
+    monkeypatch.setattr("netadmin.agents.ca.revoke_certificate", lambda *args: calls.append(args))
+    with app.app_context():
+        _record_revocation(0xBEEF, 4)
+    assert not pending.exists()
+    assert synced == [directory]
+    assert calls == []
+
+
+def test_missing_issuance_id_is_stable_and_includes_lifetime(tmp_path, monkeypatch):
+    import hashlib
+
+    app, client = admin_client(tmp_path)
+    pem = csr()
+    calls = []
+
+    def post(path, payload, **kwargs):
+        calls.append(payload)
+        return {"id": payload["request_id"]}
+
+    monkeypatch.setattr(
+        "netadmin.ca_web._client", lambda: SimpleNamespace(read_only=lambda: False, post=post)
+    )
+    for days in ("02", "2", "3"):
+        assert (
+            client.post(
+                "/certificates", data={"csr": pem, "days": days, "confirm": "yes"}
+            ).status_code
+            == 302
+        )
+    expected = hashlib.sha256(validate_csr(pem).public_bytes(PEM) + b"2").hexdigest()[:32]
+    assert calls[0]["request_id"] == calls[1]["request_id"] == expected
+    assert calls[2]["request_id"] != expected
+    assert app.extensions["netadmin_store"].recent_audit()[1]["target"] == expected
+    assert (
+        client.post("/certificates", data={"csr": "invalid", "confirm": "yes"}).status_code == 400
+    )
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("status", [400, 403, 409, 422])
+def test_ca_validation_rejections_keep_status_and_message(tmp_path, monkeypatch, status):
+    import httpx
+
+    app, client = admin_client(tmp_path)
+
+    def reject(*args, **kwargs):
+        response = httpx.Response(
+            status,
+            json={"error": "Synthetic identity rejected"},
+            request=httpx.Request("POST", "https://ca.test/certificates"),
+        )
+        response.raise_for_status()
+
+    monkeypatch.setattr(
+        "netadmin.ca_web._client", lambda: SimpleNamespace(read_only=lambda: False, post=reject)
+    )
+    response = client.post("/certificates", data={"request_id": "a" * 32, "confirm": "yes"})
+    assert response.status_code == status
+    assert "Synthetic identity rejected" in response.text
+    assert app.extensions["netadmin_store"].recent_audit()[0]["success"] == 0
+
+
+def test_ca_inventory_survives_capabilities_failure(tmp_path, monkeypatch):
+    import httpx
+
+    _, client = admin_client(tmp_path)
+
+    def unavailable():
+        raise httpx.ConnectError("synthetic status outage")
+
+    monkeypatch.setattr(
+        "netadmin.ca_web._client",
+        lambda: SimpleNamespace(
+            read_only=unavailable,
+            get=lambda path: {
+                "certificates": [{"id": "a" * 32, "subject": "Visible synthetic certificate"}]
+            },
+        ),
+    )
+    response = client.get("/certificates")
+    assert response.status_code == 200
+    assert "Visible synthetic certificate" in response.text
+    assert "read-only" in response.text
+    assert "Issue a certificate" not in response.text
+
+
+@pytest.mark.parametrize(
+    "url", ["http://agent", "https://agent:99999", "https://agent/#route", "https://agent/?route"]
+)
+def test_invalid_ca_configuration_returns_unavailable_page(tmp_path, url):
+    app, client = admin_client(tmp_path)
+    app.extensions["netadmin_settings"] = replace(
+        app.extensions["netadmin_settings"], ca_agent_url=url
+    )
+    for response in (
+        client.get("/certificates"),
+        client.post("/certificates/inspect", data={"csr": csr()}),
+    ):
+        assert response.status_code == 502
+        assert "CA agent is unavailable" in response.text
+
+
+def test_unsupported_csr_algorithm_is_a_validation_error(monkeypatch):
+    from cryptography.exceptions import UnsupportedAlgorithm
+
+    class UnsupportedCSR:
+        @property
+        def is_signature_valid(self):
+            raise UnsupportedAlgorithm("synthetic unsupported key")
+
+    monkeypatch.setattr(x509, "load_pem_x509_csr", lambda data: UnsupportedCSR())
+    with pytest.raises(ValueError, match="Unsupported CSR algorithm"):
+        validate_csr("synthetic")

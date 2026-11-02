@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from typing import Any, cast
 from urllib.parse import urlencode
@@ -13,6 +14,7 @@ from flask import Blueprint, Response, abort, flash, redirect, render_template, 
 from netadmin.auth import admin_required, current_identity, extension
 from netadmin.config import Settings
 from netadmin.services.agents import AgentClient
+from netadmin.services.radius_certificates import PEM, certificate_options
 from netadmin.services.step_ca import validate_csr
 from netadmin.store import Store
 
@@ -27,13 +29,25 @@ def _client() -> AgentClient:
     settings = cast(Settings, extension("netadmin_settings"))
     if not settings.ca_agent_url:
         abort(404)
-    return AgentClient(
-        settings.ca_agent_url,
-        settings.agent_token,
-        settings.agent_ca,
-        settings.agent_cert,
-        settings.agent_key,
-    )
+    try:
+        return AgentClient(
+            settings.ca_agent_url,
+            settings.agent_token,
+            settings.agent_ca,
+            settings.agent_cert,
+            settings.agent_key,
+        )
+    except ValueError as error:
+        raise CAConfigurationError from error
+
+
+class CAConfigurationError(ValueError):
+    """An invalid operator-supplied CA agent endpoint."""
+
+
+@ca_web.errorhandler(CAConfigurationError)
+def _configuration_error(_error: CAConfigurationError) -> Any:
+    return render_template(CA_TEMPLATE, unavailable=True, certificates=[], read_only=True), 502
 
 
 UNCERTAIN_TRANSPORT_ERRORS = (
@@ -61,6 +75,17 @@ def _request_id(value: str | None = None) -> str:
     return uuid.UUID(hex=value).hex
 
 
+def _issue_request_id() -> str:
+    if request.form.get("request_id"):
+        return _request_id()
+    try:
+        csr = validate_csr(request.form.get("csr", ""))
+        days = certificate_options({"days": request.form.get("days", "365")})["days"]
+    except (ValueError, TypeError):
+        abort(400, "Invalid CSR or validity")
+    return hashlib.sha256(csr.public_bytes(PEM) + str(days).encode("ascii")).hexdigest()[:32]
+
+
 def _certificate_id(value: str) -> str:
     if len(value) != 32 or any(char not in "0123456789abcdef" for char in value):
         abort(404)
@@ -69,7 +94,12 @@ def _certificate_id(value: str) -> str:
 
 def _unknown_outcome(action: str, details: dict[str, str]) -> Any:
     _audit(action, None, details)
-    flash("CA operation outcome is unknown. Inspect the inventory before retrying.", "warning")
+    guidance = (
+        "Inspect the inventory before retrying."
+        if action == "issue"
+        else "Check the authoritative CRL; retry revocation if the serial is absent."
+    )
+    flash(f"CA operation outcome is unknown. {guidance}", "warning")
     if action == "issue":
         # Render the original form rather than creating a new operation on redirect.
         return render_template(
@@ -101,6 +131,17 @@ def _operation_error(action: str, details: dict[str, str], error: httpx.HTTPErro
     if isinstance(error, UNCERTAIN_TRANSPORT_ERRORS) or _reported_unknown(error):
         return _unknown_outcome(action, details)
     _audit(action, False, details)
+    if isinstance(error, httpx.HTTPStatusError) and 400 <= error.response.status_code < 500:
+        message = "The CA agent rejected this request."
+        try:
+            payload = error.response.json()
+            if isinstance(payload, dict) and isinstance(payload.get("error"), str):
+                message = payload["error"][:500]
+        except ValueError:
+            pass
+        return render_template(
+            CA_TEMPLATE, operation_error=message, certificates=[], read_only=True
+        ), error.response.status_code
     raise error
 
 
@@ -121,9 +162,12 @@ def _render_inventory(client: AgentClient, **context: Any) -> Any:
         inventory = client.get(
             "certificates" + ("?" + urlencode({"after": cursor}) if cursor else "")
         )
-        read_only = client.read_only()
     except httpx.HTTPError:
         return render_template(CA_TEMPLATE, unavailable=True, certificates=[], read_only=True), 502
+    try:
+        read_only = client.read_only()
+    except httpx.HTTPError:
+        read_only = True
     return render_template(
         CA_TEMPLATE,
         certificates=inventory["certificates"],
@@ -174,7 +218,7 @@ def issue() -> Any:
         abort(403)
     if request.form.get("confirm") != "yes":
         abort(400)
-    details = {"request_id": _request_id()}
+    details = {"request_id": _issue_request_id()}
     try:
         result = client.post(
             "certificates",

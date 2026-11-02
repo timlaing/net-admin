@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Disposable real step-ca issuance/renewal/revocation and native RADIUS activation.
 set -euo pipefail
-image="${1:?Usage: smoke_step_ca.sh <radius-agent-image>}"
+image="${1:?Usage: smoke_step_ca.sh <radius-agent-image|ca-agent-image>}"
 name="netadmin-step-smoke-${RANDOM}"
 cleanup() {
   result=$?
@@ -36,6 +36,49 @@ CONFIG
 docker run -d --name "$name-ca" --user 0 --network "$name" --network-alias step-ca \
   -v "$name-ca-data:/home/step" smallstep/step-ca:0.30.2 \
   step-ca /home/step/config/ca.json --password-file /home/step/password >/dev/null
+# The CA image has its own CLI installation; exercise its actual signing path too.
+if [[ "$image" == *ca-agent* ]]; then
+  docker run --rm -i --network "$name" -v "$name-trust:/trust:ro" \
+    -e NETADMIN_AGENT_TOKEN=synthetic -e STEP_CA_URL=https://step-ca:9000 \
+    -e STEP_CA_ROOT=/trust/root_ca.crt -e STEP_CA_PROVISIONER=netadmin \
+    -e STEP_CA_PASSWORD_FILE=/tmp/provisioner-password -e CA_DATA_DIR=/tmp/ledger \
+    --entrypoint python "$image" - <<'CA_ONLY'
+import time
+from pathlib import Path
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
+from netadmin.agents.ca import create_ca_agent
+from netadmin.services.step_ca import run_step, connection_flags, issued_matches_csr
+
+Path('/tmp/provisioner-password').write_text('synthetic-smoke-password')
+for attempt in range(30):
+    try:
+        run_step(['ca', 'health', *connection_flags()]); break
+    except Exception:
+        if attempt == 29: raise
+        time.sleep(1)
+key = ec.generate_private_key(ec.SECP256R1())
+csr = (x509.CertificateSigningRequestBuilder()
+       .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'ca-smoke.test')]))
+       .add_extension(x509.SubjectAlternativeName([x509.DNSName('ca-smoke.test')]), False)
+       .sign(key, hashes.SHA256()))
+client = create_ca_agent().test_client()
+auth = {'Authorization': 'Bearer synthetic'}
+payload = {'csr': csr.public_bytes(serialization.Encoding.PEM).decode(), 'days': 1}
+response = client.post('/certificates', headers=auth, json=payload)
+assert response.status_code == 201, response.json
+issued_matches_csr(response.json['pem'].encode(), csr)
+assert client.post('/certificates', headers=auth, json=payload).json == response.json
+assert len(client.get('/certificates', headers=auth).json['certificates']) == 1
+revoked = client.post('/certificates/' + response.json['id'] + '/revoke', headers=auth, json={'reason': 4})
+assert revoked.status_code == 200, revoked.json
+assert client.get('/certificates', headers=auth).json['certificates'][0]['revoked']
+print('CA-agent image CLI issuance, idempotent retry and revocation passed')
+CA_ONLY
+  exit 0
+fi
 docker build -q -f docker/Dockerfile.freeradius -t "$name-radius-image" . >/dev/null
 docker run -d --name "$name-radius" --network none \
   -v "$name-radius-data:/etc/raddb/certs" "$name-radius-image" -X >/dev/null

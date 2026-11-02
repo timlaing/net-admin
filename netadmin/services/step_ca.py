@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from cryptography import x509
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
@@ -137,9 +138,12 @@ def validate_csr(pem: str) -> x509.CertificateSigningRequest:
     if len(pem) > 32768:
         raise ValueError("CSR is too large")
     csr = x509.load_pem_x509_csr(pem.encode("ascii"))
-    if not csr.is_signature_valid:
-        raise ValueError("Invalid CSR signature")
-    key = csr.public_key()
+    try:
+        if not csr.is_signature_valid:
+            raise ValueError("Invalid CSR signature")
+        key = csr.public_key()
+    except UnsupportedAlgorithm as error:
+        raise ValueError("Unsupported CSR algorithm") from error
     if not isinstance(key, rsa.RSAPublicKey | ec.EllipticCurvePublicKey):
         raise ValueError("Only RSA and EC keys are supported")
     if key.key_size < (2048 if isinstance(key, rsa.RSAPublicKey) else 256):

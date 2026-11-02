@@ -22,7 +22,13 @@ class AgentClient:
         key: Path | None = None,
     ) -> None:
         parsed = urlsplit(base_url)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username is not None:
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.query
+            or parsed.fragment
+        ):
             raise ValueError("Agent URL must use HTTPS without embedded credentials")
         if parsed.port == 0:
             raise ValueError("Agent URL must have a valid port")

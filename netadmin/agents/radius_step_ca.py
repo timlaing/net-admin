@@ -57,8 +57,27 @@ def managed(bundle: bytes) -> bool:
         return False
 
 
+def _enrollment_identity(
+    previous: x509.Certificate, options: dict[str, Any]
+) -> tuple[x509.Name, x509.SubjectAlternativeName]:
+    common_name = options.get("common_name")
+    if common_name is None:
+        names = previous.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+        if len(names) != 1:
+            raise ValueError("Specify a common name for step-ca enrolment")
+        common_name = names[0].value
+    sans = options.get("sans")
+    if sans is None:
+        try:
+            sans = previous.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        except x509.ExtensionNotFound as error:
+            raise ValueError("Specify SANs for step-ca enrolment") from error
+    return x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)]), sans
+
+
 def changes(directory: Path, password: bytes, body: dict[str, Any]) -> dict[str, str]:
     """Prepare new files without changing the active RADIUS identity."""
+    root = trusted_root()
     bundle = (directory / SERVER_PEM).read_bytes()
     previous = x509.load_pem_x509_certificate(bundle)
     action = body["action"]
@@ -67,13 +86,7 @@ def changes(directory: Path, password: bytes, body: dict[str, Any]) -> dict[str,
             raise ValueError("Confirm replacement of RADIUS CA trust with STEP CA")
         options = certificate_options(body)
         key = replacement_key(previous)
-        common_name = options.get("common_name")
-        if common_name is None:
-            common_name = previous.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
-        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
-        sans = options.get("sans")
-        if sans is None:
-            sans = previous.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        subject, sans = _enrollment_identity(previous, options)
         csr = (
             x509.CertificateSigningRequestBuilder()
             .subject_name(subject)
@@ -92,7 +105,7 @@ def changes(directory: Path, password: bytes, body: dict[str, Any]) -> dict[str,
         expected_subject = subject
         expected_sans = sans
     elif action == "renew-server":
-        validate_server_chain(bundle, trusted_root())
+        validate_server_chain(bundle, root)
         key = load_signing_key(bundle, password)
         with tempfile.TemporaryDirectory(prefix="netadmin-renew-") as temporary:
             stage = Path(temporary)
@@ -112,7 +125,7 @@ def changes(directory: Path, password: bytes, body: dict[str, Any]) -> dict[str,
         ).value
     else:
         raise ValueError("Local CA operations are disabled for step-ca certificates")
-    chain = validate_server_chain(pem, trusted_root())
+    chain = validate_server_chain(pem, root)
     leaf = chain[0]
     _validate_new_usage(leaf)
     if not key_matches(leaf, key) or leaf.subject != expected_subject:
@@ -123,7 +136,7 @@ def changes(directory: Path, password: bytes, body: dict[str, Any]) -> dict[str,
     public_chain = b"".join(cert.public_bytes(PEM) for cert in chain[:-1])
     return {
         SERVER_PEM: (private_pem(key, password) + public_chain).decode("ascii"),
-        "ca.pem": trusted_root().decode("ascii"),
+        "ca.pem": root.decode("ascii"),
         f"previous-server-{previous.serial_number:x}.crt": previous.public_bytes(PEM).decode(
             "ascii"
         ),

@@ -2,14 +2,14 @@
 {% block title %}Certificates · NetAdmin{% endblock %}
 {% block content %}
 <div class="page-heading"><div><p class="eyebrow">TRUST &amp; IDENTITY</p><h1>Certificates</h1><p>Issue certificates from CSRs using step-ca. Private keys stay with the requester.</p></div></div>
-{% if unavailable %}<output class="alert alert-warning d-block">The CA agent is unavailable. Check its connection before retrying an operation.</output>{% else %}
+{% if operation_error %}<output class="alert alert-danger d-block">{{ operation_error }}</output><a href="{{ url_for('ca.index') }}">Back to certificates</a>{% elif unavailable %}<output class="alert alert-warning d-block">The CA agent is unavailable. Check its connection before retrying an operation.</output>{% else %}
 <a class="btn btn-outline-secondary mb-3" href="{{ url_for('ca.download', identifier='root') }}">Download root CA</a>
 <a class="btn btn-outline-secondary mb-3" href="{{ url_for('ca.download', identifier='crl') }}">Download CRL</a>
 {% if read_only %}<output class="alert alert-info d-block">The CA agent is read-only.</output>{% else %}
 <section class="card mb-4"><div class="card-body"><h2 class="h4">{{ 'Retry original request' if pending_issue else 'Issue a certificate' }}</h2>
 {% if pending_issue %}<p class="form-text">Original request ID: <code>{{ request_id }}</code>. <a href="{{ url_for('ca.index') }}">Start a different request</a></p>{% endif %}
-{% if preview %}<dl class="certificate-metadata"><dt>Requested subject</dt><dd>{{ preview.subject }}</dd><dt>Requested SANs</dt><dd>{{ preview.sans }}</dd><dt>Public key strength</dt><dd>{{ preview.key_bits }} bits</dd></dl><p class="form-text">The CA template and policy determine the final certificate.</p>{% endif %}
-<form method="post" action="{{ url_for('ca.issue') }}">
+{% if preview %}<div data-csr-preview><dl class="certificate-metadata"><dt>Requested subject</dt><dd>{{ preview.subject }}</dd><dt>Requested SANs</dt><dd>{{ preview.sans }}</dd><dt>Public key strength</dt><dd>{{ preview.key_bits }} bits</dd></dl><p class="form-text">The CA template and policy determine the final certificate.</p></div>{% endif %}
+<form method="post" data-csr-issue action="{{ url_for('ca.issue') }}">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 <input type="hidden" name="request_id" value="{{ request_id|default('') }}">
 <label for="csr" class="form-label">Certificate signing request (PEM)</label><textarea id="csr" name="csr" class="form-control mb-3" rows="8" maxlength="32768" required spellcheck="false">{{ csr|default('') }}</textarea>

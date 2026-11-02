@@ -209,12 +209,13 @@ def _record_revocation(serial: int, reason: int) -> None:
     path = directory / format(serial, "x")
     with (directory / "lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        pending = path.with_suffix(".pending")
         if not path.exists():
-            pending = path.with_suffix(".pending")
             _durable_write(pending, str(reason))
             revoke_certificate(serial, reason)
             _durable_write(path, str(reason))
-            pending.unlink(missing_ok=True)
+        pending.unlink(missing_ok=True)
+        _sync_directory(directory)
 
 
 def _revoke_serial() -> Any:

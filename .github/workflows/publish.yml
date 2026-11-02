@@ -96,12 +96,12 @@ jobs:
             arch: amd64
             runner: ubuntu-24.04
             dockerfile: docker/Dockerfile.ca-agent
-            smoke: Tools/smoke_agent.sh
+            smoke: Tools/smoke_agent.sh Tools/smoke_step_ca.sh
           - flavour: ca-agent
             arch: aarch64
             runner: ubuntu-24.04-arm
             dockerfile: docker/Dockerfile.ca-agent
-            smoke: Tools/smoke_agent.sh
+            smoke: Tools/smoke_agent.sh Tools/smoke_step_ca.sh
           - flavour: radius-agent
             arch: amd64
             runner: ubuntu-24.04
