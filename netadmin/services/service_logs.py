@@ -12,9 +12,7 @@ MAX_BYTES = 2_097_152
 MAX_ROWS = 500
 
 
-DETAIL_HEADER = re.compile(
-    r"[A-Za-z]{3} [A-Za-z]{3}\s+[0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}"
-)
+DETAIL_HEADER = re.compile(r"[A-Za-z]{3} [A-Za-z]{3}\s+\d{1,2} \d{2}:\d{2}:\d{2} \d{4}", re.ASCII)
 MAX_EPOCH = 253402300799
 
 
@@ -182,10 +180,10 @@ def accounting_records(text: str) -> list[dict[str, str]]:
     }
     records = []
     block: list[str] = []
-    for line in text.splitlines():
+    for line in text.splitlines(keepends=True):
         if line.strip():
-            block.append(line)
-        elif block:
+            block.append(line.rstrip("\r\n"))
+        elif block and line.endswith(("\r", "\n")):
             record = _accounting_record(block, allowed)
             if record:
                 records.append(record)
@@ -205,7 +203,7 @@ def _accounting_record(lines: list[str], allowed: set[str]) -> dict[str, str]:
 
 
 def _decimal(value: str) -> int | None:
-    return int(value) if re.fullmatch(r"[0-9]{1,20}", value) else None
+    return int(value) if re.fullmatch(r"\d{1,20}", value, flags=re.ASCII) else None
 
 
 def _epoch(record: dict[str, str]) -> int | None:

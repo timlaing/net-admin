@@ -48,7 +48,7 @@ def test_reused_short_identifier_does_not_join_distinct_unique_sessions():
     assert all(row["status"] == "Ended" for row in rows)
 
 
-@pytest.mark.parametrize("epoch", ["²", "99999999999999999999", "-1"])
+@pytest.mark.parametrize("epoch", ["²", "\u0661", "99999999999999999999", "-1"])
 def test_invalid_timestamps_cannot_replace_valid_state(epoch):
     text = detail("Start", 1000) + detail("Stop", epoch)
     rows = logs.session_rows(logs.accounting_records(text), 1100)
@@ -196,3 +196,9 @@ def test_tls_context_failure_is_a_page_unavailable_state(tmp_path, monkeypatch, 
     assert response.status_code == 200
     assert "Logs are unavailable" in response.text
     assert "synthetic" not in response.text
+
+
+def test_accounting_requires_a_complete_blank_line_terminator():
+    partial = detail("Start", 1000).rstrip() + "\n "
+    assert logs.accounting_records(partial) == []
+    assert len(logs.accounting_records(partial + "\n")) == 1
