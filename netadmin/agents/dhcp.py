@@ -18,6 +18,7 @@ from netadmin.agents.common import (
     json_object,
     validated_transaction,
 )
+from netadmin.agents.service_logs import register_logs
 from netadmin.services import dhcp_files, kea_files, subnet_files
 from netadmin.services.dhcp_files import kea_export
 
@@ -348,6 +349,7 @@ def create_dhcp_agent() -> Flask:
     if backend not in {"isc", "kea"}:
         raise ValueError(f"DHCP_SERVER must be 'isc' or 'kea', got {backend!r}")
     app = create_agent(__name__)
+    register_logs(app, "dhcp")
     app.config.update(
         DHCP_MANAGED=configured_path("DHCP_MANAGED_FILE", "/etc/dhcp/netadmin-reservations.conf"),
         DHCP_MAIN=configured_path("DHCP_MAIN_CONFIG", "/etc/dhcp/dhcpd.conf"),

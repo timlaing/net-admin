@@ -17,6 +17,7 @@ import dns.zone
 from flask import Flask, current_app, jsonify, request  # pylint: disable=wrong-import-order
 
 from netadmin.agents.common import configured_path, create_agent, json_object, validated_transaction
+from netadmin.agents.service_logs import register_logs
 from netadmin.services.dns import BindService, discover_zones
 
 
@@ -270,6 +271,7 @@ def create_dns_agent() -> Flask:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", update_key):
         raise ValueError("Invalid DNS_UPDATE_KEY")
     app = create_agent(__name__)
+    register_logs(app, "dns")
     app.config.update(
         MAX_CONTENT_LENGTH=1_048_576,
         DNS_SERVER=os.getenv("DNS_SERVER", "127.0.0.1"),

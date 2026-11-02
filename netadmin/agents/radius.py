@@ -21,6 +21,7 @@ from netadmin.agents.common import (
     validated_transaction,
 )
 from netadmin.agents.radius_certificates import register_certificates
+from netadmin.agents.service_logs import register_logs
 from netadmin.services.radius_files import (
     edit_client,
     migrate_authorize,
@@ -332,6 +333,7 @@ def _install_client(target: Path, content: str) -> None:
 def create_radius_agent() -> Flask:
     """Create the FreeRADIUS management agent."""
     app = create_agent(__name__)
+    register_logs(app, "radius")
 
     @app.errorhandler(ValueError)
     def invalid_client(_error: ValueError) -> Any:

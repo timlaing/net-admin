@@ -171,3 +171,10 @@ verify and lint gates pass (`.github/workflows/publish.yml` triggers on
 The release's tag must match `home-assistant/netadmin/config.yaml`'s `version`.
 Release notes are drafted automatically from conventional commits by
 release-drafter; the tag is created when the release is published.
+
+## Service event pages
+
+The admin **Service logs** section provides separate RADIUS login, DHCP lease,
+DDNS change and RADIUS accounting session tables. These events stay out of Recent
+Activity. See [service log configuration and retention](docs/service-logs.md) for
+read-only agent log mounts, supported native formats and accounting prerequisites.
