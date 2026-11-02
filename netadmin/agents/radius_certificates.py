@@ -202,7 +202,7 @@ def _operate() -> Any:
         return jsonify({"error": "Unknown certificate operation"}), 400
     try:
         options = certificate_options(body)
-    except (ValueError, TypeError, UnicodeError):
+    except (ValueError, TypeError):
         return jsonify({"error": "Invalid common name, SANs or validity"}), 400
     error = _request_error(action, options)
     if error is not None:

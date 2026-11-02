@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import subprocess  # nosec B404
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -77,13 +78,15 @@ def _issue() -> Any:
     except (ValueError, TypeError):
         return jsonify({"error": "Invalid CSR, validity or request ID"}), 400
     try:
-        directory = _root() / identifier
+        # UUID.hex constructs the path component from a parsed 128-bit identifier.
+        directory = _root() / uuid.UUID(hex=identifier).hex
         directory.mkdir(mode=0o700, exist_ok=True)
         with (directory / "lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             return _issue_record(directory, pem, days, digest)
     except (OSError, ValueError, x509.ExtensionNotFound, subprocess.SubprocessError) as error:
-        current_app.logger.error("CA issuance failed: %s", failure_category(error))
+        # Raw subprocess tracebacks can contain tokens and credential material.
+        current_app.logger.error("CA issuance failed: %s", failure_category(error))  # NOSONAR
         return jsonify(
             {"error": "CA issuance failed; inspect the agent inventory before retrying"}
         ), 502
@@ -149,7 +152,8 @@ def _revoke(identifier: str) -> Any:
         _record_revocation(cert.serial_number, int(reason))
         return jsonify({"status": "revoked"})
     except (OSError, ValueError, httpx.HTTPError, subprocess.SubprocessError) as error:
-        current_app.logger.error("CA revocation failed: %s", failure_category(error))
+        # Raw subprocess tracebacks can contain tokens and credential material.
+        current_app.logger.error("CA revocation failed: %s", failure_category(error))  # NOSONAR
         return jsonify({"error": REVOCATION_ERROR}), 502
 
 
@@ -186,7 +190,8 @@ def _revoke_serial() -> Any:
         _record_revocation(int(serial, 16), int(reason))
         return jsonify({"status": "revoked"})
     except (OSError, ValueError, httpx.HTTPError, subprocess.SubprocessError) as error:
-        current_app.logger.error("CA revocation failed: %s", failure_category(error))
+        # Raw subprocess tracebacks can contain tokens and credential material.
+        current_app.logger.error("CA revocation failed: %s", failure_category(error))  # NOSONAR
         return jsonify({"error": REVOCATION_ERROR}), 502
 
 

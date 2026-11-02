@@ -555,3 +555,16 @@ def test_status_waits_for_certificate_transaction_lock(material, monkeypatch):
     thread.join(timeout=2)
     assert not thread.is_alive()
     assert results[0].json == {"available": True}
+
+
+def test_issuance_request_id_cannot_escape_agent_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("NETADMIN_AGENT_TOKEN", "synthetic")
+    monkeypatch.setenv("CA_DATA_DIR", str(tmp_path / "ledger"))
+    client = create_ca_agent().test_client()
+    pem = csr()
+    for identifier in ("../" * 10 + "aa", "/" + "a" * 31, "a" * 31 + ".", "A" * 32):
+        result = client.post(
+            "/certificates", headers=AUTH, json={"csr": pem, "request_id": identifier}
+        )
+        assert result.status_code == 400
+    assert list((tmp_path / "ledger").iterdir()) == []

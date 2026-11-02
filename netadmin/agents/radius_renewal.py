@@ -44,7 +44,8 @@ def main() -> None:
                 if renew_once():
                     LOGGER.info("RADIUS certificate renewed and activated")
         except Exception as error:  # pylint: disable=broad-exception-caught
-            LOGGER.error(
+            # Never log raw subprocess exceptions: command arguments can contain tokens.
+            LOGGER.error(  # NOSONAR
                 "RADIUS renewal failed; previous identity retained: %s", failure_category(error)
             )
         time.sleep(60)
