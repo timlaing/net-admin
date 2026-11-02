@@ -9,7 +9,7 @@ services:
       - ./step-ca:/home/step:rw
       - ./pki/step-ca/ca-password:/run/secrets/ca-password:ro
     # Publish only when external clients require ACME/renewal; preserve TLS end to end.
-    ports: ["9000:9000"]
+    ports: ["127.0.0.1:9000:9000"]
   ca-agent:
     image: ghcr.io/timlaing/netadmin-ca-agent
     build:
@@ -43,6 +43,7 @@ services:
       - ./step-ca/certs/root_ca.crt:/trust/root_ca.crt:ro
       - ./pki/ca-agent-client:/ca-agent-client:ro
   radius-renewal:
+    pid: service:radius
     extends:
       file: docker-compose.yml
       service: radius-agent

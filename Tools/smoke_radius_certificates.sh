@@ -18,7 +18,8 @@ docker run -d --name "$name" --network none \
   --mount "type=volume,source=$volume,target=/etc/raddb/certs" \
   "$service_image" -X >/dev/null
 ready=false
-for _ in $(seq 90); do
+# Packaged bootstrap generates DH parameters; hosted ARM runners can need minutes.
+for _ in $(seq 300); do
   if docker logs "$name" 2>&1 | grep 'Ready to process requests' >/dev/null; then
     ready=true
     break

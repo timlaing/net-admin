@@ -25,6 +25,8 @@ from netadmin.services.radius_certificates import (
 )
 from netadmin.services.step_ca import renew_certificate, validate_server_chain
 
+SERVER_PEM = "server.pem"
+
 
 def enabled() -> bool:
     """Select the backend explicitly; missing configuration must never downgrade it."""
@@ -57,7 +59,7 @@ def managed(bundle: bytes) -> bool:
 
 def changes(directory: Path, password: bytes, body: dict[str, Any]) -> dict[str, str]:
     """Prepare new files without changing the active RADIUS identity."""
-    bundle = (directory / "server.pem").read_bytes()
+    bundle = (directory / SERVER_PEM).read_bytes()
     previous = x509.load_pem_x509_certificate(bundle)
     action = body["action"]
     if action == "enroll-step-ca":
@@ -94,7 +96,7 @@ def changes(directory: Path, password: bytes, body: dict[str, Any]) -> dict[str,
         key = load_signing_key(bundle, password)
         with tempfile.TemporaryDirectory(prefix="netadmin-renew-") as temporary:
             stage = Path(temporary)
-            source, output, secret = stage / "server.pem", stage / "renewed.pem", stage / "password"
+            source, output = stage / SERVER_PEM, stage / "renewed.pem"
             source.write_bytes(
                 b"".join(cert.public_bytes(PEM) for cert in x509.load_pem_x509_certificates(bundle))
             )
@@ -102,9 +104,7 @@ def changes(directory: Path, password: bytes, body: dict[str, Any]) -> dict[str,
             keyfile.write_bytes(private_pem(key, password))
             keyfile.chmod(0o600)
             source.chmod(0o600)
-            secret.write_bytes(password)
-            secret.chmod(0o600)
-            renew_certificate(source, keyfile, output, secret)
+            renew_certificate(source, keyfile, output, password)
             pem = output.read_bytes()
         expected_subject = previous.subject
         expected_sans = previous.extensions.get_extension_for_class(
@@ -121,7 +121,7 @@ def changes(directory: Path, password: bytes, body: dict[str, Any]) -> dict[str,
     # The root is a trust anchor; only the leaf and intermediates are presented by RADIUS.
     public_chain = b"".join(cert.public_bytes(PEM) for cert in chain[:-1])
     return {
-        "server.pem": (private_pem(key, password) + public_chain).decode("ascii"),
+        SERVER_PEM: (private_pem(key, password) + public_chain).decode("ascii"),
         "ca.pem": trusted_root().decode("ascii"),
         f"previous-server-{previous.serial_number:x}.crt": previous.public_bytes(PEM).decode(
             "ascii"

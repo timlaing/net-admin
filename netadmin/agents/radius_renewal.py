@@ -11,6 +11,7 @@ from pathlib import Path
 from netadmin.agents.radius import create_radius_agent
 from netadmin.agents.radius_certificates import _install, _inventory, _password
 from netadmin.agents.radius_step_ca import changes, enabled, managed, renewal_due
+from netadmin.services.step_ca import failure_category
 
 LOGGER = logging.getLogger(__name__)
 
@@ -42,8 +43,10 @@ def main() -> None:
             with app.app_context():
                 if renew_once():
                     LOGGER.info("RADIUS certificate renewed and activated")
-        except Exception:  # pylint: disable=broad-exception-caught
-            LOGGER.error("RADIUS renewal failed; previous identity retained; check CA and RADIUS")
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            LOGGER.error(
+                "RADIUS renewal failed; previous identity retained: %s", failure_category(error)
+            )
         time.sleep(60)
 
 

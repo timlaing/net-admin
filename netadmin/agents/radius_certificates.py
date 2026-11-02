@@ -66,11 +66,9 @@ def _inventory() -> dict[str, Any]:
         reason = "Certificate management is not enabled on this agent."
     elif not _protocol_ready():
         reason = "Update the RADIUS service image to enable certificate activation."
-    elif radius_step_ca.enabled():
-        pass
-    elif not _file(CA_KEY).exists():
+    elif not radius_step_ca.enabled() and not _file(CA_KEY).exists():
         reason = "The CA signing key is not available. Renew or revoke through your external CA."
-    else:
+    elif not radius_step_ca.enabled():
         key = load_signing_key(_file(CA_KEY).read_bytes(), _password())
         if not key_matches(ca, key):
             raise ValueError("CA key mismatch")
@@ -103,7 +101,9 @@ def _inventory() -> dict[str, Any]:
 
 def _status() -> Any:
     try:
-        return jsonify(_inventory())
+        with _file(".netadmin-cert-lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_SH)
+            return jsonify(_inventory())
     except (OSError, ValueError, TypeError, x509.InvalidVersion, InvalidSignature):
         return jsonify(
             {

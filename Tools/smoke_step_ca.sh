@@ -40,7 +40,8 @@ docker build -q -f docker/Dockerfile.freeradius -t "$name-radius-image" . >/dev/
 docker run -d --name "$name-radius" --network none \
   -v "$name-radius-data:/etc/raddb/certs" "$name-radius-image" -X >/dev/null
 ready=false
-for _ in $(seq 90); do
+# Packaged bootstrap generates DH parameters; hosted ARM runners can need minutes.
+for _ in $(seq 300); do
   if docker logs "$name-radius" 2>&1 | grep 'Ready to process requests' >/dev/null; then
     ready=true; break
   fi

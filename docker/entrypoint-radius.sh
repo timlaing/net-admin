@@ -168,6 +168,7 @@ elif [[ "$has_server" == false && "$has_ca" == false ]]; then
   else
     [[ -x "$CERT_DIR/bootstrap" ]] \
       || die "no TLS material and no packaged bootstrap to generate it"
+    say "generating TLS material via packaged bootstrap"
     if ! boot_log="$("$CERT_DIR/bootstrap" 2>&1)"; then
       printf '%s\n' "$boot_log" >&2
       die "packaged TLS bootstrap failed"

@@ -21,25 +21,28 @@ def certificate_options(body: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     if "days" in body:
         value = body["days"]
-        if isinstance(value, bool) or not re.fullmatch(r"[0-9]{1,4}", str(value)):
+        if isinstance(value, bool) or not re.fullmatch(r"\d{1,4}", str(value)):
             raise ValueError("Validity must be a whole number of days")
         days = int(value)
         if not 1 <= days <= 3650:
             raise ValueError("Validity must be between 1 and 3650 days")
         result["days"] = days
     if "common_name" in body:
-        name = body["common_name"]
-        if not isinstance(name, str) or not name.strip() or len(name.encode()) > 64:
-            raise ValueError("Common name must contain 1 to 64 bytes")
-        if any(ord(char) < 32 or ord(char) == 127 for char in name):
-            raise ValueError("Invalid common name")
-        result["common_name"] = name.strip()
+        result["common_name"] = _common_name(body["common_name"])
     if "sans" in body:
         value = body["sans"]
         if not isinstance(value, str) or len(value) > 8192:
             raise ValueError("SANs must be DNS names or IP addresses separated by commas")
         result["sans"] = _parse_sans(value)
     return result
+
+
+def _common_name(name: Any) -> str:
+    if not isinstance(name, str) or not name.strip() or len(name.encode()) > 64:
+        raise ValueError("Common name must contain 1 to 64 bytes")
+    if any(ord(char) < 32 or ord(char) == 127 for char in name):
+        raise ValueError("Invalid common name")
+    return name.strip()
 
 
 def _parse_sans(value: str) -> x509.SubjectAlternativeName:

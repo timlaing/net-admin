@@ -124,7 +124,22 @@ def test_ca_agent_issuance_inventory_revocation_and_auth(tmp_path, monkeypatch, 
 
     def sign(request, output, days):
         calls.append((request.read_text(), days))
-        output.write_bytes(material[2].public_bytes(PEM))
+        request_csr = validate_csr(request.read_text())
+        certificate = (
+            x509.CertificateBuilder()
+            .subject_name(request_csr.subject)
+            .issuer_name(material[1].subject)
+            .public_key(request_csr.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.now(UTC) - timedelta(minutes=1))
+            .not_valid_after(datetime.now(UTC) + timedelta(days=days))
+            .add_extension(
+                request_csr.extensions.get_extension_for_class(x509.SubjectAlternativeName).value,
+                False,
+            )
+            .sign(material[3], hashes.SHA256())
+        )
+        output.write_bytes(certificate.public_bytes(PEM))
 
     monkeypatch.setattr("netadmin.agents.ca.sign_csr", sign)
     monkeypatch.setattr(
@@ -135,7 +150,12 @@ def test_ca_agent_issuance_inventory_revocation_and_auth(tmp_path, monkeypatch, 
     assert client.get("/certificates").status_code == 401
     assert client.post("/certificates", headers=AUTH, json={"csr": csr(ca=True)}).status_code == 400
     assert client.post("/certificates", headers=AUTH, json={"csr": "invalid"}).status_code == 400
-    result = client.post("/certificates", headers=AUTH, json={"csr": csr(), "days": 365})
+    request_pem = csr()
+    result = client.post("/certificates", headers=AUTH, json={"csr": request_pem, "days": 365})
+    issued = x509.load_pem_x509_certificate(result.json["pem"].encode())
+    from netadmin.services.step_ca import issued_matches_csr
+
+    assert issued_matches_csr(issued.public_bytes(PEM), validate_csr(request_pem)) == issued
     assert result.status_code == 201
     identifier = result.json["id"]
     assert calls[0][1] == 365
@@ -156,7 +176,7 @@ def test_ca_agent_issuance_inventory_revocation_and_auth(tmp_path, monkeypatch, 
             ).status_code
             == 200
         )
-    assert calls[-1] == (material[2].serial_number, 1)
+    assert calls[-1] == (issued.serial_number, 1)
     assert len(calls) == 2
     monkeypatch.setenv("NETADMIN_AGENT_READ_ONLY", "true")
     assert client.post("/certificates", headers=AUTH, json={"csr": csr()}).status_code == 403
@@ -183,15 +203,17 @@ def test_revocation_by_current_hex_serial_is_validated_and_idempotent(tmp_path, 
 
 def test_csr_validation_and_server_chain(material):
     assert validate_csr(csr()).is_signature_valid
+    ca_request = csr(ca=True)
     with pytest.raises(ValueError):
-        validate_csr(csr(ca=True))
+        validate_csr(ca_request)
     with pytest.raises(ValueError):
         validate_csr("x" * 33000)
     directory, ca, server, key = material
     assert validate_server_chain(server.public_bytes(PEM), ca.public_bytes(PEM))[0] == server
     wrong = issue_certificate(ca, ec.generate_private_key(ec.SECP256R1()), ca, key, is_ca=True)
+    server_pem, wrong_pem = server.public_bytes(PEM), wrong.public_bytes(PEM)
     with pytest.raises((ValueError, InvalidSignature)):
-        validate_server_chain(server.public_bytes(PEM), wrong.public_bytes(PEM))
+        validate_server_chain(server_pem, wrong_pem)
     assert not radius_renewal.renewal_due((directory / "server.pem").read_bytes())
 
 
@@ -229,7 +251,7 @@ def test_step_enrolment_and_renewal_preserve_key_and_validate_before_install(mat
     cert = x509.load_pem_x509_certificate(bundle)
 
     def renew(source, keyfile, output, password):
-        assert password.read_bytes() == PASSWORD
+        assert password == PASSWORD
         assert x509.load_pem_x509_certificate(source.read_bytes()) == cert
         assert key_matches(cert, load_signing_key(keyfile.read_bytes(), PASSWORD))
         replacement = issue_certificate(cert, load_signing_key(bundle, PASSWORD), ca, key)
@@ -308,3 +330,228 @@ def test_ca_ui_admin_csrf_and_public_download(tmp_path, monkeypatch):
     token = app.extensions["netadmin_store"].create_session("standard", "standard", 60)
     client.set_cookie("netadmin_session", token)
     assert client.get("/certificates").status_code == 403
+
+
+def test_tampered_csr_signature_is_rejected():
+    from cryptography.hazmat.primitives.serialization import Encoding
+
+    request = x509.load_pem_x509_csr(csr().encode())
+    der = bytearray(request.public_bytes(Encoding.DER))
+    der[-1] ^= 1
+    tampered = x509.load_der_x509_csr(bytes(der)).public_bytes(PEM).decode()
+    with pytest.raises(ValueError, match="signature"):
+        validate_csr(tampered)
+
+
+def test_issuance_retries_recover_complete_output_without_resigning(
+    tmp_path, monkeypatch, material
+):
+    monkeypatch.setenv("NETADMIN_AGENT_TOKEN", "synthetic")
+    monkeypatch.setenv("CA_DATA_DIR", str(tmp_path / "ledger"))
+    calls = []
+    request_pem = csr()
+    request = validate_csr(request_pem)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(request.subject)
+        .issuer_name(material[1].subject)
+        .public_key(request.public_key())
+        .serial_number(1234)
+        .not_valid_before(datetime.now(UTC) - timedelta(minutes=1))
+        .not_valid_after(datetime.now(UTC) + timedelta(days=10))
+        .add_extension(
+            request.extensions.get_extension_for_class(x509.SubjectAlternativeName).value, False
+        )
+        .sign(material[3], hashes.SHA256())
+    )
+
+    def sign(_request, output, _days):
+        calls.append(output)
+        output.write_bytes(cert.public_bytes(PEM))
+
+    monkeypatch.setattr("netadmin.agents.ca.sign_csr", sign)
+    client = create_ca_agent().test_client()
+    payload = {"csr": request_pem, "request_id": "a" * 32}
+    first = client.post("/certificates", json=payload, headers=AUTH)
+    assert first.status_code == 201
+    second = client.post("/certificates", json=payload, headers=AUTH)
+    assert second.json == first.json
+    assert len(calls) == 1
+    directory = tmp_path / "ledger" / first.json["id"]
+    (directory / "certificate.pem").rename(directory / "signing.pem")
+    recovered = client.post("/certificates", json=payload, headers=AUTH)
+    assert recovered.json == first.json
+    assert len(calls) == 1
+    assert (
+        client.post("/certificates", json={**payload, "days": 1}, headers=AUTH).status_code == 409
+    )
+
+
+def test_partial_and_mismatched_signatures_never_poison_inventory(
+    tmp_path, monkeypatch, material, caplog
+):
+    import subprocess
+
+    monkeypatch.setenv("NETADMIN_AGENT_TOKEN", "synthetic")
+    monkeypatch.setenv("CA_DATA_DIR", str(tmp_path / "ledger"))
+    calls = []
+
+    def fail(_request, output, _days):
+        calls.append(output)
+        output.write_bytes(b"partial certificate")
+        raise subprocess.CalledProcessError(1, "synthetic", stderr="secret must never be logged")
+
+    monkeypatch.setattr("netadmin.agents.ca.sign_csr", fail)
+    client = create_ca_agent().test_client()
+    payload = {"csr": csr()}
+    for _ in range(2):
+        assert client.post("/certificates", json=payload, headers=AUTH).status_code == 502
+    assert len(calls) == 1
+    assert "secret must never be logged" not in caplog.text
+    assert client.get("/certificates", headers=AUTH).json["certificates"] == []
+    monkeypatch.setattr(
+        "netadmin.agents.ca.sign_csr",
+        lambda request, output, days: output.write_bytes(material[2].public_bytes(PEM)),
+    )
+    assert client.post("/certificates", json={"csr": csr()}, headers=AUTH).status_code == 502
+    assert client.get("/certificates", headers=AUTH).json["certificates"] == []
+    bad = tmp_path / "ledger" / ("f" * 32)
+    bad.mkdir()
+    (bad / "certificate.pem").write_bytes(b"partial legacy certificate")
+    assert client.get("/certificates", headers=AUTH).status_code == 200
+
+
+def test_crl_configuration_errors_return_controlled_response(tmp_path, monkeypatch):
+    monkeypatch.setenv("NETADMIN_AGENT_TOKEN", "synthetic")
+    monkeypatch.setenv("CA_DATA_DIR", str(tmp_path / "ledger"))
+    client = create_ca_agent().test_client()
+    for url in (None, "http://insecure.test"):
+        if url is None:
+            monkeypatch.delenv("STEP_CA_URL", raising=False)
+        else:
+            monkeypatch.setenv("STEP_CA_URL", url)
+        assert client.get("/crl", headers=AUTH).status_code == 502
+
+
+def test_renewal_password_uses_stdin_not_a_file(monkeypatch):
+    from pathlib import Path
+
+    from netadmin.services.step_ca import renew_certificate, run_step
+
+    calls = []
+    monkeypatch.setenv("STEP_CA_URL", "https://ca.test:9000")
+    monkeypatch.setattr(
+        "netadmin.services.step_ca.subprocess.run",
+        lambda args, **kwargs: calls.append((args, kwargs)) or SimpleNamespace(stdout="ok"),
+    )
+    renew_certificate(Path("certificate"), Path("key"), Path("renewed"), b"synthetic-password")
+    args, options = calls[0]
+    assert args[args.index("--password-file") + 1] == "/dev/stdin"
+    assert "synthetic-password" not in args
+    assert options["input"] == "synthetic-password"
+    assert options["timeout"] == 20
+    run_step(["ca", "health"])
+    assert calls[-1][1]["input"] is None
+
+
+def test_already_revoked_serial_repairs_local_state(tmp_path, monkeypatch, material):
+    import subprocess
+
+    from netadmin.services import step_ca
+    from netadmin.services.radius_certificates import issue_crl
+
+    monkeypatch.setenv("NETADMIN_AGENT_TOKEN", "synthetic")
+    monkeypatch.setenv("CA_DATA_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("STEP_CA_URL", "https://ca.test")
+    monkeypatch.setenv("STEP_CA_PROVISIONER", "synthetic")
+
+    def run(arguments, **kwargs):
+        if arguments[1] == "token":
+            return "synthetic-token"
+        raise subprocess.CalledProcessError(1, "step", stderr="authority rejected request")
+
+    monkeypatch.setattr(step_ca, "run_step", run)
+    crl = issue_crl(material[1], material[3], None, material[2])
+    monkeypatch.setattr(step_ca, "fetch_crl", lambda: crl)
+    client = create_ca_agent().test_client()
+    serial = format(material[2].serial_number, "x")
+    result = client.post("/revoke", json={"serial": serial, "reason": 1}, headers=AUTH)
+    assert result.status_code == 200
+    assert (tmp_path / "ledger" / "revocations" / serial).read_text() == "1"
+    assert not (tmp_path / "ledger" / "revocations" / (serial + ".pending")).exists()
+
+
+def test_unavailable_ca_and_unknown_download_are_controlled(tmp_path, monkeypatch):
+    import httpx
+
+    _, client = admin_client(tmp_path)
+
+    def get(path):
+        if path == "certificates/missing":
+            response = httpx.Response(404, request=httpx.Request("GET", "https://ca.test"))
+            raise httpx.HTTPStatusError("missing", request=response.request, response=response)
+        raise httpx.ConnectError("synthetic outage")
+
+    monkeypatch.setattr("netadmin.ca_web._client", lambda: SimpleNamespace(get=get))
+    assert client.post("/certificates/inspect", data={"csr": csr()}).status_code == 502
+    assert client.get("/certificates/missing/download").status_code == 404
+    assert client.get("/certificates/root/download").status_code == 502
+
+
+def test_compose_limits_ca_exposure_and_shares_radius_pid_namespace():
+    from pathlib import Path
+
+    import yaml
+
+    compose = yaml.safe_load(Path("docker-compose.step-ca.yml").read_text())
+    assert compose["services"]["step-ca"]["ports"] == ["127.0.0.1:9000:9000"]
+    assert compose["services"]["radius-renewal"]["pid"] == "service:radius"
+
+
+def test_uncertain_issuance_is_not_automatically_repeated(tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.setenv("NETADMIN_AGENT_TOKEN", "synthetic")
+    monkeypatch.setenv("CA_DATA_DIR", str(tmp_path / "ledger"))
+    calls = []
+
+    def timeout(*args):
+        calls.append(args)
+        raise subprocess.TimeoutExpired("step", 20)
+
+    monkeypatch.setattr("netadmin.agents.ca.sign_csr", timeout)
+    client = create_ca_agent().test_client()
+    payload = {"csr": csr()}
+    assert client.post("/certificates", json=payload, headers=AUTH).status_code == 502
+    assert client.post("/certificates", json=payload, headers=AUTH).status_code == 409
+    assert len(calls) == 1
+
+
+def test_status_waits_for_certificate_transaction_lock(material, monkeypatch):
+    import fcntl
+    from threading import Event, Thread
+
+    client, _ = agent(material, monkeypatch)
+    started, read = Event(), Event()
+    results = []
+
+    def inventory():
+        read.set()
+        return {"available": True}
+
+    monkeypatch.setattr("netadmin.agents.radius_certificates._inventory", inventory)
+
+    def status():
+        started.set()
+        results.append(client.application.test_client().get("/certificates", headers=AUTH))
+
+    with (material[0] / ".netadmin-cert-lock").open("a") as writer:
+        fcntl.flock(writer, fcntl.LOCK_EX)
+        thread = Thread(target=status)
+        thread.start()
+        assert started.wait(1)
+        assert not read.wait(0.1)
+        fcntl.flock(writer, fcntl.LOCK_UN)
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert results[0].json == {"available": True}

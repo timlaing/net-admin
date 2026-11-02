@@ -36,7 +36,9 @@ Create an operator-owned `step-ca/` directory and password files under
 `pki/step-ca/`. These directories are gitignored. Do not put passwords in Compose,
 command-line arguments, tracked files, or image layers. The CA password decrypts
 the issuing key; the provisioner password authorizes enrolment. They can and should
-be different. The CA agent receives only the provisioner password.
+be different. The CA agent receives only the provisioner password. Each CLI command has a
+20-second deadline: token generation plus revocation and optional CRL reconciliation
+fit within the web client's 60-second operation timeout.
 
 Initialize a two-tier authority using Smallstep's documented `step ca init`
 procedure, keeping the generated paths under `/home/step`, using address `:9000`,
@@ -103,8 +105,8 @@ docker compose -f docker-compose.yml -f docker-compose.step-ca.yml up -d --build
 ```
 
 For Kea, replace the first Compose file with `docker-compose.kea.yml`. The CA must
-have DNS SAN `step-ca` for the internal HTTPS connection. Port 9000 provides the
-CA endpoint for external renewal/ACME clients; restrict network access as required.
+have DNS SAN `step-ca` for the internal HTTPS connection. Port 9000 binds to loopback by default. Publish it on an explicitly selected
+interface or configure a proxy when external renewal/ACME clients need access.
 The CA agent is not published to the host. Pin root trust with
 `step-ca/certs/root_ca.crt`, mounted read-only into the agents. Never replace it
 with a certificate supplied in an issuance response.
@@ -116,9 +118,12 @@ SANs and public key strength before approval. **Revoke a certificate by serial**
 accepts the hexadecimal serial displayed on the RADIUS page, including the current
 serial after direct renewal. The inventory records certificates issued through
 this agent, including RADIUS enrolment. Direct renewals and certificates issued
-through other provisioners are not a complete inventory here. An interrupted
-issuance can succeed at the CA despite a failed client response: inspect inventory
-and CA records before retrying. Do not delete agent state to resolve an error.
+through other provisioners are not a complete inventory here. Identical CSR/lifetime requests return the same recorded certificate by default.
+The web form also supplies a stable request ID for retries; a new intentional
+operation can use a new 32-character hexadecimal `request_id`. Reusing an ID with
+a different CSR/lifetime is rejected. Complete staged outputs are recovered after
+a crash; uncertain operations are retained and never automatically re-signed.
+Inspect inventory and CA records before retrying an uncertain operation. Do not delete agent state to resolve an error.
 
 ### 4. Enrol FreeRADIUS
 
@@ -145,7 +150,8 @@ RADIUS PID namespace, and checks every minute. At two-thirds of certificate
 lifetime it stages a renewal using `step ca renew --mtls=false`, authenticated by
 a signed token using the existing certificate/key. This supports serverAuth-only
 certificates. It does not need the CA provisioner password or authority signing key.
-The key is retained during renewal; a new enrolment generates a new key.
+The encrypted key is staged privately and its password is supplied through an
+anonymous stdin pipe, never a temporary password file. The key is retained during renewal; a new enrolment generates a new key.
 
 The worker shares the manual-operation lock, re-reads current files under that
 lock, validates the replacement identity/chain, and uses the same activation and
@@ -172,7 +178,9 @@ For clients needing an HTTP distribution point, configure step-ca's
 `insecureAddress`, CRL `idpURL`, and a suitable published port/reverse proxy. The
 CRL is signed; publishing it over HTTP does not expose signing keys. Test that the
 actual relying clients fetch and enforce the CRL, including cached-list behaviour.
-OCSP is not supplied by this integration. Local CA controls are disabled while
+OCSP is not supplied by this integration. Pending revocations are recorded before contacting the CA. Retries reconcile
+already-revoked responses or authoritative CRL entries before confirming local
+state; an unconfirmed operation remains visibly pending. Local CA controls are disabled while
 step-ca is selected; use the CA service for revocation.
 
 ## Backups and verification

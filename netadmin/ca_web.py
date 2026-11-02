@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, cast
 
 import httpx
@@ -15,6 +16,10 @@ from netadmin.services.step_ca import validate_csr
 from netadmin.store import Store
 
 ca_web = Blueprint("ca", __name__)
+
+
+CA_TEMPLATE = "ca.html"
+CA_INDEX = "ca.index"
 
 
 def _client() -> AgentClient:
@@ -40,13 +45,18 @@ def _audit(action: str, success: bool) -> None:
 @admin_required
 def index() -> Any:
     """List the agent's public issuance inventory."""
-    client = _client()
+    return _render_inventory(_client(), request_id=uuid.uuid4().hex)
+
+
+def _render_inventory(client: AgentClient, **context: Any) -> Any:
     try:
         inventory = client.get("certificates")
         read_only = client.read_only()
     except httpx.HTTPError:
-        return render_template("ca.html", unavailable=True, certificates=[], read_only=True), 502
-    return render_template("ca.html", certificates=inventory["certificates"], read_only=read_only)
+        return render_template(CA_TEMPLATE, unavailable=True, certificates=[], read_only=True), 502
+    return render_template(
+        CA_TEMPLATE, certificates=inventory["certificates"], read_only=read_only, **context
+    )
 
 
 @ca_web.post("/certificates/inspect")
@@ -67,19 +77,17 @@ def inspect() -> Any:
             "sans": sans,
             "key_bits": getattr(csr.public_key(), "key_size", 0),
         }
-    except (ValueError, TypeError, UnicodeError):
+    except (ValueError, TypeError):
         flash(
             "Invalid CSR: check its signature, public key strength and requested usages.", "danger"
         )
-        return redirect(url_for("ca.index"))
-    inventory = client.get("certificates")
-    return render_template(
-        "ca.html",
-        certificates=inventory["certificates"],
-        read_only=client.read_only(),
+        return redirect(url_for(CA_INDEX))
+    return _render_inventory(
+        client,
         csr=pem,
         preview=preview,
         days=request.form.get("days", "365"),
+        request_id=request.form.get("request_id") or uuid.uuid4().hex,
     )
 
 
@@ -98,6 +106,11 @@ def issue() -> Any:
             {
                 "csr": request.form.get("csr", ""),
                 "days": request.form.get("days", "365"),
+                **(
+                    {"request_id": request.form["request_id"]}
+                    if request.form.get("request_id")
+                    else {}
+                ),
             },
             timeout=60,
         )
@@ -106,7 +119,7 @@ def issue() -> Any:
         raise
     _audit("issue", True)
     flash("Certificate issued. Download its chain from the inventory.", "success")
-    return redirect(url_for("ca.index", issued=result["id"]))
+    return redirect(url_for(CA_INDEX, issued=result["id"]))
 
 
 @ca_web.post("/certificates/<identifier>/revoke")
@@ -132,7 +145,7 @@ def revoke(identifier: str) -> Any:
         "Revocation recorded. Clients must check the CA's CRL to reject it before expiry.",
         "success",
     )
-    return redirect(url_for("ca.index"))
+    return redirect(url_for(CA_INDEX))
 
 
 @ca_web.post("/certificates/revoke-serial")
@@ -155,14 +168,21 @@ def revoke_serial() -> Any:
         raise
     _audit("revoke", True)
     flash("Revocation recorded. Automatic renewal of this serial is blocked.", "success")
-    return redirect(url_for("ca.index"))
+    return redirect(url_for(CA_INDEX))
 
 
 @ca_web.get("/certificates/<identifier>/download")
 @admin_required
 def download(identifier: str) -> Any:
     """Download public certificate chains only."""
-    result = _client().get("crl" if identifier == "crl" else f"certificates/{identifier}")
+    try:
+        result = _client().get("crl" if identifier == "crl" else f"certificates/{identifier}")
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code == 404:
+            abort(404)
+        return render_template(CA_TEMPLATE, unavailable=True, certificates=[], read_only=True), 502
+    except httpx.HTTPError:
+        return render_template(CA_TEMPLATE, unavailable=True, certificates=[], read_only=True), 502
     return Response(
         result["pem"],
         mimetype="application/x-pem-file",
