@@ -27,7 +27,7 @@
 {% if service_settings and service_settings.ca_agent_url %}{% set links = links + [('Certificates', 'ca.index', 'key')] %}{% endif %}
 {% for label, endpoint, glyph in links %}
 {% if g.identity.role == 'admin' or endpoint == 'web.dashboard' %}
-{% set active = request.endpoint == endpoint or (glyph == 'radius' and (request.endpoint.startswith('web.radius_') or request.endpoint.startswith('radius_modes.') or request.endpoint.startswith('radius_certificates.'))) or (glyph == 'dhcp' and request.endpoint.startswith('web.dhcp_')) or (glyph == 'settings' and request.endpoint.startswith('connections.')) %}
+{% set active = request.endpoint == endpoint or (endpoint == 'ca.index' and request.endpoint.startswith('ca.')) or (glyph == 'radius' and (request.endpoint.startswith('web.radius_') or request.endpoint.startswith('radius_modes.') or request.endpoint.startswith('radius_certificates.'))) or (glyph == 'dhcp' and request.endpoint.startswith('web.dhcp_')) or (glyph == 'settings' and request.endpoint.startswith('connections.')) %}
 <a class="section-link {{ 'active' if active }}" href="{{ url_for(endpoint) }}" {% if active %}aria-current="page"{% endif %}>{{ icon(glyph) }}<span>{{ label }}</span></a>
 {% endif %}
 {% endfor %}

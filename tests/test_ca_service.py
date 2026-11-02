@@ -931,3 +931,31 @@ def test_step_enrolment_warns_about_removing_other_san_types(tmp_path, material)
     page = client.get("/radius/certificates")
     assert page.status_code == 200
     assert "Enrolment removes the current URI, email" in page.text
+
+
+def test_non_ascii_csr_is_a_controlled_validation_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("NETADMIN_AGENT_TOKEN", "synthetic")
+    monkeypatch.setenv("CA_DATA_DIR", str(tmp_path / "ledger"))
+    remote = create_ca_agent().test_client()
+    assert remote.post("/certificates", headers=AUTH, json={"csr": "invalid-é"}).status_code == 400
+    _, client = admin_client(tmp_path)
+    monkeypatch.setattr("netadmin.ca_web._client", lambda: SimpleNamespace())
+    assert client.post("/certificates/inspect", data={"csr": "invalid-é"}).status_code == 302
+
+
+def test_certificate_navigation_stays_active_on_inspection(tmp_path, monkeypatch):
+    import re
+
+    app, client = admin_client(tmp_path)
+    app.extensions["netadmin_settings"] = replace(
+        app.extensions["netadmin_settings"], ca_agent_url="https://ca-agent:8084"
+    )
+    monkeypatch.setattr(
+        "netadmin.ca_web._client",
+        lambda: SimpleNamespace(read_only=lambda: False, get=lambda path: {"certificates": []}),
+    )
+    response = client.post("/certificates/inspect", data={"csr": csr()})
+    assert response.status_code == 200
+    assert re.search(
+        r'class="section-link active" href="/certificates"\s+aria-current="page"', response.text
+    )
