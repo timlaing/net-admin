@@ -7,6 +7,7 @@ from netadmin.services.radius_files import (
     parse_clients,
     render_clients,
 )
+from netadmin.services.radius_users import ManagedUser, PasswordHashes
 
 
 def test_migrate_preserves_entries_and_assigns_roles() -> None:
@@ -18,14 +19,14 @@ bob Cleartext-Password := "another"
 """
     migrated, names = migrate_authorize(
         source,
-        lambda value: f"hash-{value}",
+        lambda value: PasswordHashes(f"hash-{value}", "a" * 32),
         {"pool-parent"},
         "netadmin-admin",
         "netadmin-standard",
     )
     assert names == ["alice", "bob"]
     assert "Cleartext-Password" not in migrated
-    assert 'alice Crypt-Password := "hash-plain", Filter-Id := "netadmin-admin"' in migrated
+    assert 'alice Crypt-Password := "hash-plain", NT-Password := 0x' in migrated
     assert 'Filter-Id := "netadmin-standard"' in migrated
 
 
@@ -49,13 +50,19 @@ def test_client_round_trip_omits_secret() -> None:
 def test_migration_moves_legacy_users_to_managed_entries() -> None:
     remaining, entries = migrate_to_managed(
         'alice Cleartext-Password := "plain"\n\tFramed-Pool = "pool-parent"\n',
-        lambda value: f"hash-{value}",
+        lambda value: PasswordHashes(f"hash-{value}", "a" * 32),
         {"pool-parent"},
         "netadmin-admin",
         "netadmin-standard",
     )
     assert "alice" not in remaining
-    assert entries == {"alice": ("hash-plain", "netadmin-admin", False)}
+    assert entries == {
+        "alice": ManagedUser(
+            PasswordHashes("hash-plain", "a" * 32),
+            "netadmin-admin",
+            replies='\n\tFramed-Pool = "pool-parent"\n',
+        )
+    }
 
 
 def test_client_edit_rejects_nested_and_duplicate_definitions():
