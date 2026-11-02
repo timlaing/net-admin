@@ -75,9 +75,9 @@ def _apply(eap: Path, inner: Path, changes: tuple[str, str], original: tuple[str
 
     def activate() -> None:
         nonlocal restart_attempted
-        for path, original in metadata.items():
-            path.chmod(original.st_mode & 0o777)
-            os.chown(path, original.st_uid, original.st_gid)
+        for path, file_stat in metadata.items():
+            path.chmod(file_stat.st_mode & 0o777)
+            os.chown(path, file_stat.st_uid, file_stat.st_gid)
         subprocess.run(["/usr/sbin/radiusd", "-XC"], check=True, capture_output=True, timeout=20)
         restart_attempted = True
         _restart()
