@@ -73,8 +73,33 @@ access to only its required secrets. Take an encrypted offline backup of the roo
 key, then remove `step-ca/secrets/root_ca_key` from the online host. The running CA
 uses only its intermediate key. Never remove the intermediate key or CA database.
 
-Configure the `netadmin` JWK provisioner in `step-ca/config/ca.json` with explicit
-name policy and a certificate template. The template must emit leaf certificates
+Configure an explicit authority-wide name policy in `step-ca/config/ca.json`,
+under `authority.policy`. Open-source step-ca does not support a `policy` field
+on an individual JWK provisioner; that placement is ignored. For example:
+
+```json
+{
+  "authority": {
+    "policy": {
+      "x509": {
+        "allow": {
+          "dns": ["example.test", "*.example.test"],
+          "ip": ["192.0.2.0/24"]
+        },
+        "allowWildcardNames": false
+      }
+    }
+  }
+}
+```
+
+Merge this into the existing authority configuration, retaining its provisioners.
+The IP-policy key is `ip`, not `ips`. A DNS wildcard matches exactly one label;
+add deeper DNS zones explicitly. Test both allowed and rejected requests against
+the actual daemon before relying on the policy.
+
+Configure a certificate template in the `netadmin` JWK provisioner's
+`options.x509`. The template must emit leaf certificates
 (`CA:FALSE`), allow only intended usages, and include any CRL distribution URL.
 Choose allowed DNS suffixes/IP ranges for your network. Do not enable CA issuance
 or copy arbitrary CSR extensions. The CSR endpoint verifies signatures, key
@@ -214,6 +239,7 @@ A representative real EAP client authentication remains a deployment acceptance
 check; container validation alone does not prove client trust compatibility.
 
 References: [step-ca setup](https://smallstep.com/docs/step-ca/getting-started/),
+[authority policies](https://smallstep.com/docs/step-ca/configuration/#policy),
 [renewal](https://smallstep.com/docs/step-cli/reference/ca/renew/),
 [production and CRLs](https://smallstep.com/docs/step-ca/certificate-authority-server-production/).
 
