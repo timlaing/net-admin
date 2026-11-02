@@ -117,18 +117,30 @@ jobs:
             dockerfile: docker/Dockerfile.dns-agent
             image: netadmin-dns-agent:test
             smoke: Tools/smoke_agent.sh Tools/smoke_dns_agent.sh
+          - flavour: ca-agent
+            arch: amd64
+            runner: ubuntu-24.04
+            dockerfile: docker/Dockerfile.ca-agent
+            image: netadmin-ca-agent:test
+            smoke: Tools/smoke_agent.sh Tools/smoke_step_ca.sh
+          - flavour: ca-agent
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+            dockerfile: docker/Dockerfile.ca-agent
+            image: netadmin-ca-agent:test
+            smoke: Tools/smoke_agent.sh Tools/smoke_step_ca.sh
           - flavour: radius-agent
             arch: amd64
             runner: ubuntu-24.04
             dockerfile: docker/Dockerfile.radius-agent
             image: netadmin-radius-agent:test
-            smoke: Tools/smoke_agent.sh Tools/smoke_radius_certificates.sh Tools/smoke_radius_passwords.sh
+            smoke: Tools/smoke_agent.sh Tools/smoke_radius_certificates.sh Tools/smoke_radius_passwords.sh Tools/smoke_step_ca.sh
           - flavour: radius-agent
             arch: aarch64
             runner: ubuntu-24.04-arm
             dockerfile: docker/Dockerfile.radius-agent
             image: netadmin-radius-agent:test
-            smoke: Tools/smoke_agent.sh Tools/smoke_radius_certificates.sh Tools/smoke_radius_passwords.sh
+            smoke: Tools/smoke_agent.sh Tools/smoke_radius_certificates.sh Tools/smoke_radius_passwords.sh Tools/smoke_step_ca.sh
           - flavour: addon
             arch: amd64
             runner: ubuntu-24.04

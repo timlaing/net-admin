@@ -1,0 +1,9 @@
+FROM smallstep/step-cli:0.31.0 AS step
+FROM python:3.14.5-alpine3.22
+COPY --from=step /usr/local/bin/step /usr/local/bin/step
+WORKDIR /app
+COPY pyproject.toml /app/
+COPY netadmin /app/netadmin
+RUN pip install --no-cache-dir --only-binary :all: .
+EXPOSE 8084
+CMD ["sh", "-c", "exec gunicorn --bind 0.0.0.0:8084 --workers 1 --timeout 90 --certfile /pki/server.crt --keyfile /pki/server.key --ca-certs /pki/ca.crt --cert-reqs 2 'netadmin.agents.ca:create_ca_agent()'"]

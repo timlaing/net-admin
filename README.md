@@ -172,6 +172,12 @@ The release's tag must match `home-assistant/netadmin/config.yaml`'s `version`.
 Release notes are drafted automatically from conventional commits by
 release-drafter; the tag is created when the release is published.
 
+### Certificate authority and renewal
+
+See [Certificate management](docs/certificates.md) for configurable local RADIUS
+certificates and the optional Docker step-ca service, CSR issuance, revocation/CRLs,
+and automatic RADIUS certificate renewal.
+
 ## Service event pages
 
 The admin **Service logs** section provides separate RADIUS login, DHCP lease,

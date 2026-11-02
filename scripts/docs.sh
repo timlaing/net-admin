@@ -31,6 +31,7 @@ stage() {
       -e 's|](AGENTS\.md|](development.md|g' \
       -e 's|](CONTRIBUTING\.md|](contributing.md|g' \
       -e 's|](README\.md|](index.md|g' \
+      -e 's|](docs/|](|g' \
       "$1" > "$2"
 }
 

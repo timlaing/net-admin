@@ -10,6 +10,7 @@ image="${1:?Usage: smoke_agent.sh <image> [port]}"
 probe=health
 probe_field=status
 case "$image" in
+  *ca-agent*) default_port=8084 ;;
   *radius*) default_port=8082 ;;
   *dns*) default_port=8083; probe=capabilities; probe_field=read_only ;;
   *) default_port=8081 ;;
@@ -125,7 +126,7 @@ print('Application HTTPX client passed real mTLS with an explicit CA file')
 resources = {'8081': {'leases': ('hostname', 'synthetic-phone')},
              '8082': {'logins': ('user', 'synthetic-user'), 'sessions': ('user', 'synthetic-user')},
              '8083': {'ddns': ('name', 'synthetic.example')}}
-for resource, (field, value) in resources[sys.argv[1]].items():
+for resource, (field, value) in resources.get(sys.argv[1], {}).items():
     endpoint = 'logs/' + resource
     payload = client.get(endpoint)
     assert payload['status'] == 'available', payload
@@ -146,5 +147,6 @@ for resource, (field, value) in resources[sys.argv[1]].items():
         raise AssertionError('Log endpoint accepted an invalid token')
     finally:
         client.headers['Authorization'] = 'Bearer smoke-test-agent-token'
-print('Read-only service logs passed real mTLS, token checks and credential redaction')
+if sys.argv[1] in resources:
+    print('Read-only service logs passed real mTLS, token checks and credential redaction')
 PY

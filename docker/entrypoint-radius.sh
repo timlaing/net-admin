@@ -76,7 +76,9 @@ validate_pair() { # $1 = cert+key file, $2 = CA file, $3 = label
     || { rm -rf "$tmp"; die "$label: cannot read certificate public key"; }
   [[ "$cert_pub" = "$key_pub" ]] \
     || { rm -rf "$tmp"; die "$label: certificate and private key do not match"; }
-  openssl verify -CAfile "$ca_file" "$cert_pem" >/dev/null 2>&1 \
+  awk '$0 == "-----BEGIN CERTIFICATE-----" { p = 1 } p { print } \
+       $0 == "-----END CERTIFICATE-----" { p = 0 }' "$cert_file" > "$tmp/chain.pem"
+  openssl verify -CAfile "$ca_file" -untrusted "$tmp/chain.pem" "$cert_pem" >/dev/null 2>&1 \
     || { rm -rf "$tmp"; die "$label: certificate does not verify against the provided CA"; }
   rm -rf "$tmp"
 }
@@ -168,6 +170,7 @@ elif [[ "$has_server" == false && "$has_ca" == false ]]; then
   else
     [[ -x "$CERT_DIR/bootstrap" ]] \
       || die "no TLS material and no packaged bootstrap to generate it"
+    say "generating TLS material via packaged bootstrap"
     if ! boot_log="$("$CERT_DIR/bootstrap" 2>&1)"; then
       printf '%s\n' "$boot_log" >&2
       die "packaged TLS bootstrap failed"

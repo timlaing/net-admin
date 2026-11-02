@@ -25,3 +25,6 @@ watchtower/
 pki/
 
 coverage-js/
+
+# Operator-owned certificate authority state and signing keys
+step-ca/
