@@ -23,11 +23,11 @@
 {%- endmacro %}
 
 {% macro nav_links() -%}
-{% set links = [('Overview','web.dashboard','overview'), ('DNS','web.dns_index','dns'), ('DHCP','web.dhcp_index','dhcp'), ('RADIUS','web.radius_index','radius'), ('Activity','web.audit','activity'), ('Settings','connections.settings_page','settings')] %}
+{% set links = [('Overview','web.dashboard','overview'), ('DNS','web.dns_index','dns'), ('DHCP','web.dhcp_index','dhcp'), ('RADIUS','web.radius_index','radius'), ('Activity','web.audit','activity'), ('Service logs','service_logs.index','activity'), ('Settings','connections.settings_page','settings')] %}
 {% for label, endpoint, glyph in links %}
 {% if g.identity.role == 'admin' or endpoint == 'web.dashboard' %}
 {% set active = request.endpoint == endpoint or (glyph == 'radius' and (request.endpoint.startswith('web.radius_') or request.endpoint.startswith('radius_modes.') or request.endpoint.startswith('radius_certificates.'))) or (glyph == 'dhcp' and request.endpoint.startswith('web.dhcp_')) or (glyph == 'settings' and request.endpoint.startswith('connections.')) %}
-<a class="section-link {{ 'active' if active }}" href="{{ url_for(endpoint) }}" {% if active %}aria-current="page"{% endif %}>{{ icon(glyph) }}<span>{{ label }}</span></a>
+<a class="section-link {{ 'active' if active }}" href="{{ (url_for(endpoint, page='radius-logins') if endpoint == 'service_logs.index' else url_for(endpoint)) }}" {% if active %}aria-current="page"{% endif %}>{{ icon(glyph) }}<span>{{ label }}</span></a>
 {% endif %}
 {% endfor %}
 {% if g.identity.source != 'ingress' and g.identity.username != 'root' %}
