@@ -49,7 +49,7 @@ def _entries(text: str) -> dict[str, ManagedUser]:
 
 
 def validate_password(password: str, minimum_length: int = 12) -> None:
-    """Derive synchronized SHA-512 crypt and MSCHAPv2-compatible NT credentials."""
+    """Reject invalid password length, UTF-8 byte size or unsupported characters."""
     if (
         len(password) < minimum_length
         or len(password.encode("utf-8")) > 256
