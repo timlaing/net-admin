@@ -5,6 +5,7 @@ from __future__ import annotations
 import ssl
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -20,6 +21,11 @@ class AgentClient:
         cert: Path | None = None,
         key: Path | None = None,
     ) -> None:
+        parsed = urlsplit(base_url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username is not None:
+            raise ValueError("Agent URL must use HTTPS without embedded credentials")
+        if parsed.port == 0:
+            raise ValueError("Agent URL must have a valid port")
         self.base_url = base_url.rstrip("/")
         self.headers = {"Authorization": f"Bearer {token}"}
         self.ca = ca

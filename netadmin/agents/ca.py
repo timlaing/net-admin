@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import heapq
 import json
 import os
 import subprocess  # nosec B404
@@ -41,10 +42,10 @@ def _inventory() -> Any:
     cursor = http_request.args.get("after", "")
     if cursor and (len(cursor) != 32 or any(char not in "0123456789abcdef" for char in cursor)):
         return jsonify({"error": "Invalid inventory cursor"}), 400
-    paths = [
-        path for path in sorted(_root().glob("*/certificate.pem")) if path.parent.name > cursor
-    ]
-    selected = paths[:101]
+    selected = heapq.nsmallest(
+        101,
+        (path for path in _root().glob("*/certificate.pem") if path.parent.name > cursor),
+    )
     certificates = []
     for path in selected[:100]:
         try:
@@ -94,6 +95,8 @@ def _issue() -> Any:
     try:
         # UUID.hex constructs the path component from a parsed 128-bit identifier.
         directory = _root() / uuid.UUID(hex=identifier).hex
+        if not (directory / "request.json").exists():
+            signing_configuration()
         directory.mkdir(mode=0o700, exist_ok=True)
         _sync_directory(_root())
         with (directory / "lock").open("a") as lock:

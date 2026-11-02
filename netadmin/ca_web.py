@@ -181,6 +181,8 @@ def issue() -> Any:
         )
     except httpx.HTTPError as error:
         return _operation_error("issue", details, error)
+    except ValueError:
+        return _unknown_outcome("issue", details)
     details["certificate_id"] = str(result["id"])
     certificate = result.get("certificate", {})
     if isinstance(certificate, dict) and certificate.get("serial"):

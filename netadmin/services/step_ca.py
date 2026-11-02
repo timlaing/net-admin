@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import ssl
 import subprocess  # nosec B404
@@ -13,7 +14,7 @@ import httpx
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-from cryptography.x509.oid import ExtendedKeyUsageOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from netadmin.agents.common import configured_path
 
@@ -45,6 +46,7 @@ def connection_settings() -> tuple[str, Path]:
     if (
         parsed.scheme != "https"
         or not parsed.hostname
+        or parsed.port == 0
         or any((parsed.username, parsed.query, parsed.fragment, parsed.path))
     ):
         raise ValueError("STEP_CA_URL must be an HTTPS origin")
@@ -70,8 +72,6 @@ def issued_matches_csr(pem: bytes, csr: x509.CertificateSigningRequest) -> x509.
         Encoding.DER, form
     ):
         raise ValueError("Issued public key does not match CSR")
-    from cryptography.x509.oid import NameOID  # pylint: disable=import-outside-toplevel
-
     if certificate.subject.get_attributes_for_oid(
         NameOID.COMMON_NAME
     ) != csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME):
@@ -79,10 +79,34 @@ def issued_matches_csr(pem: bytes, csr: x509.CertificateSigningRequest) -> x509.
     try:
         names = csr.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     except x509.ExtensionNotFound:
+        _validate_derived_sans(certificate, csr)
         return certificate
     if certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value != names:
         raise ValueError("Issued SANs do not match CSR")
     return certificate
+
+
+def _validate_derived_sans(
+    certificate: x509.Certificate, csr: x509.CertificateSigningRequest
+) -> None:
+    """Allow only step-cli's CN-derived default when the CSR has no SAN extension."""
+    try:
+        names = certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    except x509.ExtensionNotFound:
+        return
+    common_names = csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    common_name = str(common_names[0].value) if len(common_names) == 1 else ""
+    try:
+        expected: x509.GeneralName = x509.IPAddress(ipaddress.ip_address(common_name))
+    except ValueError:
+        if urlsplit(common_name).scheme:
+            expected = x509.UniformResourceIdentifier(common_name)
+        elif "@" in common_name:
+            expected = x509.RFC822Name(common_name)
+        else:
+            expected = x509.DNSName(common_name)
+    if any(name != expected for name in names):
+        raise ValueError("Issued SANs do not match CSR common name")
 
 
 def provisioner_flags() -> list[str]:

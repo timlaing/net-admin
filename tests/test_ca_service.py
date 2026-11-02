@@ -1,5 +1,6 @@
 """Synthetic CSR policy, CA agent, local identity and staged renewal regression tests."""
 
+import ipaddress
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -769,7 +770,7 @@ def test_step_ca_renewal_rejects_identity_and_lifetime_overrides(material, monke
 
 
 @pytest.mark.parametrize(
-    "error_name", ["ReadTimeout", "ReadError", "RemoteProtocolError", "WriteError"]
+    "error_name", ["ReadTimeout", "ReadError", "RemoteProtocolError", "WriteError", "ValueError"]
 )
 def test_uncertain_issuance_retries_keep_request_id_and_audit_reference(
     tmp_path, monkeypatch, error_name
@@ -787,7 +788,8 @@ def test_uncertain_issuance_retries_keep_request_id_and_audit_reference(
     def post(path, payload, **kwargs):
         calls.append(payload.copy())
         if len(calls) == 1:
-            raise getattr(httpx, error_name)("response lost after issuance")
+            error_class = ValueError if error_name == "ValueError" else getattr(httpx, error_name)
+            raise error_class("response lost after issuance")
         return {"id": operation_id, "certificate": {"serial": "beef"}}
 
     remote = SimpleNamespace(
@@ -959,3 +961,119 @@ def test_certificate_navigation_stays_active_on_inspection(tmp_path, monkeypatch
     assert re.search(
         r'class="section-link active" href="/certificates"\s+aria-current="page"', response.text
     )
+
+
+def test_issued_sans_must_match_csr_even_when_key_and_subject_match(material):
+    from netadmin.services.step_ca import issued_matches_csr
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    request = validate_csr(csr(key))
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(request.subject)
+        .issuer_name(material[1].subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(UTC) - timedelta(minutes=1))
+        .not_valid_after(datetime.now(UTC) + timedelta(days=1))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName("other.test")]), False)
+        .sign(material[3], hashes.SHA256())
+    )
+    with pytest.raises(ValueError, match="SANs do not match"):
+        issued_matches_csr(certificate.public_bytes(PEM), request)
+
+
+def test_new_step_ca_leaf_requires_signing_key_usage(material, monkeypatch):
+    directory, ca, previous, ca_key = material
+    monkeypatch.setenv("STEP_CA_ROOT", str(directory / "ca.pem"))
+    key = load_signing_key((directory / "server.pem").read_bytes(), PASSWORD)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(previous.subject)
+        .issuer_name(ca.subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(UTC) - timedelta(minutes=1))
+        .not_valid_after(datetime.now(UTC) + timedelta(days=1))
+        .add_extension(
+            previous.extensions.get_extension_for_class(x509.SubjectAlternativeName).value, False
+        )
+        .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), False)
+        .add_extension(
+            x509.KeyUsage(False, False, True, False, False, False, False, False, False), True
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+    monkeypatch.setattr(
+        radius_step_ca,
+        "renew_certificate",
+        lambda source, keyfile, output, password: output.write_bytes(certificate.public_bytes(PEM)),
+    )
+    original = (directory / "server.pem").read_bytes()
+    with pytest.raises(ValueError, match="digital signatures"):
+        radius_step_ca.changes(directory, PASSWORD, {"action": "renew-server"})
+    assert (directory / "server.pem").read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "url", ["http://agent", "https://user:password@agent", "https://agent:99999", "https://agent:0"]
+)
+def test_agent_client_rejects_unsafe_endpoint_before_network(url):
+    from netadmin.services.agents import AgentClient
+
+    with pytest.raises(ValueError):
+        AgentClient(url, "synthetic")
+
+
+@pytest.mark.parametrize(
+    "url", ["https://step-ca:99999", "https://step-ca:0", "https://step-ca:invalid"]
+)
+def test_invalid_ca_port_does_not_create_operation_state(tmp_path, monkeypatch, url):
+    monkeypatch.setenv("NETADMIN_AGENT_TOKEN", "synthetic")
+    monkeypatch.setenv("CA_DATA_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("STEP_CA_URL", url)
+    client = create_ca_agent().test_client()
+    assert client.post("/certificates", headers=AUTH, json={"csr": csr()}).status_code == 502
+    assert list((tmp_path / "ledger").iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "common_name,name",
+    [
+        ("radius.test", x509.DNSName("radius.test")),
+        ("2001:db8::1", x509.IPAddress(ipaddress.ip_address("2001:db8:0:0::1"))),
+        ("person@example.test", x509.RFC822Name("person@example.test")),
+        (
+            "spiffe://example.test/Server",
+            x509.UniformResourceIdentifier("spiffe://example.test/Server"),
+        ),
+    ],
+)
+def test_sanless_csr_only_allows_cn_derived_san(material, common_name, name):
+    from netadmin.services.step_ca import issued_matches_csr
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
+    request = (
+        x509.CertificateSigningRequestBuilder().subject_name(subject).sign(key, hashes.SHA256())
+    )
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(material[1].subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(UTC) - timedelta(minutes=1))
+        .not_valid_after(datetime.now(UTC) + timedelta(days=1))
+    )
+    without_sans = builder.sign(material[3], hashes.SHA256())
+    assert issued_matches_csr(without_sans.public_bytes(PEM), request) == without_sans
+    allowed = builder.add_extension(x509.SubjectAlternativeName([name]), False).sign(
+        material[3], hashes.SHA256()
+    )
+    assert issued_matches_csr(allowed.public_bytes(PEM), request) == allowed
+    extra = builder.add_extension(
+        x509.SubjectAlternativeName([name, x509.DNSName("extra.test")]), False
+    ).sign(material[3], hashes.SHA256())
+    with pytest.raises(ValueError, match="SANs do not match"):
+        issued_matches_csr(extra.public_bytes(PEM), request)

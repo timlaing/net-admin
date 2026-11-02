@@ -64,7 +64,7 @@ def test_agent_client(monkeypatch) -> None:  # type: ignore[no-untyped-def]
             return Response()
 
     monkeypatch.setattr(httpx, "Client", Client)
-    client = AgentClient("http://agent", "token")
+    client = AgentClient("https://agent", "token")
     assert client.get("health") == {"ok": True}
     assert client.post("items", {"name": "one"}) == {"ok": True}
 

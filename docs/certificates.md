@@ -223,3 +223,5 @@ issuance screen keeps the original CSR, lifetime and request ID. **Retry same
 request** reuses that identity; it does not silently start another issuance.
 step-ca renewals reject CN/SAN/lifetime overrides; use explicit enrolment to
 change the identity. Enrolment warns when DNS/IP-only inputs replace other SAN types.
+
+Newly activated step-ca server certificates must permit digital signatures when a KeyUsage extension is present. This supports signed TLS handshakes, including TLS 1.3. Existing identities remain inspectable and usable as renewal credentials; configure the CA template to issue a signing-capable replacement.
