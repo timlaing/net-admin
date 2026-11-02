@@ -131,15 +131,21 @@ def validated_transaction(
         if reload_command:
             subprocess.run(reload_command, check=True, timeout=30)  # noqa: S603
     except Exception:
-        for path, original in originals.items() if installed else ():
-            if original is None:
-                path.unlink(missing_ok=True)
-            else:
-                path.write_bytes(original)
+        if installed:
+            _restore_originals(originals)
         raise
     finally:
         for candidate in candidates.values():
             candidate.unlink(missing_ok=True)
+
+
+def _restore_originals(originals: dict[Path, bytes | None]) -> None:
+    """Restore only after this transaction has replaced at least one file."""
+    for path, original in originals.items():
+        if original is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(original)
 
 
 def _transaction_path(path: Path, roots: tuple[Path, ...]) -> Path:

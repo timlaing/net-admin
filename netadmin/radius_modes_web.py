@@ -13,6 +13,7 @@ from netadmin.services.radius_modes import MODES
 from netadmin.store import Store
 
 modes_web = Blueprint("radius_modes", __name__)
+MODES_INDEX = "radius_modes.index"
 
 
 def authentication_status() -> dict[str, Any]:
@@ -50,7 +51,7 @@ def hide_unused_certificates() -> Any:
         and request.args.get("prepare") != "1"
         and authentication_status().get("uses_certificates") is False
     ):
-        return redirect(url_for("radius_modes.index"))
+        return redirect(url_for(MODES_INDEX))
     return None
 
 
@@ -83,7 +84,7 @@ def index() -> Any:
                     "Check the RADIUS service status before trying again.",
                     "warning",
                 )
-                return redirect(url_for("radius_modes.index"))
+                return redirect(url_for(MODES_INDEX))
             flash(
                 "Settings could not be applied. Reload the page, check your selection and "
                 "make sure certificates are valid before enabling PEAP or EAP-TLS.",
@@ -99,7 +100,7 @@ def index() -> Any:
                 "Update device profiles to use your selected modes.",
                 "success",
             )
-        return redirect(url_for("radius_modes.index"))
+        return redirect(url_for(MODES_INDEX))
     return render_template(
         "radius_modes.html",
         authentication=authentication_status(),
