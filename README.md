@@ -177,3 +177,19 @@ release-drafter; the tag is created when the release is published.
 See [Certificate management](docs/certificates.md) for configurable local RADIUS
 certificates and the optional Docker step-ca service, CSR issuance, revocation/CRLs,
 and automatic RADIUS certificate renewal.
+
+## RADIUS password formats
+
+The updated RADIUS agent stores both SHA-512 `Crypt-Password` and `NT-Password`
+for new passwords and password resets. This supports PAP and EAP-MSCHAPv2
+without storing cleartext passwords. Both hashes stay on the agent; the UI
+shows only their format names. Treat the NT hash as sensitive password material.
+
+Upgrade the RADIUS agent alongside the web app. **Migrate users** converts
+legacy cleartext credentials to both hashes and preserves native check and
+reply attributes, including pool and fixed-address assignments. Existing
+crypt-only or NT-only records remain usable for their supported methods.
+Reset their passwords to generate the missing hash; it cannot be derived
+from the other hash. Editing a role without supplying a password preserves
+existing credentials. Passwords must fit within 256 UTF-8 bytes to avoid
+OpenSSL input truncation. Ambiguous native configuration is rejected before changes.

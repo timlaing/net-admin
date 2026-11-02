@@ -106,12 +106,12 @@ jobs:
             arch: amd64
             runner: ubuntu-24.04
             dockerfile: docker/Dockerfile.radius-agent
-            smoke: Tools/smoke_agent.sh Tools/smoke_radius_certificates.sh Tools/smoke_step_ca.sh
+            smoke: Tools/smoke_agent.sh Tools/smoke_radius_certificates.sh Tools/smoke_radius_passwords.sh Tools/smoke_step_ca.sh
           - flavour: radius-agent
             arch: aarch64
             runner: ubuntu-24.04-arm
             dockerfile: docker/Dockerfile.radius-agent
-            smoke: Tools/smoke_agent.sh Tools/smoke_radius_certificates.sh Tools/smoke_step_ca.sh
+            smoke: Tools/smoke_agent.sh Tools/smoke_radius_certificates.sh Tools/smoke_radius_passwords.sh Tools/smoke_step_ca.sh
           - flavour: dns
             arch: amd64
             runner: ubuntu-24.04
