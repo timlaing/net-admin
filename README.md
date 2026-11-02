@@ -178,6 +178,13 @@ See [Certificate management](docs/certificates.md) for configurable local RADIUS
 certificates and the optional Docker step-ca service, CSR issuance, revocation/CRLs,
 and automatic RADIUS certificate renewal.
 
+## Service event pages
+
+The admin **Service logs** section provides separate RADIUS login, DHCP lease,
+DDNS change and RADIUS accounting session tables. These events stay out of Recent
+Activity. See [service log configuration and retention](docs/service-logs.md) for
+read-only agent log mounts, supported native formats and accounting prerequisites.
+
 ## RADIUS password formats
 
 The updated RADIUS agent stores both SHA-512 `Crypt-Password` and `NT-Password`

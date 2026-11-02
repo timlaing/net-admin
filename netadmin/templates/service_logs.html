@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+{% from 'ui.html' import icon, table_tools, empty %}
+{% block title %}{{ title }} · NetAdmin{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">SERVICE LOGS</p><h1>{{ title }}</h1><p>Read-only records from the service agent. <a href="{{ url_for('service_logs.index', page=page) }}">Refresh</a></p></div><span class="service-glyph">{{ icon('activity') }}</span></div>
+<nav class="d-flex flex-wrap gap-3 mb-4" aria-label="Service logs">
+{% for slug, label in [('radius-logins', 'RADIUS logins'), ('dhcp-leases', 'DHCP leases'), ('ddns-changes', 'DDNS changes'), ('radius-sessions', 'RADIUS sessions')] %}<a href="{{ url_for('service_logs.index', page=slug) }}" {% if slug == page %}aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}
+</nav>
+{% if status != 'available' %}<output class="alert alert-warning d-block">{{ reason }}</output>
+{% else %}
+<p class="form-text">{{ reason }}</p>
+{% if sessions %}<p class="form-text">Sessions rely on accounting Start, Stop and interim updates. Active means recently reported; sessions with no updates for 15 minutes are stale. Missing fields are unavailable in the retained records.</p>{% endif %}
+{% endif %}
+<section class="table-panel">
+{% if rows %}{{ table_tools('service-log', title|lower) }}
+<section class="table-responsive" aria-label="{{ title }}" tabindex="-1" data-scroll-region><table class="table table-hover" id="service-log"><caption class="visually-hidden">{{ title }}</caption><thead><tr>{% for column in columns %}<th scope="col">{{ labels.get(column, column|capitalize) }}</th>{% endfor %}</tr></thead><tbody>
+{% for row in rows %}<tr data-filter-row>{% for column in columns %}<td>{{ row.get(column) or '—' }}</td>{% endfor %}</tr>{% endfor %}
+</tbody></table></section>
+{% elif status == 'available' %}{{ empty('No records found', 'No supported events were found in the retained log data.') }}{% endif %}
+</section>
+{% endblock %}

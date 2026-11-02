@@ -47,6 +47,7 @@ nav:
       - 'ISC → Kea migration': migration.md
       - 'Certificate management': certificates.md
       - 'RADIUS authentication modes': radius-authentication.md
+  - Service logs: service-logs.md
   - Security: security.md
   - Development: development.md
   - Contributing: contributing.md

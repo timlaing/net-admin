@@ -110,13 +110,13 @@ jobs:
             runner: ubuntu-24.04
             dockerfile: docker/Dockerfile.dns-agent
             image: netadmin-dns-agent:test
-            smoke: Tools/smoke_dns_agent.sh
+            smoke: Tools/smoke_agent.sh Tools/smoke_dns_agent.sh
           - flavour: dns-agent
             arch: aarch64
             runner: ubuntu-24.04-arm
             dockerfile: docker/Dockerfile.dns-agent
             image: netadmin-dns-agent:test
-            smoke: Tools/smoke_dns_agent.sh
+            smoke: Tools/smoke_agent.sh Tools/smoke_dns_agent.sh
           - flavour: ca-agent
             arch: amd64
             runner: ubuntu-24.04
