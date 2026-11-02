@@ -23,6 +23,7 @@ from netadmin.agents.common import (
     validated_transaction,
 )
 from netadmin.agents.radius_certificates import register_certificates
+from netadmin.agents.radius_modes import register_modes
 from netadmin.services.radius_files import (
     edit_client,
     parse_clients,
@@ -360,6 +361,7 @@ def create_radius_agent() -> Flask:
     app.add_url_rule("/clients", view_func=_save_client, methods=["POST"])
     app.add_url_rule("/clients/delete", view_func=_delete_client, methods=["POST"])
     register_certificates(app)
+    register_modes(app)
     return app
 
 

@@ -216,6 +216,7 @@ def test_read_only_radius_hides_all_write_controls(tmp_path):
             "users": [{"username": "reader", "source": "netadmin"}],
             "clients": [{"name": "gateway", "source": "clients.conf", "address": "192.0.2.1"}],
             "migration": {"count": 1},
+            "authentication": {"available": False},
         }[path],
     )
     page = client.get("/radius")

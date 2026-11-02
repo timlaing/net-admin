@@ -271,3 +271,17 @@ Reset their passwords to generate the missing hash; it cannot be derived
 from the other hash. Editing a role without supplying a password preserves
 existing credentials. Passwords must fit within 256 UTF-8 bytes to avoid
 OpenSSL input truncation. Ambiguous native configuration is rejected before changes.
+
+## RADIUS authentication modes
+
+Use **RADIUS → Authentication modes** to enable EAP-MSCHAPv2, PEAP with MSCHAPv2,
+or EAP-TLS. Multiple methods can coexist during migration; the preferred mode is
+offered first. Device connection profiles must be updated separately.
+Certificates are shown only when configured EAP methods use TLS. Selecting PEAP
+or EAP-TLS reveals **Prepare certificates** before applying, so expired
+certificates can be renewed first. Unknown agent status retains certificate access.
+
+Upgrade the RADIUS agent and enable `RADIUS_AUTH_MANAGEMENT=true`, share the EAP
+and inner-tunnel configuration directories with it, and configure acknowledged
+restart support. See `docs/radius-authentication.md` for mounts and migration
+steps. Changes are validated and restarted with rollback; PAP is unchanged.
