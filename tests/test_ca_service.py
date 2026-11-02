@@ -1165,7 +1165,7 @@ def test_step_ca_enrollment_requires_explicit_missing_identity(material, monkeyp
         },
     )
     assert response.status_code == 400
-    assert "Specify" in response.json["error"]
+    assert response.json["error"] == "Specify a common name and SANs for step-ca enrollment."
     assert calls == []
     assert (directory / "server.pem").read_bytes() == original
     explicit = certificate_options({"common_name": "radius.test", "sans": "radius.test"})

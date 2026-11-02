@@ -192,8 +192,8 @@ def _locked_error(body: dict[str, Any], status: dict[str, Any], options: dict[st
         previous = x509.load_pem_x509_certificate(_file(SERVER_CERTIFICATE).read_bytes())
         try:
             radius_step_ca.enrollment_identity(previous, options)
-        except ValueError as error:
-            return jsonify({"error": str(error)}), 400
+        except ValueError:
+            return jsonify({"error": "Specify a common name and SANs for step-ca enrollment."}), 400
     return None
 
 
