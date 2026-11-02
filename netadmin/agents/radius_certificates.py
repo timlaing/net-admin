@@ -178,7 +178,7 @@ def _request_error(action: str, options: dict[str, Any]) -> Any:
     return None
 
 
-def _locked_error(body: dict[str, Any], status: dict[str, Any]) -> Any:
+def _locked_error(body: dict[str, Any], status: dict[str, Any], options: dict[str, Any]) -> Any:
     """Check management permission and optimistic concurrency under the file lock."""
     if not status["can_manage"]:
         return jsonify({"error": status["reason"]}), 409
@@ -188,6 +188,12 @@ def _locked_error(body: dict[str, Any], status: dict[str, Any]) -> Any:
         return jsonify({"error": "Certificates changed. Refresh the page before continuing."}), 409
     if body["action"] == "retire-ca" and body.get("confirmation") != "REPLACE CA":
         return jsonify({"error": "Type REPLACE CA to confirm retirement."}), 400
+    if body["action"] == "enroll-step-ca":
+        previous = x509.load_pem_x509_certificate(_file(SERVER_CERTIFICATE).read_bytes())
+        try:
+            radius_step_ca.enrollment_identity(previous, options)
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
     return None
 
 
@@ -217,7 +223,7 @@ def _operate() -> Any:
         with _file(".netadmin-cert-lock").open("a", encoding="ascii") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             status = _inventory()
-            error = _locked_error(body, status)
+            error = _locked_error(body, status, options)
             if error is not None:
                 return error
             crl = _file(REVOCATION_LIST)

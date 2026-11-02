@@ -1164,12 +1164,12 @@ def test_step_ca_enrollment_requires_explicit_missing_identity(material, monkeyp
             "expected_server": status["server"]["fingerprint"],
         },
     )
-    assert response.status_code == 502
-    assert "Previous files were retained" in response.json["error"]
+    assert response.status_code == 400
+    assert "Specify" in response.json["error"]
     assert calls == []
     assert (directory / "server.pem").read_bytes() == original
     explicit = certificate_options({"common_name": "radius.test", "sans": "radius.test"})
-    subject, sans = radius_step_ca._enrollment_identity(certificate, explicit)
+    subject, sans = radius_step_ca.enrollment_identity(certificate, explicit)
     assert subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value == "radius.test"
     assert sans == x509.SubjectAlternativeName([x509.DNSName("radius.test")])
 
@@ -1269,12 +1269,21 @@ def test_ca_inventory_survives_capabilities_failure(tmp_path, monkeypatch):
     response = client.get("/certificates")
     assert response.status_code == 200
     assert "Visible synthetic certificate" in response.text
-    assert "read-only" in response.text
+    assert "capabilities could not be read" in response.text
+    assert "The CA agent is read-only" not in response.text
     assert "Issue a certificate" not in response.text
 
 
 @pytest.mark.parametrize(
-    "url", ["http://agent", "https://agent:99999", "https://agent/#route", "https://agent/?route"]
+    "url",
+    [
+        "http://agent",
+        "https://agent:99999",
+        "https://agent/#route",
+        "https://agent/?route",
+        "https://agent/#",
+        "https://agent/?",
+    ],
 )
 def test_invalid_ca_configuration_returns_unavailable_page(tmp_path, url):
     app, client = admin_client(tmp_path)
@@ -1300,3 +1309,40 @@ def test_unsupported_csr_algorithm_is_a_validation_error(monkeypatch):
     monkeypatch.setattr(x509, "load_pem_x509_csr", lambda data: UnsupportedCSR())
     with pytest.raises(ValueError, match="Unsupported CSR algorithm"):
         validate_csr("synthetic")
+
+
+@pytest.mark.parametrize("result", [{}, [], {"id": None}, {"id": ""}])
+def test_malformed_issuance_response_preserves_unknown_operation(tmp_path, monkeypatch, result):
+    import re
+    from html import unescape
+
+    app, client = admin_client(tmp_path)
+    monkeypatch.setattr(
+        "netadmin.ca_web._client",
+        lambda: SimpleNamespace(read_only=lambda: False, post=lambda *args, **kwargs: result),
+    )
+    pem = csr()
+    response = client.post(
+        "/certificates",
+        data={"request_id": "a" * 32, "csr": pem, "days": "30", "confirm": "yes"},
+    )
+    assert response.status_code == 202
+    assert app.extensions["netadmin_store"].recent_audit()[0]["success"] is None
+    assert "Inspect inventory and CA records" in response.text
+    assert f'name="request_id" value="{"a" * 32}"' in response.text
+    textarea = re.search(
+        r'<textarea[^>]*name="csr"[^>]*readonly[^>]*>(.*?)</textarea>', response.text, re.DOTALL
+    )
+    assert textarea is not None
+    assert unescape(textarea.group(1)) == pem
+    assert re.search(r'<input[^>]*name="days"[^>]*value="30"[^>]*readonly', response.text)
+
+
+@pytest.mark.parametrize("url", ["https://agent/?", "https://agent/#"])
+def test_empty_agent_url_delimiters_are_rejected(url):
+    from netadmin.connections import _valid_agent_url
+    from netadmin.services.agents import AgentClient
+
+    assert not _valid_agent_url(url)
+    with pytest.raises(ValueError):
+        AgentClient(url, "synthetic-token")

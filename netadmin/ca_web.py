@@ -95,7 +95,8 @@ def _certificate_id(value: str) -> str:
 def _unknown_outcome(action: str, details: dict[str, str]) -> Any:
     _audit(action, None, details)
     guidance = (
-        "Inspect the inventory before retrying."
+        "Interrupted issuances may exist only at the CA. "
+        "Inspect inventory and CA records before retrying."
         if action == "issue"
         else "Check the authoritative CRL; retry revocation if the serial is absent."
     )
@@ -164,14 +165,17 @@ def _render_inventory(client: AgentClient, **context: Any) -> Any:
         )
     except httpx.HTTPError:
         return render_template(CA_TEMPLATE, unavailable=True, certificates=[], read_only=True), 502
+    capability_error = False
     try:
         read_only = client.read_only()
     except httpx.HTTPError:
         read_only = True
+        capability_error = True
     return render_template(
         CA_TEMPLATE,
         certificates=inventory["certificates"],
         read_only=read_only,
+        capability_error=capability_error,
         next_cursor=inventory.get("next_cursor"),
         **context,
     )
@@ -233,7 +237,9 @@ def issue() -> Any:
         return _operation_error("issue", details, error)
     except ValueError:
         return _unknown_outcome("issue", details)
-    details["certificate_id"] = str(result["id"])
+    if not isinstance(result, dict) or not isinstance(result.get("id"), str) or not result["id"]:
+        return _unknown_outcome("issue", details)
+    details["certificate_id"] = result["id"]
     certificate = result.get("certificate", {})
     if isinstance(certificate, dict) and certificate.get("serial"):
         details["serial"] = str(certificate["serial"])

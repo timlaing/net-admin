@@ -26,8 +26,7 @@ class AgentClient:
             parsed.scheme != "https"
             or not parsed.hostname
             or parsed.username is not None
-            or parsed.query
-            or parsed.fragment
+            or any(delimiter in base_url for delimiter in "?#")
         ):
             raise ValueError("Agent URL must use HTTPS without embedded credentials")
         if parsed.port == 0:

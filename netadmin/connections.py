@@ -224,6 +224,8 @@ def _valid_agent_url(value: str) -> bool:
             and not parsed.password
             and not parsed.query
             and not parsed.fragment
+            and "?" not in value
+            and "#" not in value
         )
     except ValueError:
         return False

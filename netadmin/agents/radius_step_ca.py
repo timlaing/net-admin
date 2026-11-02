@@ -57,9 +57,10 @@ def managed(bundle: bytes) -> bool:
         return False
 
 
-def _enrollment_identity(
+def enrollment_identity(
     previous: x509.Certificate, options: dict[str, Any]
 ) -> tuple[x509.Name, x509.SubjectAlternativeName]:
+    """Resolve explicit enrollment identity or inherit it from the current certificate."""
     common_name = options.get("common_name")
     if common_name is None:
         names = previous.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
@@ -86,7 +87,7 @@ def changes(directory: Path, password: bytes, body: dict[str, Any]) -> dict[str,
             raise ValueError("Confirm replacement of RADIUS CA trust with STEP CA")
         options = certificate_options(body)
         key = replacement_key(previous)
-        subject, sans = _enrollment_identity(previous, options)
+        subject, sans = enrollment_identity(previous, options)
         csr = (
             x509.CertificateSigningRequestBuilder()
             .subject_name(subject)
