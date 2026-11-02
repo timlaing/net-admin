@@ -24,13 +24,14 @@ AGENT_SECURITY = "Agent security"
 DIRECT_BIND = "Direct Bind"
 NOT_CONFIGURED = "Not configured"
 
-SECRET_FIELDS = ("dns_tsig_secret", "radius_secret", "agent_token")
+SECRET_FIELDS = ("dns_tsig_secret", "radius_secret", "agent_token", "ca_management_token")
 BOOLEAN_FIELDS = ("dns_enabled", "dhcp_enabled", "radius_enabled", "dns_use_agent")
 PATH_FIELDS = ("dns_config_path", "agent_ca", "agent_cert", "agent_key")
 SECTIONS = {
     "DNS": ("dns_enabled", "dns_use_agent", "dns_agent_url"),
     "DHCP": ("dhcp_enabled", "dhcp_agent_url", "dhcp_backend"),
     "RADIUS": ("radius_enabled", "radius_agent_url", "radius_host", "radius_secret"),
+    "CA": ("ca_agent_url", "ca_management_token"),
     AGENT_SECURITY: ("agent_token", "agent_ca", "agent_cert", "agent_key"),
     DIRECT_BIND: (
         "dns_server",
@@ -164,6 +165,10 @@ class ConnectionForm(FlaskForm):  # type: ignore[misc]
     radius_agent_url = text_field("RADIUS agent HTTPS URL")
     radius_host = text_field("RADIUS authentication server")
     radius_secret = PasswordField("RADIUS shared secret", validators=[Length(max=253)])
+    ca_agent_url = text_field("CA agent HTTPS URL")
+    ca_management_token = PasswordField(
+        "CA lifecycle management token", validators=[Length(max=1024)]
+    )
     agent_token = PasswordField("Shared agent bearer token", validators=[Length(max=1024)])
     agent_ca = text_field("CA certificate path (blank for system trust)", 1024)
     agent_cert = text_field("Client certificate path", 1024)
@@ -207,6 +212,18 @@ def configuration_errors(values: dict[str, str]) -> dict[str, str]:
         value = values[field]
         if value and (not Path(value).is_absolute() or ".." in Path(value).parts):
             errors[field] = "Use an absolute path without '..'."
+    if values["ca_agent_url"]:
+        if not _valid_agent_url(values["ca_agent_url"]):
+            errors["ca_agent_url"] = "Enter an HTTPS CA agent URL."
+        errors.update(
+            _missing_fields(
+                values,
+                ("agent_token", "agent_cert", "agent_key"),
+                "Required for CA agent mTLS and bearer authentication.",
+            )
+        )
+    if values["ca_management_token"] and len(values["ca_management_token"]) < 32:
+        errors["ca_management_token"] = "Use a lifecycle token of at least 32 characters."  # noqa: S105
     errors.update(_agent_errors(values))
     errors.update(_dns_errors(values))
     return errors

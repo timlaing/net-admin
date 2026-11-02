@@ -1,0 +1,14 @@
+FROM smallstep/step-ca:0.30.2 AS ca
+FROM smallstep/step-cli:0.31.0 AS step
+FROM python:3.14.5-alpine3.22
+COPY --from=ca /usr/local/bin/step-ca /usr/local/bin/step-ca
+COPY --from=step /usr/local/bin/step /usr/local/bin/step
+# Strip executable file capabilities with a fresh plain copy before runtime.
+WORKDIR /app
+COPY pyproject.toml /app/
+COPY netadmin /app/netadmin
+RUN cp /usr/local/bin/step-ca /usr/local/bin/step-ca.plain \
+    && mv /usr/local/bin/step-ca.plain /usr/local/bin/step-ca \
+    && pip install --no-cache-dir --only-binary :all: .
+ENV PYTHONDONTWRITEBYTECODE=1
+CMD ["python", "-m", "netadmin.ca_runtime.app"]

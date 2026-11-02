@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 import httpx
 from cryptography import x509
 from flask import Blueprint, Response, abort, flash, redirect, render_template, request, url_for
+from werkzeug.exceptions import NotFound
 
 from netadmin.auth import admin_required, current_identity, extension
 from netadmin.config import Settings
@@ -150,8 +151,15 @@ def _operation_error(action: str, details: dict[str, str], error: httpx.HTTPErro
 @admin_required
 def index() -> Any:
     """List the agent's public issuance inventory."""
+    settings = cast(Settings, extension("netadmin_settings"))
+    if settings.ca_management_token:
+        return redirect(url_for("authorities.index"))
+    try:
+        remote = _client()
+    except NotFound:
+        return redirect(url_for("authorities.index"))
     return _render_inventory(
-        _client(),
+        remote,
         request_id=_request_id(request.args.get("request_id")),
         days=request.args.get("days", "365"),
     )

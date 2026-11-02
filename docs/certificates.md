@@ -1,5 +1,10 @@
 # Certificate management
 
+For container-generated root keys, UI initialization, subordinate issuing CAs and
+the optional installer, see [Create a root and issuing CAs](ca-setup.md). The
+[design notes](ca-bootstrap-design.md) also describe longer-term extensions.
+The procedures below cover the existing local and externally initialized step-ca backends.
+
 NetAdmin supports two RADIUS certificate backends. The default `local` backend
 uses the existing RADIUS CA. The optional `step-ca` backend delegates issuance to
 Smallstep and runs a separate renewal worker. Both install certificates through
