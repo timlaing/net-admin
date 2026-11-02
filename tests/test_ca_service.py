@@ -1311,7 +1311,20 @@ def test_unsupported_csr_algorithm_is_a_validation_error(monkeypatch):
         validate_csr("synthetic")
 
 
-@pytest.mark.parametrize("result", [{}, [], {"id": None}, {"id": ""}])
+@pytest.mark.parametrize(
+    "result",
+    [
+        {},
+        [],
+        {"id": None},
+        {"id": ""},
+        {"id": "not-an-id"},
+        {"id": "A" * 32},
+        {"id": "a" * 31},
+        {"id": "a" * 33},
+        {"id": "g" * 32},
+    ],
+)
 def test_malformed_issuance_response_preserves_unknown_operation(tmp_path, monkeypatch, result):
     import re
     from html import unescape
