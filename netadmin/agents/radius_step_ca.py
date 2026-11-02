@@ -1,0 +1,136 @@
+"""step-ca enrolment and staged renewal for the RADIUS agent."""
+
+from __future__ import annotations
+
+import os
+import tempfile
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from cryptography import x509
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes
+from cryptography.x509.oid import NameOID
+
+from netadmin.agents.common import configured_path
+from netadmin.services.agents import AgentClient
+from netadmin.services.radius_certificates import (
+    PEM,
+    certificate_options,
+    key_matches,
+    load_signing_key,
+    private_pem,
+    replacement_key,
+)
+from netadmin.services.step_ca import renew_certificate, validate_server_chain
+
+
+def enabled() -> bool:
+    """Select the backend explicitly; missing configuration must never downgrade it."""
+    return os.getenv("RADIUS_CERT_BACKEND", "local") == "step-ca"
+
+
+def _client() -> AgentClient:
+    return AgentClient(
+        os.environ["RADIUS_CA_AGENT_URL"],
+        os.environ["NETADMIN_AGENT_TOKEN"],
+        configured_path("RADIUS_CA_AGENT_CA", "/ca-agent-client/ca.crt"),
+        configured_path("RADIUS_CA_AGENT_CERT", "/ca-agent-client/client.crt"),
+        configured_path("RADIUS_CA_AGENT_KEY", "/ca-agent-client/client.key"),
+    )
+
+
+def trusted_root() -> bytes:
+    """Use an operator-pinned root, never a root received from a signing response."""
+    return configured_path("STEP_CA_ROOT", "/trust/root_ca.crt").read_bytes()
+
+
+def managed(bundle: bytes) -> bool:
+    """Distinguish pre-migration identities from enrolled step-ca identities."""
+    try:
+        validate_server_chain(bundle, trusted_root())
+        return True
+    except (ValueError, InvalidSignature, x509.ExtensionNotFound):
+        return False
+
+
+def changes(directory: Path, password: bytes, body: dict[str, Any]) -> dict[str, str]:
+    """Prepare new files without changing the active RADIUS identity."""
+    bundle = (directory / "server.pem").read_bytes()
+    previous = x509.load_pem_x509_certificate(bundle)
+    action = body["action"]
+    if action == "enroll-step-ca":
+        if body.get("confirmation") != "STEP CA":
+            raise ValueError("Confirm replacement of RADIUS CA trust with STEP CA")
+        options = certificate_options(body)
+        key = replacement_key(previous)
+        common_name = options.get("common_name")
+        if common_name is None:
+            common_name = previous.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
+        sans = options.get("sans")
+        if sans is None:
+            sans = previous.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        csr = (
+            x509.CertificateSigningRequestBuilder()
+            .subject_name(subject)
+            .add_extension(sans, False)
+            .sign(key, hashes.SHA256())
+        )
+        result = _client().post(
+            "certificates",
+            {
+                "csr": csr.public_bytes(PEM).decode("ascii"),
+                "days": options.get("days", 1),
+            },
+            timeout=60,
+        )
+        pem = result["pem"].encode("ascii")
+        expected_subject = subject
+        expected_sans = sans
+    elif action == "renew-server":
+        validate_server_chain(bundle, trusted_root())
+        key = load_signing_key(bundle, password)
+        with tempfile.TemporaryDirectory(prefix="netadmin-renew-") as temporary:
+            stage = Path(temporary)
+            source, output, secret = stage / "server.pem", stage / "renewed.pem", stage / "password"
+            source.write_bytes(
+                b"".join(cert.public_bytes(PEM) for cert in x509.load_pem_x509_certificates(bundle))
+            )
+            keyfile = stage / "key.pem"
+            keyfile.write_bytes(private_pem(key, password))
+            keyfile.chmod(0o600)
+            source.chmod(0o600)
+            secret.write_bytes(password)
+            secret.chmod(0o600)
+            renew_certificate(source, keyfile, output, secret)
+            pem = output.read_bytes()
+        expected_subject = previous.subject
+        expected_sans = previous.extensions.get_extension_for_class(
+            x509.SubjectAlternativeName
+        ).value
+    else:
+        raise ValueError("Local CA operations are disabled for step-ca certificates")
+    chain = validate_server_chain(pem, trusted_root())
+    leaf = chain[0]
+    if not key_matches(leaf, key) or leaf.subject != expected_subject:
+        raise ValueError("Issued certificate does not match the requested identity")
+    if leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value != expected_sans:
+        raise ValueError("Issued SANs differ from the requested SANs")
+    # The root is a trust anchor; only the leaf and intermediates are presented by RADIUS.
+    public_chain = b"".join(cert.public_bytes(PEM) for cert in chain[:-1])
+    return {
+        "server.pem": (private_pem(key, password) + public_chain).decode("ascii"),
+        "ca.pem": trusted_root().decode("ascii"),
+        f"previous-server-{previous.serial_number:x}.crt": previous.public_bytes(PEM).decode(
+            "ascii"
+        ),
+    }
+
+
+def renewal_due(bundle: bytes) -> bool:
+    """Renew after two-thirds of the certificate lifetime; retry failures next poll."""
+    cert = x509.load_pem_x509_certificate(bundle)
+    lifetime = cert.not_valid_after_utc - cert.not_valid_before_utc
+    return datetime.now(UTC) >= cert.not_valid_before_utc + lifetime * (2 / 3)

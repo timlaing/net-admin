@@ -46,7 +46,15 @@ def operate() -> Any:
     if client.read_only():
         abort(403)
     action = request.form.get("action", "")
-    if action not in {"renew-server", "revoke-server", "renew-ca", "retire-ca", "refresh-crl"}:
+    if action not in {
+        "create-server",
+        "enroll-step-ca",
+        "renew-server",
+        "revoke-server",
+        "renew-ca",
+        "retire-ca",
+        "refresh-crl",
+    }:
         abort(400)
     if request.form.get("confirm") != "yes":
         abort(400, "Confirm the effect on RADIUS clients before continuing.")
@@ -58,6 +66,11 @@ def operate() -> Any:
                 "expected_ca": request.form.get("expected_ca", ""),
                 "expected_server": request.form.get("expected_server", ""),
                 "confirmation": request.form.get("confirmation", ""),
+                **{
+                    field: request.form[field]
+                    for field in ("common_name", "sans", "days")
+                    if field in request.form
+                },
             },
             timeout=60,
         )

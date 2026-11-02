@@ -2,16 +2,76 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
+from ipaddress import ip_address
 from typing import Any
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
-from cryptography.x509.oid import ExtensionOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, ExtensionOID, NameOID
 
 SigningKey = rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey
 PEM = serialization.Encoding.PEM
+
+
+def certificate_options(body: dict[str, Any]) -> dict[str, Any]:
+    """Validate optional server identity and lifetime at the agent boundary."""
+    result: dict[str, Any] = {}
+    if "days" in body:
+        value = body["days"]
+        if isinstance(value, bool) or not re.fullmatch(r"[0-9]{1,4}", str(value)):
+            raise ValueError("Validity must be a whole number of days")
+        days = int(value)
+        if not 1 <= days <= 3650:
+            raise ValueError("Validity must be between 1 and 3650 days")
+        result["days"] = days
+    if "common_name" in body:
+        name = body["common_name"]
+        if not isinstance(name, str) or not name.strip() or len(name.encode()) > 64:
+            raise ValueError("Common name must contain 1 to 64 bytes")
+        if any(ord(char) < 32 or ord(char) == 127 for char in name):
+            raise ValueError("Invalid common name")
+        result["common_name"] = name.strip()
+    if "sans" in body:
+        value = body["sans"]
+        if not isinstance(value, str) or len(value) > 8192:
+            raise ValueError("SANs must be DNS names or IP addresses separated by commas")
+        result["sans"] = _parse_sans(value)
+    return result
+
+
+def _parse_sans(value: str) -> x509.SubjectAlternativeName:
+    """Parse a bounded list of DNS names and IP addresses."""
+    names: list[x509.GeneralName] = []
+    for item in re.split(r"[,\s]+", value.strip()):
+        if not item:
+            continue
+        try:
+            names.append(x509.IPAddress(ip_address(item)))
+        except ValueError:
+            dns = item.encode("idna").decode("ascii").lower()
+            labels = dns.removeprefix("*.").split(".")
+            if len(dns) > 253 or any(
+                not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in labels
+            ):
+                raise ValueError("Invalid DNS SAN") from None
+            names.append(x509.DNSName(dns))
+    if not names or len(names) > 100:
+        raise ValueError("Specify between 1 and 100 SANs")
+    return x509.SubjectAlternativeName(names)
+
+
+def identity_options(certificate: x509.Certificate) -> dict[str, Any]:
+    """Return editable public identity fields."""
+    common_names = certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    try:
+        names = certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        sans = ", ".join(str(name.value) for name in names)
+    except x509.ExtensionNotFound:
+        sans = ""
+    return {"common_name": str(common_names[0].value) if common_names else "", "sans": sans}
 
 
 def _signature_hash(key: SigningKey) -> hashes.SHA256 | hashes.SHA384 | hashes.SHA512:
@@ -47,6 +107,7 @@ def certificate_info(certificate: x509.Certificate) -> dict[str, Any]:
     elif expires - now < timedelta(days=30):
         status = "Expiring soon"
     return {
+        **identity_options(certificate),
         "subject": certificate.subject.rfc4514_string(),
         "issuer": certificate.issuer.rfc4514_string(),
         "serial": format(certificate.serial_number, "x"),
@@ -94,17 +155,25 @@ def issue_certificate(
     issuer_key: SigningKey,
     *,
     is_ca: bool = False,
+    options: dict[str, Any] | None = None,
 ) -> x509.Certificate:
     """Preserve identity/SANs and policy extensions, refreshing serial and key IDs."""
+    options = options or {}
     now = datetime.now(UTC)
-    expires = now + timedelta(days=3650 if is_ca else 365)
+    expires = now + timedelta(days=3650 if is_ca else options.get("days", 365))
+    subject = original.subject
+    if not is_ca and "common_name" in options:
+        subject = x509.Name(
+            [attr for attr in subject if attr.oid != NameOID.COMMON_NAME]
+            + [x509.NameAttribute(NameOID.COMMON_NAME, options["common_name"])]
+        )
     if not is_ca:
         expires = min(expires, issuer.not_valid_after_utc)
     if expires <= now:
         raise ValueError("Renew the expired CA before issuing a server certificate")
     builder = (
         x509.CertificateBuilder()
-        .subject_name(original.subject)
+        .subject_name(subject)
         .issuer_name(original.subject if is_ca else issuer.subject)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
@@ -115,8 +184,11 @@ def issue_certificate(
         if extension.oid not in {
             ExtensionOID.SUBJECT_KEY_IDENTIFIER,
             ExtensionOID.AUTHORITY_KEY_IDENTIFIER,
+            *({ExtensionOID.SUBJECT_ALTERNATIVE_NAME} if "sans" in options else set()),
         }:
             builder = builder.add_extension(extension.value, extension.critical)
+    if "sans" in options and not is_ca:
+        builder = builder.add_extension(options["sans"], False)
     builder = builder.add_extension(
         x509.SubjectKeyIdentifier.from_public_key(key.public_key()), False
     )
@@ -175,9 +247,17 @@ def certificate_changes(
     crl_pem: bytes | None,
     password: bytes,
     action: str,
+    options: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Prepare PEM files for one validated agent transaction."""
-    if action not in {"renew-server", "revoke-server", "renew-ca", "retire-ca", "refresh-crl"}:
+    if action not in {
+        "create-server",
+        "renew-server",
+        "revoke-server",
+        "renew-ca",
+        "retire-ca",
+        "refresh-crl",
+    }:
         raise ValueError("Unknown certificate operation")
     ca = x509.load_pem_x509_certificate(ca_pem)
     server = x509.load_pem_x509_certificate(server_pem)
@@ -191,6 +271,7 @@ def certificate_changes(
     server.verify_directly_issued_by(ca)
     crl = x509.load_pem_x509_crl(crl_pem) if crl_pem else None
     changes: dict[str, bytes] = {}
+    previous_server = server
     if action in {"renew-ca", "retire-ca"}:
         if action == "retire-ca":
             prefix = f"retired-{ca.serial_number:x}"
@@ -203,8 +284,25 @@ def certificate_changes(
         changes["ca.pem"] = ca.public_bytes(PEM)
     if action not in {"renew-ca", "refresh-crl"}:
         server_key = replacement_key(server)
-        replacement = issue_certificate(server, server_key, ca, ca_key)
-        changes[f"previous-server-{server.serial_number:x}.crt"] = server.public_bytes(PEM)
+        if action == "create-server":
+            if not options or not {"common_name", "sans"} <= options.keys():
+                raise ValueError("New certificates require a common name and SANs")
+            server = (
+                x509.CertificateBuilder()
+                .subject_name(server.subject)
+                .issuer_name(ca.subject)
+                .public_key(server_key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(datetime.now(UTC) - timedelta(minutes=5))
+                .not_valid_after(datetime.now(UTC) + timedelta(days=1))
+                .add_extension(x509.BasicConstraints(ca=False, path_length=None), True)
+                .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), False)
+                .sign(ca_key, _signature_hash(ca_key))
+            )
+        replacement = issue_certificate(server, server_key, ca, ca_key, options=options)
+        changes[f"previous-server-{previous_server.serial_number:x}.crt"] = (
+            previous_server.public_bytes(PEM)
+        )
         changes["server.pem"] = private_pem(server_key, password) + replacement.public_bytes(PEM)
     revoked = server if action == "revoke-server" else None
     changes["netadmin-crl.pem"] = issue_crl(ca, ca_key, crl, revoked).public_bytes(PEM)

@@ -8,6 +8,7 @@
 set -euo pipefail
 image="${1:?Usage: smoke_agent.sh <image> [port]}"
 case "$image" in
+  *ca-agent*) default_port=8084 ;;
   *radius*) default_port=8082 ;;
   *) default_port=8081 ;;
 esac

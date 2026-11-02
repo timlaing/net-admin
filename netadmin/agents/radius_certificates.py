@@ -10,15 +10,18 @@ import time
 from pathlib import Path
 from typing import Any
 
+import httpx
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 from flask import Flask, current_app, jsonify
 
+from netadmin.agents import radius_step_ca
 from netadmin.agents.common import configured_path, json_object, validated_transaction
 from netadmin.services.radius_certificates import (
     PEM,
     certificate_changes,
     certificate_info,
+    certificate_options,
     key_matches,
     load_signing_key,
 )
@@ -63,6 +66,8 @@ def _inventory() -> dict[str, Any]:
         reason = "Certificate management is not enabled on this agent."
     elif not _protocol_ready():
         reason = "Update the RADIUS service image to enable certificate activation."
+    elif radius_step_ca.enabled():
+        pass
     elif not _file(CA_KEY).exists():
         reason = "The CA signing key is not available. Renew or revoke through your external CA."
     else:
@@ -72,8 +77,17 @@ def _inventory() -> dict[str, Any]:
         ca.verify_directly_issued_by(ca)
         server.verify_directly_issued_by(ca)
     crl_path = _file(REVOCATION_LIST)
-    crl = x509.load_pem_x509_crl(crl_path.read_bytes()) if crl_path.exists() else None
+    crl = (
+        x509.load_pem_x509_crl(crl_path.read_bytes())
+        if crl_path.exists() and not radius_step_ca.enabled()
+        else None
+    )
     return {
+        "backend": "step-ca" if radius_step_ca.enabled() else "local",
+        "auto_renew": radius_step_ca.enabled() and os.getenv("RADIUS_CERT_AUTO_RENEW") == "true",
+        "enrolled": radius_step_ca.managed(_file(SERVER_CERTIFICATE).read_bytes())
+        if radius_step_ca.enabled()
+        else False,
         "available": True,
         "ca": certificate_info(ca),
         "server": certificate_info(server),
@@ -149,40 +163,76 @@ def _install(changes: dict[str, str]) -> None:
         raise
 
 
+def _request_error(action: str, options: dict[str, Any]) -> Any:
+    """Reject operations incompatible with the configured certificate backend."""
+    if radius_step_ca.enabled() and action not in {"enroll-step-ca", "renew-server"}:
+        return jsonify({"error": "Use the CA service for authority and revocation operations"}), 409
+    if not radius_step_ca.enabled() and action == "enroll-step-ca":
+        return jsonify({"error": "step-ca backend is not enabled"}), 409
+    if action == "create-server" and not {"common_name", "sans"} <= options.keys():
+        return jsonify({"error": "New certificates require CN and SANs"}), 400
+    return None
+
+
+def _locked_error(body: dict[str, Any], status: dict[str, Any]) -> Any:
+    """Check management permission and optimistic concurrency under the file lock."""
+    if not status["can_manage"]:
+        return jsonify({"error": status["reason"]}), 409
+    if any(
+        body.get(f"expected_{kind}") != status[kind]["fingerprint"] for kind in ("ca", "server")
+    ):
+        return jsonify({"error": "Certificates changed. Refresh the page before continuing."}), 409
+    if body["action"] == "retire-ca" and body.get("confirmation") != "REPLACE CA":
+        return jsonify({"error": "Type REPLACE CA to confirm retirement."}), 400
+    return None
+
+
 def _operate() -> Any:
     body = json_object()
     action = str(body.get("action", ""))
-    if action not in {"renew-server", "revoke-server", "renew-ca", "retire-ca", "refresh-crl"}:
+    if action not in {
+        "create-server",
+        "enroll-step-ca",
+        "renew-server",
+        "revoke-server",
+        "renew-ca",
+        "retire-ca",
+        "refresh-crl",
+    }:
         return jsonify({"error": "Unknown certificate operation"}), 400
+    try:
+        options = certificate_options(body)
+    except (ValueError, TypeError, UnicodeError):
+        return jsonify({"error": "Invalid common name, SANs or validity"}), 400
+    error = _request_error(action, options)
+    if error is not None:
+        return error
     try:
         if not _root().is_dir():
             raise ValueError("Certificate directory missing")
         with _file(".netadmin-cert-lock").open("a", encoding="ascii") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             status = _inventory()
-            if not status["can_manage"]:
-                return jsonify({"error": status["reason"]}), 409
-            if any(
-                body.get(f"expected_{kind}") != status[kind]["fingerprint"]
-                for kind in ("ca", "server")
-            ):
-                return jsonify(
-                    {"error": "Certificates changed. Refresh the page before continuing."}
-                ), 409
-            if action == "retire-ca" and body.get("confirmation") != "REPLACE CA":
-                return jsonify({"error": "Type REPLACE CA to confirm retirement."}), 400
+            error = _locked_error(body, status)
+            if error is not None:
+                return error
             crl = _file(REVOCATION_LIST)
-            changes = certificate_changes(
-                _file(CA_CERTIFICATE).read_bytes(),
-                _file(CA_KEY).read_bytes(),
-                _file(SERVER_CERTIFICATE).read_bytes(),
-                crl.read_bytes() if crl.exists() else None,
-                _password(),
-                action,
-            )
+            if radius_step_ca.enabled():
+                changes = radius_step_ca.changes(_root(), _password(), body)
+            else:
+                changes = certificate_changes(
+                    _file(CA_CERTIFICATE).read_bytes(),
+                    _file(CA_KEY).read_bytes(),
+                    _file(SERVER_CERTIFICATE).read_bytes(),
+                    crl.read_bytes() if crl.exists() else None,
+                    _password(),
+                    action,
+                    options,
+                )
             _install(changes)
             return jsonify({"action": action, "status": "applied"})
     except (
+        httpx.HTTPError,
         OSError,
         ValueError,
         TypeError,
@@ -216,6 +266,9 @@ def _download(kind: str) -> Any:
 
 def register_certificates(app: Flask) -> None:
     """Keep certificate administration within the authenticated service agent."""
+    backend = os.getenv("RADIUS_CERT_BACKEND", "local")
+    if backend not in {"local", "step-ca"}:
+        raise ValueError("RADIUS_CERT_BACKEND must be local or step-ca")
     mode = os.getenv("RADIUS_CERT_RESTART_MODE", "signal")
     if mode not in {"signal", "command"}:
         raise ValueError("RADIUS_CERT_RESTART_MODE must be signal or command")

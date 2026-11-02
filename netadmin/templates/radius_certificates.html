@@ -8,6 +8,12 @@
 <input type="hidden" name="action" value="{{ action }}">
 <input type="hidden" name="expected_ca" value="{{ certificates.ca.fingerprint }}">
 <input type="hidden" name="expected_server" value="{{ certificates.server.fingerprint }}">
+{% if action in ['renew-server', 'create-server', 'enroll-step-ca'] and (certificates.backend|default('local') == 'local' or action == 'enroll-step-ca') %}
+<label class="form-label" for="cn-{{ action }}">Common name (CN)</label><input class="form-control mb-3" id="cn-{{ action }}" name="common_name" value="{{ certificates.server.common_name }}" maxlength="64" required>
+<label class="form-label" for="sans-{{ action }}">DNS names and IP addresses (SANs)</label><textarea class="form-control mb-3" id="sans-{{ action }}" name="sans" rows="2" required maxlength="8192">{{ certificates.server.sans }}</textarea><p class="form-text">Separate names and addresses with commas. Include every name clients use to identify this server.</p>
+<label class="form-label" for="days-{{ action }}">Validity in days (365 = one year)</label><input class="form-control mb-3" id="days-{{ action }}" name="days" type="number" min="1" max="3650" value="{{ 1 if action == 'enroll-step-ca' else 365 }}" required><p class="form-text">Local validity is capped by CA expiry. step-ca enforces its provisioner's lifetime policy.</p>
+{% endif %}
+{% if action == 'enroll-step-ca' %}<label class="form-label" for="step-confirmation">Type STEP CA to replace CA trust</label><input class="form-control mb-3" id="step-confirmation" name="confirmation" required pattern="STEP CA"><p class="form-text">Install the step-ca root on devices first. This also replaces the CA trusted for EAP-TLS client certificates; migrate those clients before switching.</p>{% endif %}
 {% if retire %}<label class="form-label" for="retire-confirmation">Type REPLACE CA to confirm</label><input class="form-control mb-3" id="retire-confirmation" name="confirmation" required pattern="REPLACE CA" autocomplete="off">{% endif %}
 <div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="confirm" value="yes" required id="confirm-{{ action }}"><label class="form-check-label" for="confirm-{{ action }}">I understand this restarts RADIUS and may interrupt authentication{% if retire %}; I will replace the CA trust on every device{% endif %}.</label></div>
 <button class="btn {{ 'btn-outline-danger' if destructive else 'btn-primary' }}">{{ title }}</button>
@@ -25,20 +31,27 @@
 <div class="settings-grid">
 {% for kind, title in [('ca', 'Certificate authority'), ('server', 'Server certificate')] %}{% set cert = certificates[kind] %}
 <section class="card"><div class="card-body"><div class="section-heading"><h2 class="h4 mb-0">{{ title }}</h2><span class="status {{ 'status-success' if cert.status == 'Valid' else 'status-warning' }}">{{ cert.status }}</span></div>
-<dl class="certificate-metadata"><dt>Subject</dt><dd>{{ cert.subject }}</dd><dt>Issuer</dt><dd>{{ cert.issuer }}</dd><dt>Valid from (UTC)</dt><dd>{{ cert.valid_from }}</dd><dt>Expires (UTC)</dt><dd>{{ cert.expires }}</dd><dt>Serial number</dt><dd><code>{{ cert.serial }}</code></dd><dt>SHA-256 fingerprint</dt><dd><code>{{ cert.fingerprint }}</code></dd></dl>
+<dl class="certificate-metadata"><dt>Subject</dt><dd>{{ cert.subject }}</dd><dt>SANs</dt><dd>{{ cert.sans }}</dd><dt>Issuer</dt><dd>{{ cert.issuer }}</dd><dt>Valid from (UTC)</dt><dd>{{ cert.valid_from }}</dd><dt>Expires (UTC)</dt><dd>{{ cert.expires }}</dd><dt>Serial number</dt><dd><code>{{ cert.serial }}</code></dd><dt>SHA-256 fingerprint</dt><dd><code>{{ cert.fingerprint }}</code></dd></dl>
 <a class="btn btn-outline-secondary" href="{{ url_for('radius_certificates.download', kind=kind) }}">Download {{ 'CA' if kind == 'ca' else 'server certificate' }}</a>
 </div></section>
 {% endfor %}
 </div>
 <section class="card my-4"><div class="card-body"><h2 class="h4">Revocation list</h2>{% if certificates.has_crl %}<p>{{ certificates.revoked_count }} revoked certificates. Next update: {{ certificates.crl_expires }}.</p><a class="btn btn-outline-secondary mt-2" href="{{ url_for('radius_certificates.download', kind='crl') }}">Download CRL</a>{% else %}<p>No managed revocation list has been created.</p>{% endif %}<p class="form-text mt-3">Revocation takes effect only on devices that obtain and check this CRL. Download and distribute updated CRLs before their next-update date. These controls do not change device trust stores or client-certificate policy.</p></div></section>
+{% if certificates.backend == 'step-ca' %}<output class="alert alert-info d-block">Managed by step-ca. Automatic renewal: {{ 'enabled' if certificates.auto_renew else 'disabled' }}. CA revocation and CRLs are managed by the CA service.</output>{% endif %}
 {% if not read_only and certificates.can_manage %}
+{% if certificates.backend == 'step-ca' %}
+{% if certificates.enrolled %}{{ operation('renew-server', 'Renew server certificate', 'Renew the current identity through step-ca and activate the replacement. The CA controls its lifetime. No names are changed.') }}{% endif %}
+{{ operation('enroll-step-ca', 'Issue server certificate from step-ca', 'Generate a server key locally, submit a CSR, and install the returned chain after validation. This switches RADIUS to the step-ca root. Existing client trust must be migrated first.') }}
+{% else %}
 {{ operation('refresh-crl', 'Refresh revocation list', 'Re-sign the CRL with a fresh 30-day next-update date, preserving all recorded revocations. Distribute the refreshed list to devices that check it.') }}
 <h2 class="h4 mt-4">Renew certificates</h2>
-{{ operation('renew-server', 'Renew server certificate', 'Issue a fresh server key and certificate under the current CA. The server name and existing certificate extensions are preserved. Validity is up to one year, capped by CA expiry. Devices that pin the server certificate will need the replacement.') }}
+{{ operation('renew-server', 'Renew server certificate', 'Issue a fresh server key and certificate under the current CA. Choose the common name, SANs and validity below. Existing policy extensions are preserved; validity is capped by CA expiry. Devices that pin the server certificate will need the replacement.') }}
+{{ operation('create-server', 'Create new server certificate', 'Create and activate a new server identity with the CN, SANs and lifetime below, signed by the current local CA. This replaces the active server certificate; its old public certificate is archived.') }}
 {{ operation('renew-ca', 'Renew CA certificate', 'Reissue this self-signed CA with the same signing key and subject, valid for ten years. Existing issued certificates are retained. Distribute the renewed CA to devices; their installed CA expiry does not update automatically.') }}
 <h2 class="h4 mt-4">Revoke or retire certificates</h2>
 {{ operation('revoke-server', 'Revoke and replace server certificate', 'Add the current server certificate to the signed CRL and immediately install a new server key and certificate under the same CA. Distribute the updated CRL to devices that check revocation. Existing sessions may continue until they reconnect.', true) }}
 {{ operation('retire-ca', 'Retire and replace CA', 'Create a new CA key, CA certificate and server identity. Devices must install the new CA and remove the old CA from their trust stores. A root CA cannot be withdrawn from devices by publishing a CRL. Existing EAP-TLS client certificates issued by the old CA must also be replaced. This is an immediate cutover. Devices using the old CA will fail authentication until they receive the new trust configuration.', true, true) }}
+{% endif %}
 {% endif %}
 {% endif %}
 {% endblock %}

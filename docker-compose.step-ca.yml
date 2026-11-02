@@ -1,0 +1,59 @@
+# Opt-in override: docker compose -f docker-compose.yml -f docker-compose.step-ca.yml up -d
+# Complete docs/certificates.md first. Never mount CA signing keys into agents.
+services:
+  step-ca:
+    image: smallstep/step-ca:0.30.2
+    restart: unless-stopped
+    command: ["step-ca", "/home/step/config/ca.json", "--password-file", "/run/secrets/ca-password"]
+    volumes:
+      - ./step-ca:/home/step:rw
+      - ./pki/step-ca/ca-password:/run/secrets/ca-password:ro
+    # Publish only when external clients require ACME/renewal; preserve TLS end to end.
+    ports: ["9000:9000"]
+  ca-agent:
+    image: ghcr.io/timlaing/netadmin-ca-agent
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ca-agent
+    restart: unless-stopped
+    depends_on: [step-ca]
+    env_file: .env
+    environment:
+      STEP_CA_URL: https://step-ca:9000
+      STEP_CA_ROOT: /trust/root_ca.crt
+      STEP_CA_PROVISIONER: ${STEP_CA_PROVISIONER:-netadmin}
+      STEP_CA_PASSWORD_FILE: /run/secrets/provisioner-password
+      CA_DATA_DIR: /data
+    volumes:
+      - ca-agent-data:/data
+      - ./step-ca/certs/root_ca.crt:/trust/root_ca.crt:ro
+      - ./pki/step-ca/provisioner-password:/run/secrets/provisioner-password:ro
+      - ./pki/ca-agent:/pki:ro
+  netadmin:
+    environment:
+      NETADMIN_CA_AGENT_URL: https://ca-agent:8084
+  radius-agent:
+    environment:
+      RADIUS_CERT_BACKEND: step-ca
+      RADIUS_CERT_AUTO_RENEW: "true"
+      RADIUS_CA_AGENT_URL: https://ca-agent:8084
+      STEP_CA_URL: https://step-ca:9000
+      STEP_CA_ROOT: /trust/root_ca.crt
+    volumes:
+      - ./step-ca/certs/root_ca.crt:/trust/root_ca.crt:ro
+      - ./pki/ca-agent-client:/ca-agent-client:ro
+  radius-renewal:
+    extends:
+      file: docker-compose.yml
+      service: radius-agent
+    environment:
+      RADIUS_CERT_BACKEND: step-ca
+      RADIUS_CERT_AUTO_RENEW: "true"
+      STEP_CA_URL: https://step-ca:9000
+      STEP_CA_ROOT: /trust/root_ca.crt
+    volumes:
+      - ./step-ca/certs/root_ca.crt:/trust/root_ca.crt:ro
+    command: ["python", "-m", "netadmin.agents.radius_renewal"]
+    # No CA enrolment credential: renewal uses the existing RADIUS certificate/key.
+volumes:
+  ca-agent-data:

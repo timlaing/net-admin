@@ -20,6 +20,7 @@ from netadmin.auth import (
     safe_next_url,
     verify_root,
 )
+from netadmin.ca_web import ca_web
 from netadmin.config import Settings
 from netadmin.connections import connection_extensions
 from netadmin.forms import (
@@ -542,6 +543,7 @@ def create_app(settings: Settings | None = None) -> Flask:
     app.register_blueprint(web)
     app.register_blueprint(connection_web)
     app.register_blueprint(certificate_web)
+    app.register_blueprint(ca_web)
 
     @app.context_processor
     def connection_context() -> dict[str, Any]:

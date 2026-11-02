@@ -76,7 +76,7 @@ validate_pair() { # $1 = cert+key file, $2 = CA file, $3 = label
     || { rm -rf "$tmp"; die "$label: cannot read certificate public key"; }
   [[ "$cert_pub" = "$key_pub" ]] \
     || { rm -rf "$tmp"; die "$label: certificate and private key do not match"; }
-  openssl verify -CAfile "$ca_file" "$cert_pem" >/dev/null 2>&1 \
+  openssl verify -CAfile "$ca_file" -untrusted "$cert_file" "$cert_pem" >/dev/null 2>&1 \
     || { rm -rf "$tmp"; die "$label: certificate does not verify against the provided CA"; }
   rm -rf "$tmp"
 }

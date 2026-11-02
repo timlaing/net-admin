@@ -38,10 +38,12 @@ client = create_radius_agent().test_client()
 auth = {'Authorization': 'Bearer synthetic-cert-smoke'}
 status = client.get('/certificates', headers=auth).json
 assert status['available'] and status['can_manage'], status
-for action in ('renew-server', 'revoke-server', 'refresh-crl', 'renew-ca', 'retire-ca'):
+for action in ('create-server', 'renew-server', 'revoke-server', 'refresh-crl', 'renew-ca', 'retire-ca'):
     before = status
     body = {'action': action, 'expected_ca': before['ca']['fingerprint'],
             'expected_server': before['server']['fingerprint'], 'confirmation': 'REPLACE CA'}
+    if action in {'create-server', 'renew-server'}:
+        body.update(common_name='radius.smoke.test', sans='radius.smoke.test,192.0.2.15', days=365)
     response = client.post('/certificates', json=body, headers=auth)
     assert response.status_code == 200, (action, response.json)
     status = client.get('/certificates', headers=auth).json
@@ -49,8 +51,11 @@ for action in ('renew-server', 'revoke-server', 'refresh-crl', 'renew-ca', 'reti
     if action == 'revoke-server':
         crl = x509.load_pem_x509_crl(Path('/etc/raddb/certs/netadmin-crl.pem').read_bytes())
         assert crl.get_revoked_certificate_by_serial_number(int(before['server']['serial'], 16))
-    if action in {'renew-server', 'revoke-server', 'retire-ca'}:
+    if action in {'create-server', 'renew-server', 'revoke-server', 'retire-ca'}:
         assert status['server']['serial'] != before['server']['serial']
+    if action in {'create-server', 'renew-server'}:
+        assert status['server']['common_name'] == 'radius.smoke.test'
+        assert status['server']['sans'] == 'radius.smoke.test, 192.0.2.15'
     if action in {'renew-ca', 'retire-ca'}:
         assert status['ca']['serial'] != before['ca']['serial']
     if action == 'refresh-crl':

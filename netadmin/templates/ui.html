@@ -24,6 +24,7 @@
 
 {% macro nav_links() -%}
 {% set links = [('Overview','web.dashboard','overview'), ('DNS','web.dns_index','dns'), ('DHCP','web.dhcp_index','dhcp'), ('RADIUS','web.radius_index','radius'), ('Activity','web.audit','activity'), ('Settings','connections.settings_page','settings')] %}
+{% if service_settings and service_settings.ca_agent_url %}{% set links = links + [('Certificates', 'ca.index', 'key')] %}{% endif %}
 {% for label, endpoint, glyph in links %}
 {% if g.identity.role == 'admin' or endpoint == 'web.dashboard' %}
 {% set active = request.endpoint == endpoint or (glyph == 'dhcp' and request.endpoint.startswith('web.dhcp_')) or (glyph == 'settings' and request.endpoint.startswith('connections.')) %}
