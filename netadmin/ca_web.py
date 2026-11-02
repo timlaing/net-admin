@@ -237,15 +237,20 @@ def issue() -> Any:
         return _operation_error("issue", details, error)
     except ValueError:
         return _unknown_outcome("issue", details)
-    if not isinstance(result, dict) or not isinstance(result.get("id"), str) or not result["id"]:
+    identifier = result.get("id") if isinstance(result, dict) else None
+    if (
+        not isinstance(identifier, str)
+        or len(identifier) != 32
+        or any(char not in "0123456789abcdef" for char in identifier)
+    ):
         return _unknown_outcome("issue", details)
-    details["certificate_id"] = result["id"]
+    details["certificate_id"] = identifier
     certificate = result.get("certificate", {})
     if isinstance(certificate, dict) and certificate.get("serial"):
         details["serial"] = str(certificate["serial"])
     _audit("issue", True, details)
     flash("Certificate issued. Download its chain from the inventory.", "success")
-    return redirect(url_for(CA_INDEX, issued=result["id"]))
+    return redirect(url_for(CA_INDEX, issued=identifier))
 
 
 @ca_web.post("/certificates/<identifier>/revoke")
