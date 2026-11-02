@@ -6,7 +6,7 @@
 <nav class="d-flex flex-wrap gap-3 mb-4" aria-label="Service logs">
 {% for slug, label in [('radius-logins', 'RADIUS logins'), ('dhcp-leases', 'DHCP leases'), ('ddns-changes', 'DDNS changes'), ('radius-sessions', 'RADIUS sessions')] %}<a href="{{ url_for('service_logs.index', page=slug) }}" {% if slug == page %}aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}
 </nav>
-{% if status != 'available' %}<div class="alert alert-warning" role="status">{{ reason }}</div>
+{% if status != 'available' %}<output class="alert alert-warning d-block">{{ reason }}</output>
 {% else %}
 <p class="form-text">{{ reason }}</p>
 {% if sessions %}<p class="form-text">Sessions rely on accounting Start, Stop and interim updates. Active means recently reported; sessions with no updates for 15 minutes are stale. Missing fields are unavailable in the retained records.</p>{% endif %}

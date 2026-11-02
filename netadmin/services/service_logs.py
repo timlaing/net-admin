@@ -12,18 +12,52 @@ MAX_BYTES = 2_097_152
 MAX_ROWS = 500
 
 
-def tail(path: Path) -> str:
-    """Read a bounded tail, dropping an incomplete leading line."""
+DETAIL_HEADER = re.compile(
+    r"[A-Za-z]{3} [A-Za-z]{3}\s+[0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}"
+)
+MAX_EPOCH = 253402300799
+
+
+def tail_chunk(path: Path, limit: int, *, accounting: bool = False) -> tuple[str, int]:
+    """Return complete leading lines/blocks and charge all bytes read to the budget."""
+    limit = min(MAX_BYTES + 1, limit)
+    if limit <= 0:
+        return "", 0
     descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     with os.fdopen(descriptor, "rb") as stream:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise ValueError("Log source must be a regular file")
         size = stream.seek(0, 2)
-        stream.seek(max(0, size - MAX_BYTES))
-        data = stream.read(MAX_BYTES)
-    if size > MAX_BYTES:
-        data = data.partition(b"\n")[2]
-    return data.decode("utf-8", errors="replace")
+        payload_limit = min(MAX_BYTES, limit)
+        if size > payload_limit:
+            payload_limit = min(MAX_BYTES, limit - 1)
+        offset = max(0, size - payload_limit)
+        stream.seek(max(0, offset - 1))
+        data = stream.read(payload_limit + int(offset > 0))
+    consumed = len(data)
+    # Include a look-behind byte inside the same budget when the source is truncated.
+    if offset:
+        previous, data = data[:1], data[1:]
+        if previous != b"\n":
+            data = data.partition(b"\n")[2]
+    text = data.decode("utf-8", errors="replace")
+    if accounting:
+        lines = text.splitlines(keepends=True)
+        first = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if DETAIL_HEADER.fullmatch(line.rstrip("\r\n"))
+            ),
+            len(lines),
+        )
+        text = "".join(lines[first:])
+    return text, consumed
+
+
+def tail(path: Path) -> str:
+    """Read a bounded tail of complete event lines."""
+    return tail_chunk(path, MAX_BYTES + 1)[0]
 
 
 def timestamp(line: str) -> str:
@@ -147,75 +181,155 @@ def accounting_records(text: str) -> list[dict[str, str]]:
         "Acct-Output-Gigawords",
     }
     records = []
-    # A trailing blank line marks a complete record; do not consume a partial write.
-    for block in re.split(r"\r?\n\s*\r?\n", text)[:-1]:
-        record = {}
-        for key, value in re.findall(r"^\s*([\w-]+) = (.*?)\s*$", block, re.MULTILINE):
-            if key in allowed:
-                record[key] = value.strip('"')[:256]
-        if record.get("Timestamp", "").isdigit():
-            records.append(record)
+    block: list[str] = []
+    for line in text.splitlines():
+        if line.strip():
+            block.append(line)
+        elif block:
+            record = _accounting_record(block, allowed)
+            if record:
+                records.append(record)
+            block = []
     return records
 
 
+def _accounting_record(lines: list[str], allowed: set[str]) -> dict[str, str]:
+    if not DETAIL_HEADER.fullmatch(lines[0]):
+        return {}
+    record = {}
+    for line in lines[1:]:
+        key, separator, value = line.strip().partition(" = ")
+        if separator and key in allowed:
+            record[key] = value.strip('"')[:256]
+    return record if _epoch(record) is not None else {}
+
+
+def _decimal(value: str) -> int | None:
+    return int(value) if re.fullmatch(r"[0-9]{1,20}", value) else None
+
+
+def _epoch(record: dict[str, str]) -> int | None:
+    value = _decimal(record.get("Timestamp", ""))
+    return value if value is not None and value <= MAX_EPOCH else None
+
+
+def _nas(record: dict[str, str]) -> str:
+    return (
+        record.get("NAS-IP-Address")
+        or record.get("NAS-IPv6-Address")
+        or record.get("Packet-Src-IP-Address", "")
+    )
+
+
+def _aliases(records: list[dict[str, str]]) -> dict[tuple[str, str], tuple[str, str]]:
+    links: dict[tuple[str, str], set[str]] = {}
+    for record in records:
+        short = record.get("Acct-Session-Id", "")
+        unique = record.get("Acct-Unique-Session-Id", "")
+        if short and unique:
+            links.setdefault((_nas(record), short), set()).add(unique)
+    return {key: (key[0], next(iter(values))) for key, values in links.items() if len(values) == 1}
+
+
+def _key(
+    record: dict[str, str],
+    aliases: dict[tuple[str, str], tuple[str, str]],
+    current: dict[tuple[str, str], tuple[str, str]],
+) -> tuple[str, str] | None:
+    nas = _nas(record)
+    short = record.get("Acct-Session-Id", "")
+    unique = record.get("Acct-Unique-Session-Id", "")
+    if not nas or not (short or unique):
+        return None
+    short_key = (nas, short)
+    if not unique:
+        return aliases.get(short_key, current.get(short_key, short_key))
+    key = (nas, unique)
+    if short and (record["Acct-Status-Type"] == "Start" or short_key not in current):
+        current[short_key] = key
+    return key
+
+
+def _reset_nas(sessions: dict[tuple[str, str], dict[str, str]], nas: str) -> None:
+    for (session_nas, _), existing in sessions.items():
+        if session_nas == nas and existing["Acct-Status-Type"] != "Stop":
+            existing["_uncertain"] = "yes"
+
+
 def session_rows(records: list[dict[str, str]], now: float) -> list[dict[str, str]]:
-    """Fold accounting by NAS/session identity; mark silent sessions stale after 15 minutes."""
+    """Fold valid records by NAS identity with deterministic same-second status ordering."""
+    valid = [record for record in records if _epoch(record) is not None]
+    order = {"Accounting-On": -1, "Accounting-Off": -1, "Start": 0, "Interim-Update": 1, "Stop": 2}
+    valid.sort(
+        key=lambda item: (int(item["Timestamp"]), order.get(item.get("Acct-Status-Type", ""), 3))
+    )
     sessions: dict[tuple[str, str], dict[str, str]] = {}
-    for record in sorted(records, key=lambda item: int(item["Timestamp"])):
-        nas = record.get(
-            "NAS-IP-Address",
-            record.get("NAS-IPv6-Address", record.get("Packet-Src-IP-Address", "")),
-        )
-        identifier = record.get("Acct-Unique-Session-Id", record.get("Acct-Session-Id", ""))
+    aliases = _aliases(valid)
+    current: dict[tuple[str, str], tuple[str, str]] = {}
+    for record in valid:
         status = record.get("Acct-Status-Type", "")
-        if nas and status in {"Accounting-On", "Accounting-Off"}:
-            for (session_nas, _), existing in sessions.items():
-                if session_nas == nas and existing["Acct-Status-Type"] != "Stop":
-                    existing["_uncertain"] = "yes"
-            continue
-        if not nas or not identifier or status not in {"Start", "Stop", "Interim-Update"}:
-            continue
-        key = (nas, identifier)
-        if status == "Start":
-            sessions[key] = {"_started": record["Timestamp"]}
-        merged = sessions.setdefault(key, {})
-        merged.update(record)
-    rows = []
-    for (nas, identifier), record in sessions.items():
-        updated = int(record["Timestamp"])
-        if not 0 <= updated <= 253402214400:
-            continue
-        duration = record.get("Acct-Session-Time", "")
-        start = (
-            int(record["_started"])
-            if "_started" in record
-            else updated - int(duration)
-            if duration.isdigit()
-            else None
-        )
-        status = record["Acct-Status-Type"]
-        rows.append(
-            {
-                "user": record.get("User-Name", ""),
-                "session": identifier,
-                "client": nas,
-                "device": record.get("Calling-Station-Id", ""),
-                "access_point": record.get("Called-Station-Id", ""),
-                "address": record.get("Framed-IP-Address", ""),
-                "started": _utc(start)
-                if start is not None and start >= 0
-                else (_utc(updated) if status == "Start" else "Unknown"),
-                "ended": _utc(updated) if status == "Stop" else "",
-                "updated": _utc(updated),
-                "duration": duration,
-                "received": _octets(record, "Input"),
-                "sent": _octets(record, "Output"),
-                "status": "Ended"
-                if status == "Stop"
-                else ("Stale" if now - updated > 900 or record.get("_uncertain") else "Active"),
-            }
-        )
+        if status in {"Accounting-On", "Accounting-Off"}:
+            _reset_nas(sessions, _nas(record))
+        elif status in {"Start", "Stop", "Interim-Update"}:
+            _fold_record(sessions, record, aliases, current)
+    rows = [
+        _session_row(nas, identifier, record, now) for (nas, identifier), record in sessions.items()
+    ]
     return sorted(rows, key=lambda row: row["updated"], reverse=True)[:MAX_ROWS]
+
+
+def _fold_record(
+    sessions: dict[tuple[str, str], dict[str, str]],
+    record: dict[str, str],
+    aliases: dict[tuple[str, str], tuple[str, str]],
+    current: dict[tuple[str, str], tuple[str, str]],
+) -> None:
+    key = _key(record, aliases, current)
+    if key is None:
+        return
+    short_key = (_nas(record), record.get("Acct-Session-Id", ""))
+    if key != short_key and short_key in sessions and key not in sessions:
+        sessions[key] = sessions.pop(short_key)
+    if record["Acct-Status-Type"] == "Start":
+        sessions[key] = {"_started": record["Timestamp"]}
+    sessions.setdefault(key, {}).update(record)
+
+
+def _started(record: dict[str, str], updated: int) -> str:
+    start = _decimal(record.get("_started", ""))
+    duration = _decimal(record.get("Acct-Session-Time", ""))
+    if start is None and duration is not None:
+        start = updated - duration
+    if start is None or not 0 <= start <= MAX_EPOCH:
+        return "Unknown"
+    return _utc(start)
+
+
+def _session_row(nas: str, identifier: str, record: dict[str, str], now: float) -> dict[str, str]:
+    updated = int(record["Timestamp"])
+    status = "Active"
+    ended = ""
+    if record["Acct-Status-Type"] == "Stop":
+        status = "Ended"
+        ended = _utc(updated)
+    elif now - updated > 900 or record.get("_uncertain"):
+        status = "Stale"
+    duration = record.get("Acct-Session-Time", "")
+    return {
+        "user": record.get("User-Name", ""),
+        "session": identifier,
+        "client": nas,
+        "device": record.get("Calling-Station-Id", ""),
+        "access_point": record.get("Called-Station-Id", ""),
+        "address": record.get("Framed-IP-Address", ""),
+        "started": _started(record, updated),
+        "ended": ended,
+        "updated": _utc(updated),
+        "duration": duration if _decimal(duration) is not None else "",
+        "received": _octets(record, "Input"),
+        "sent": _octets(record, "Output"),
+        "status": status,
+    }
 
 
 def _utc(epoch: int) -> str:
@@ -223,6 +337,6 @@ def _utc(epoch: int) -> str:
 
 
 def _octets(record: dict[str, str], direction: str) -> str:
-    low = record.get(f"Acct-{direction}-Octets", "")
-    high = record.get(f"Acct-{direction}-Gigawords", "0")
-    return str(int(low) + (int(high) << 32)) if low.isdigit() and high.isdigit() else ""
+    low = _decimal(record.get(f"Acct-{direction}-Octets", ""))
+    high = _decimal(record.get(f"Acct-{direction}-Gigawords", "0"))
+    return str(low + (high << 32)) if low is not None and high is not None else ""

@@ -100,7 +100,7 @@ def _load(service: str, resource: str) -> dict[str, Any]:
             "rows": payload["rows"][:500] if payload["status"] == "available" else [],
             "reason": str(payload.get("reason", "")),
         }
-    except (httpx.HTTPError, ValueError, TypeError):
+    except (httpx.HTTPError, OSError, ValueError, TypeError):
         return {
             "status": "unavailable",
             "rows": [],
@@ -110,7 +110,7 @@ def _load(service: str, resource: str) -> dict[str, Any]:
         }
 
 
-@logs_web.route("/logs/<page>")
+@logs_web.get("/logs/<page>")
 @admin_required
 def index(page: str) -> Any:
     """Render a bounded native-service log with the shared searchable table controls."""

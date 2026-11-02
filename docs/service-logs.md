@@ -59,7 +59,10 @@ Do not mount all host logs or enable password/debug logging for this feature.
   in accounting, and configure access points/switches to send Start, Stop and
   interim updates (for example every five minutes).
 
-Sessions are keyed by NAS and session ID. Start resets reused IDs; interim and
+Sessions are keyed by NAS and session ID. Records linking the short and unique
+accounting identifiers join their retained history; ambiguous reused short IDs
+use the current Start association. Identifiers that never co-occur cannot be
+reliably linked. Same-second records process Start before interim updates and Stop. Start resets reused IDs; interim and
 Stop records update them. Reported duration, timestamps, MAC/IP, NAS, called
 station and input/output counters are shown where available, including 32-bit
 counter wraps. Active means a Start/interim record was received within 15 minutes;
@@ -71,8 +74,8 @@ connected device becomes stale. Records without a NAS/session identifier are ign
 ## Retention and limits
 
 No service logs or service configuration are stored in NetAdmin's SQLite database.
-The source daemon/log collector owns retention. Each file read is capped at its
-last 2 MiB and each page at 500 rows. Event pages read the current file only.
+The source daemon/log collector owns retention. Each file data tail is capped at its
+last 2 MiB (plus one boundary-check byte, charged to the request budget) and each page at 500 rows. Event pages read the current file only.
 Accounting traverses at most 256 NAS directories and 4096 entries per directory.
 It reads at most 256 detail files and 16 MiB per request, newest files
 first; archive older detail files when the file count exceeds this limit.
@@ -85,3 +88,8 @@ accounting timestamps are displayed in UTC. Malformed/unrecognized lines are ign
 Reference: [FreeRADIUS logging](https://wiki.freeradius.org/config/Logging),
 [FreeRADIUS accounting](https://wiki.freeradius.org/guide/Data-Usage-Reporting),
 and [BIND logging categories](https://bind9.readthedocs.io/en/latest/reference.html).
+
+Rotating files are skipped individually while other readable accounting files remain
+available. The current event file is retried once after an open/read failure.
+Accounting retention-limit messages are separate from mount/permission errors.
+Out-of-range timestamps and non-ASCII numeric values are ignored before folding.

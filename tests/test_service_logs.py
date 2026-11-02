@@ -5,7 +5,6 @@ import time
 
 import httpx
 import pytest
-from test_app import make_app
 
 from netadmin.agents.dhcp import create_dhcp_agent
 from netadmin.agents.dns import create_dns_agent
@@ -13,6 +12,7 @@ from netadmin.agents.radius import create_radius_agent
 from netadmin.services import service_logs as logs
 from netadmin.services.agents import AgentClient
 from netadmin.services.dns import AgentDnsService
+from tests.test_app import make_app
 
 
 def detail(status, epoch, session="one", nas="192.0.2.1", extra=""):
@@ -53,7 +53,8 @@ def test_dhcp_and_ddns_native_records():
         "02-Nov-2026 10:01:00.123 updating zone 'example/IN': deleting rrset at 'phone.example' A\n"
         "update denied\n"
     )
-    assert rows[0]["action"] == "Delete" and rows[0]["value"] == ""
+    assert rows[0]["action"] == "Delete"
+    assert rows[0]["value"] == ""
     assert rows[1]["client"] == "192.0.2.4"
     assert rows[1]["value"] == "192.0.2.2"
     assert logs.timestamp("unrecognised") == "Unknown"
@@ -130,7 +131,8 @@ def test_agent_log_configuration_and_auth(factory, variable, endpoint, monkeypat
     assert client.get(url, headers=headers).json["status"] == "unavailable"
     path.write_text("")
     result = client.get(url, headers=headers)
-    assert result.status_code == 200 and result.json["status"] == "available"
+    assert result.status_code == 200
+    assert result.json["status"] == "available"
     assert result.json["rows"] == []
     assert client.post(url, headers=headers).status_code in {403, 405}
     monkeypatch.setenv(variable, "../bad")
@@ -144,11 +146,15 @@ def test_accounting_agent_directory(monkeypatch, tmp_path):
     nas = tmp_path / "192.0.2.1"
     nas.mkdir()
     (nas / "detail-20261102").write_text(detail("Start", int(time.time())))
-    (nas / "auth-detail-20261102").write_text("SECRET")
+    (nas / "auth-detail-20261102").write_text(
+        detail("Start", int(time.time()), session="secret", extra='\tUser-Name = "MUST-NOT-READ"\n')
+    )
     client = create_radius_agent().test_client()
     result = client.get("/logs/sessions", headers={"Authorization": "Bearer test-token"}).json
     assert result["status"] == "available"
     assert result["rows"][0]["user"] == "alice"
+    assert len(result["rows"]) == 1
+    assert "MUST-NOT-READ" not in str(result)
     for index in range(257):
         (nas / f"detail-{index}").touch()
     assert (
@@ -202,6 +208,12 @@ def test_pages_authorization_exact_sources_and_activity_isolation(
     assert response.status_code == 200
     assert b'data-table-filter="service-log"' in response.data
     assert b"<script>synthetic-login" not in response.data
+    if service == "radius":
+        assert b"&lt;script&gt;synthetic-login&lt;/script&gt;" in response.data
+    elif service == "dhcp":
+        assert b"synthetic-lease" in response.data
+    else:
+        assert b"synthetic-ddns" in response.data
     expected = app.extensions[f"netadmin_{service}"]
     assert calls == [(expected.client if service == "dns" else expected, f"logs/{resource}")]
     for url in ("/", "/audit"):
