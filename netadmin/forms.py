@@ -9,7 +9,7 @@ from wtforms import (
     SubmitField,
     TextAreaField,
 )
-from wtforms.validators import DataRequired, EqualTo, Length, Regexp
+from wtforms.validators import DataRequired, EqualTo, Length, Optional, Regexp
 
 
 class LoginForm(FlaskForm):
@@ -25,7 +25,9 @@ class PasswordForm(FlaskForm):
 
     current_password = PasswordField("Current password", validators=[DataRequired()])
     new_password = PasswordField(
-        "New password", validators=[DataRequired(), Length(min=12, max=1024)]
+        "New password",
+        validators=[DataRequired(), Length(min=12, max=256)],
+        description="12 or more characters, up to 256 UTF-8 bytes.",
     )
     confirm_password = PasswordField(
         "Confirm new password", validators=[DataRequired(), EqualTo("new_password")]
@@ -93,7 +95,12 @@ class RadiusUserForm(FlaskForm):
     """RADIUS user mutation form."""
 
     username = StringField("Username", validators=[DataRequired(), Regexp(r"^[A-Za-z0-9_.@-]+$")])
-    password = PasswordField("Password", validators=[Length(min=12, max=1024)])
+    password = PasswordField(
+        "Password",
+        validators=[Optional(strip_whitespace=False), Length(min=12, max=256)],
+        description="Blank keeps the existing password. New passwords use crypt and NT hashes; "
+        "12 or more characters, up to 256 UTF-8 bytes.",
+    )
     role = SelectField("Role", choices=[("standard", "Standard"), ("admin", "Administrator")])
     disabled = BooleanField("Disabled")
     submit = SubmitField("Save user")

@@ -130,7 +130,12 @@ def test_radius_agent_workflow(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     monkeypatch.setenv("RADIUS_AUTHORIZE_FILE", str(authorize))
     monkeypatch.setenv("RADIUS_CLIENTS_FILE", str(clients))
     monkeypatch.setenv("RADIUS_MANAGED_CLIENTS_FILE", str(managed_clients))
-    monkeypatch.setattr("netadmin.agents.radius.hash_password", lambda value: f"$6${value}")
+    from netadmin.services.radius_users import PasswordHashes
+
+    monkeypatch.setattr(
+        "netadmin.agents.radius.hash_password",
+        lambda value, **kwargs: PasswordHashes(f"$6${value}", "a" * 32),
+    )
     monkeypatch.setattr(
         "netadmin.agents.radius.subprocess.run", lambda *args, **kwargs: SimpleNamespace()
     )
