@@ -216,3 +216,10 @@ If a CA or RADIUS certificate request times out, the audit outcome is **Unknown*
 than a confirmed failure. Refresh the certificate status before retrying; a
 bounded status request may still report the agent unavailable while activation
 finishes. A status change alone does not prove which operation succeeded.
+
+CA audit records identify the request ID, certificate record or serial. After a
+lost response (timeout, read/protocol error or uncertain server response), the
+issuance screen keeps the original CSR, lifetime and request ID. **Retry same
+request** reuses that identity; it does not silently start another issuance.
+step-ca renewals reject CN/SAN/lifetime overrides; use explicit enrolment to
+change the identity. Enrolment warns when DNS/IP-only inputs replace other SAN types.

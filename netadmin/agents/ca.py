@@ -129,7 +129,10 @@ def _issue_record(directory: Path, pem: str, days: int, digest: str) -> Any:
             _publish_certificate(candidate, output, csr)
         elif attempted.exists():
             return jsonify(
-                {"error": "Issuance outcome is uncertain; reconcile CA records before retrying"}
+                {
+                    "error": "Issuance outcome is uncertain; reconcile CA records before retrying",
+                    "outcome": "unknown",
+                }
             ), 409
         else:
             signing_configuration()

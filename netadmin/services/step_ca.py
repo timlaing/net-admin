@@ -232,6 +232,12 @@ def _validate_issuer(certificate: x509.Certificate, index: int) -> None:
         constraints.path_length is not None and index - 1 > constraints.path_length
     ):
         raise ValueError("Invalid issuing CA constraints")
+    try:
+        usage = certificate.extensions.get_extension_for_class(x509.KeyUsage).value
+    except x509.ExtensionNotFound:
+        return
+    if not usage.key_cert_sign:
+        raise ValueError("Issuing CA cannot sign certificates")
 
 
 def failure_category(error: Exception) -> str:

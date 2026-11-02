@@ -36,23 +36,77 @@ def _client() -> AgentClient:
     )
 
 
-def _audit(action: str, success: bool | None) -> None:
+UNCERTAIN_TRANSPORT_ERRORS = (
+    httpx.TimeoutException,
+    httpx.ReadError,
+    httpx.RemoteProtocolError,
+    httpx.WriteError,
+)
+
+
+def _audit(action: str, success: bool | None, details: dict[str, str]) -> None:
+    target = next(
+        (details[key] for key in ("serial", "certificate_id", "request_id") if details.get(key)),
+        "Certificates",
+    )
     cast(Store, extension("netadmin_store")).audit(
-        current_identity().username, f"ca.{action}", "Certificates", success
+        current_identity().username, f"ca.{action}", target, success, details
     )
 
 
-def _unknown_outcome(action: str) -> Any:
-    _audit(action, None)
+def _request_id(value: str | None = None) -> str:
+    value = value or request.form.get("request_id") or uuid.uuid4().hex
+    if len(value) != 32 or any(char not in "0123456789abcdef" for char in value):
+        abort(400, "Invalid request ID")
+    return uuid.UUID(hex=value).hex
+
+
+def _unknown_outcome(action: str, details: dict[str, str]) -> Any:
+    _audit(action, None, details)
     flash("CA operation outcome is unknown. Inspect the inventory before retrying.", "warning")
+    if action == "issue":
+        # Render the original form rather than creating a new operation on redirect.
+        return render_template(
+            CA_TEMPLATE,
+            certificates=[],
+            read_only=False,
+            inventory_unavailable=True,
+            pending_issue=True,
+            request_id=details["request_id"],
+            csr=request.form.get("csr", ""),
+            days=request.form.get("days", "365"),
+        ), 202
     return redirect(url_for(CA_INDEX))
+
+
+def _reported_unknown(error: httpx.HTTPError) -> bool:
+    if not isinstance(error, httpx.HTTPStatusError):
+        return False
+    if error.response.status_code >= 500:
+        return True
+    try:
+        payload = error.response.json()
+        return isinstance(payload, dict) and payload.get("outcome") == "unknown"
+    except ValueError:
+        return False
+
+
+def _operation_error(action: str, details: dict[str, str], error: httpx.HTTPError) -> Any:
+    if isinstance(error, UNCERTAIN_TRANSPORT_ERRORS) or _reported_unknown(error):
+        return _unknown_outcome(action, details)
+    _audit(action, False, details)
+    raise error
 
 
 @ca_web.get("/certificates")
 @admin_required
 def index() -> Any:
     """List the agent's public issuance inventory."""
-    return _render_inventory(_client(), request_id=uuid.uuid4().hex)
+    return _render_inventory(
+        _client(),
+        request_id=_request_id(request.args.get("request_id")),
+        days=request.args.get("days", "365"),
+    )
 
 
 def _render_inventory(client: AgentClient, **context: Any) -> Any:
@@ -108,32 +162,30 @@ def inspect() -> Any:
 @ca_web.post("/certificates")
 @admin_required
 def issue() -> Any:
-    """Approve a CSR and download its signed certificate chain."""
+    """Approve a CSR and preserve its operation identity across uncertain responses."""
     client = _client()
     if client.read_only():
         abort(403)
     if request.form.get("confirm") != "yes":
         abort(400)
+    details = {"request_id": _request_id()}
     try:
         result = client.post(
             "certificates",
             {
                 "csr": request.form.get("csr", ""),
                 "days": request.form.get("days", "365"),
-                **(
-                    {"request_id": request.form["request_id"]}
-                    if request.form.get("request_id")
-                    else {}
-                ),
+                "request_id": details["request_id"],
             },
             timeout=60,
         )
-    except httpx.TimeoutException:
-        return _unknown_outcome("issue")
-    except httpx.HTTPError:
-        _audit("issue", False)
-        raise
-    _audit("issue", True)
+    except httpx.HTTPError as error:
+        return _operation_error("issue", details, error)
+    details["certificate_id"] = str(result["id"])
+    certificate = result.get("certificate", {})
+    if isinstance(certificate, dict) and certificate.get("serial"):
+        details["serial"] = str(certificate["serial"])
+    _audit("issue", True, details)
     flash("Certificate issued. Download its chain from the inventory.", "success")
     return redirect(url_for(CA_INDEX, issued=result["id"]))
 
@@ -147,18 +199,16 @@ def revoke(identifier: str) -> Any:
         abort(403)
     if request.form.get("confirm") != "yes":
         abort(400)
+    details = {"certificate_id": identifier}
     try:
         client.post(
             f"certificates/{identifier}/revoke",
             {"reason": request.form.get("reason", "0")},
             timeout=60,
         )
-    except httpx.TimeoutException:
-        return _unknown_outcome("revoke")
-    except httpx.HTTPError:
-        _audit("revoke", False)
-        raise
-    _audit("revoke", True)
+    except httpx.HTTPError as error:
+        return _operation_error("revoke", details, error)
+    _audit("revoke", True, details)
     flash(
         "Revocation recorded. Clients must check the CA's CRL to reject it before expiry.",
         "success",
@@ -175,18 +225,16 @@ def revoke_serial() -> Any:
         abort(403)
     if request.form.get("confirm") != "yes":
         abort(400)
+    details = {"serial": request.form.get("serial", "")}
     try:
         client.post(
             "revoke",
             {"serial": request.form.get("serial", ""), "reason": request.form.get("reason", "0")},
             timeout=60,
         )
-    except httpx.TimeoutException:
-        return _unknown_outcome("revoke")
-    except httpx.HTTPError:
-        _audit("revoke", False)
-        raise
-    _audit("revoke", True)
+    except httpx.HTTPError as error:
+        return _operation_error("revoke", details, error)
+    _audit("revoke", True, details)
     flash("Revocation recorded. Automatic renewal of this serial is blocked.", "success")
     return redirect(url_for(CA_INDEX))
 
@@ -203,11 +251,14 @@ def download(identifier: str) -> Any:
         return render_template(CA_TEMPLATE, unavailable=True, certificates=[], read_only=True), 502
     except httpx.HTTPError:
         return render_template(CA_TEMPLATE, unavailable=True, certificates=[], read_only=True), 502
+    filename = {"crl": "certificate-revocation-list.pem", "root": "root-ca.pem"}.get(
+        identifier, "certificate-chain.pem"
+    )
     return Response(
         result["pem"],
         mimetype="application/x-pem-file",
         headers={
-            "Content-Disposition": 'attachment; filename="certificate-chain.pem"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": "no-store",
         },
     )

@@ -169,6 +169,10 @@ def _request_error(action: str, options: dict[str, Any]) -> Any:
         return jsonify({"error": "Use the CA service for authority and revocation operations"}), 409
     if not radius_step_ca.enabled() and action == "enroll-step-ca":
         return jsonify({"error": "step-ca backend is not enabled"}), 409
+    if radius_step_ca.enabled() and action == "renew-server" and options:
+        return jsonify(
+            {"error": "step-ca renewal preserves the current identity and CA-controlled lifetime"}
+        ), 409
     if action == "create-server" and not {"common_name", "sans"} <= options.keys():
         return jsonify({"error": "New certificates require CN and SANs"}), 400
     return None

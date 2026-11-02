@@ -744,5 +744,190 @@ def test_timed_out_ca_operations_are_audited_as_unknown(tmp_path, monkeypatch, p
     monkeypatch.setattr(
         "netadmin.ca_web._client", lambda: SimpleNamespace(read_only=lambda: False, post=timeout)
     )
-    assert client.post(path, data={"confirm": "yes"}).status_code == 302
+    expected = 202 if path == "/certificates" else 302
+    assert client.post(path, data={"confirm": "yes", "serial": "abc123"}).status_code == expected
     assert app.extensions["netadmin_store"].recent_audit()[0]["success"] is None
+
+
+@pytest.mark.parametrize(
+    "options", [{"common_name": "new.test"}, {"sans": "new.test"}, {"days": 30}]
+)
+def test_step_ca_renewal_rejects_identity_and_lifetime_overrides(material, monkeypatch, options):
+    client, body = agent(material, monkeypatch)
+    monkeypatch.setenv("RADIUS_CERT_BACKEND", "step-ca")
+    before = (material[0] / "server.pem").read_bytes()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Renewal must not run when overrides were supplied")
+
+    monkeypatch.setattr(radius_step_ca, "changes", forbidden)
+    result = client.post(
+        "/certificates", json={**body, "action": "renew-server", **options}, headers=AUTH
+    )
+    assert result.status_code == 409
+    assert (material[0] / "server.pem").read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "error_name", ["ReadTimeout", "ReadError", "RemoteProtocolError", "WriteError"]
+)
+def test_uncertain_issuance_retries_keep_request_id_and_audit_reference(
+    tmp_path, monkeypatch, error_name
+):
+    import json
+    import re
+
+    import httpx
+
+    app, client = admin_client(tmp_path)
+    calls = []
+    operation_id = "d" * 32
+    pem = csr()
+
+    def post(path, payload, **kwargs):
+        calls.append(payload.copy())
+        if len(calls) == 1:
+            raise getattr(httpx, error_name)("response lost after issuance")
+        return {"id": operation_id, "certificate": {"serial": "beef"}}
+
+    remote = SimpleNamespace(
+        read_only=lambda: False, post=post, get=lambda path: {"certificates": []}
+    )
+    monkeypatch.setattr("netadmin.ca_web._client", lambda: remote)
+    payload = {"csr": pem, "days": "30", "request_id": operation_id, "confirm": "yes"}
+    uncertain = client.post("/certificates", data=payload)
+    assert uncertain.status_code == 202
+    assert "Retry same request" in uncertain.text
+    assert "not refreshed" in uncertain.text
+    saved_id = re.search(r'name="request_id" value="([0-9a-f]{32})"', uncertain.text)[1]
+    assert saved_id == operation_id
+    inventory = client.get("/certificates", query_string={"request_id": saved_id, "days": "30"})
+    assert f'name="request_id" value="{operation_id}"' in inventory.text
+    assert 'value="30"' in inventory.text
+    assert pem in uncertain.text
+    event = app.extensions["netadmin_store"].recent_audit()[0]
+    assert event["success"] is None
+    assert event["target"] == operation_id
+    assert json.loads(event["details"])["request_id"] == operation_id
+    inspected = client.post("/certificates/inspect", data=payload)
+    assert f'value="{operation_id}"' in inspected.text
+    assert client.post("/certificates", data={**payload, "request_id": saved_id}).status_code == 302
+    assert {call["request_id"] for call in calls} == {operation_id}
+    success = app.extensions["netadmin_store"].recent_audit()[0]
+    assert success["success"] == 1
+    assert success["target"] == "beef"
+    assert json.loads(success["details"])["request_id"] == operation_id
+
+
+@pytest.mark.parametrize("status,outcome", [(409, "unknown"), (502, None)])
+def test_uncertain_agent_response_preserves_the_issuance_form(
+    tmp_path, monkeypatch, status, outcome
+):
+    import httpx
+
+    app, client = admin_client(tmp_path)
+
+    def post(*args, **kwargs):
+        response = httpx.Response(
+            status,
+            json={"outcome": outcome},
+            request=httpx.Request("POST", "https://ca.test/certificates"),
+        )
+        raise httpx.HTTPStatusError("uncertain", request=response.request, response=response)
+
+    monkeypatch.setattr(
+        "netadmin.ca_web._client", lambda: SimpleNamespace(read_only=lambda: False, post=post)
+    )
+    result = client.post(
+        "/certificates", data={"csr": csr(), "request_id": "e" * 32, "confirm": "yes"}
+    )
+    assert result.status_code == 202
+    assert 'value="' + "e" * 32 + '"' in result.text
+    assert app.extensions["netadmin_store"].recent_audit()[0]["success"] is None
+
+
+def test_revocation_audit_identifies_record_and_serial(tmp_path, monkeypatch):
+    import json
+
+    app, client = admin_client(tmp_path)
+    monkeypatch.setattr(
+        "netadmin.ca_web._client",
+        lambda: SimpleNamespace(
+            read_only=lambda: False, post=lambda *a, **k: {"status": "revoked"}
+        ),
+    )
+    identifier = "a" * 32
+    assert (
+        client.post(f"/certificates/{identifier}/revoke", data={"confirm": "yes"}).status_code
+        == 302
+    )
+    by_record = app.extensions["netadmin_store"].recent_audit()[0]
+    assert by_record["target"] == identifier
+    assert json.loads(by_record["details"])["certificate_id"] == identifier
+    assert (
+        client.post(
+            "/certificates/revoke-serial", data={"confirm": "yes", "serial": "abc123"}
+        ).status_code
+        == 302
+    )
+    by_serial = app.extensions["netadmin_store"].recent_audit()[0]
+    assert by_serial["target"] == "abc123"
+    assert json.loads(by_serial["details"])["serial"] == "abc123"
+
+
+@pytest.mark.parametrize("can_sign", [False, True])
+def test_issuer_key_usage_must_allow_certificate_signing(material, can_sign):
+    _, ca, server, key = material
+    issuer = (
+        x509.CertificateBuilder()
+        .subject_name(ca.subject)
+        .issuer_name(ca.subject)
+        .public_key(key.public_key())
+        .serial_number(777)
+        .not_valid_before(datetime.now(UTC) - timedelta(days=1))
+        .not_valid_after(datetime.now(UTC) + timedelta(days=365))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=can_sign,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            True,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    server_pem, issuer_pem = server.public_bytes(PEM), issuer.public_bytes(PEM)
+    if can_sign:
+        assert validate_server_chain(server_pem, issuer_pem)[-1] == issuer
+    else:
+        with pytest.raises(ValueError, match="cannot sign"):
+            validate_server_chain(server_pem, issuer_pem)
+
+
+def test_step_enrolment_warns_about_removing_other_san_types(tmp_path, material):
+    from netadmin.services.radius_certificates import certificate_info
+
+    app, client = admin_client(tmp_path)
+    status = {
+        "available": True,
+        "can_manage": True,
+        "backend": "step-ca",
+        "auto_renew": True,
+        "enrolled": False,
+        "has_crl": False,
+        "ca": certificate_info(material[1]),
+        "server": {**certificate_info(material[2]), "unsupported_sans": True},
+    }
+    app.extensions["netadmin_radius"] = SimpleNamespace(
+        read_only=lambda: False, get=lambda path: status
+    )
+    page = client.get("/radius/certificates")
+    assert page.status_code == 200
+    assert "Enrolment removes the current URI, email" in page.text
