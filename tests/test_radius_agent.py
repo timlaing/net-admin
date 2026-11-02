@@ -1,17 +1,24 @@
 """Tests for FreeRADIUS user rendering."""
 
 from netadmin.agents.radius import _client_entries, parse_users, render_users
+from netadmin.services.radius_users import ManagedUser, PasswordHashes
 
 
 def test_user_output_never_contains_hash() -> None:
-    rendered = render_users({"alice": ("$6$secret-hash", "netadmin-standard", False)})
+    rendered = render_users(
+        {"alice": ManagedUser(PasswordHashes("$6$secret-hash", "a" * 32), "netadmin-standard")}
+    )
     users = parse_users(rendered)
-    assert users == [{"username": "alice", "role": "netadmin-standard", "disabled": False}]
+    assert users[0]["username"] == "alice"
+    assert users[0]["password_kind"] == "Crypt-Password + NT-Password"  # noqa: S105
+    assert users[0]["needs_password_reset"] is False
+    assert "secret-hash" not in str(users)
+    assert "a" * 32 not in str(users)
     assert "password" not in users[0]
 
 
 def test_disabled_user() -> None:
-    rendered = render_users({"bob": ("$6$hash", "netadmin-admin", True)})
+    rendered = render_users({"bob": ManagedUser(PasswordHashes("$6$hash"), "netadmin-admin", True)})
     assert parse_users(rendered)[0]["disabled"] is True
 
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add RADIUS authentication mode toggles for EAP-MSCHAPv2, PEAP with MSCHAPv2 and EAP-TLS, with coexistence, a preferred mode, native validation and restart rollback. Hide unused certificate details while retaining explicit certificate preparation before migration.
+
+- Store synchronized SHA-512 crypt and NT hashes for new or changed RADIUS passwords, supporting PAP and EAP-MSCHAPv2. Migration converts cleartext to both formats while preserving pool/address replies. Existing single hashes are preserved and marked for password reset.
+
 ## 0.7.0
 
 - Require patched cryptography 50.x for certificate operations.

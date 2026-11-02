@@ -46,6 +46,7 @@ nav:
       - 'Deploying 0.5.0': deployment-0.5.0.md
       - 'ISC → Kea migration': migration.md
   - Service logs: service-logs.md
+      - 'RADIUS authentication modes': radius-authentication.md
   - Security: security.md
   - Development: development.md
   - Contributing: contributing.md

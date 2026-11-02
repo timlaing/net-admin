@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block title %}RADIUS authentication · NetAdmin{% endblock %}
+{% block content %}
+<a href="{{ url_for('web.radius_index') }}">← RADIUS</a>
+<div class="page-heading mt-3"><div><p class="eyebrow">ACCESS &amp; IDENTITY</p><h1>Authentication modes</h1><p>Choose how devices sign in. Enable multiple modes while migrating, then update each device’s connection profile.</p></div></div>
+{% if not authentication.available %}<output class="alert alert-info d-block">{{ authentication.reason }}</output>
+{% else %}
+{% if not authentication.can_manage %}<output class="alert alert-info d-block">{{ authentication.reason }}</output>{% endif %}
+{% if authentication.other_methods %}<output class="alert alert-warning d-block">Other configured EAP methods: {{ authentication.other_methods|join(', ') }}. Saving replaces these with the modes selected below. PAP authentication is unchanged.</output>{% endif %}
+{% if read_only %}<output class="alert alert-info d-block">This agent is read-only. Authentication settings cannot be changed.</output>{% endif %}
+<section class="card"><div class="card-body"><form method="post" data-radius-modes>
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="revision" value="{{ authentication.revision }}">
+<fieldset {% if read_only or not authentication.can_manage %}disabled{% endif %}><legend class="h4">Allowed modes</legend>
+{% for value, label in modes.items() %}<div class="form-check my-3"><input class="form-check-input" type="checkbox" name="enabled" id="mode-{{ value }}" value="{{ value }}" {% if value in authentication.enabled %}checked{% endif %} aria-describedby="help-{{ value }}"><label class="form-check-label" for="mode-{{ value }}">{{ label }}</label><p class="form-text mb-0" id="help-{{ value }}">{% if value == 'mschapv2' %}Username and password without a TLS tunnel. Keep enabled while migrating existing devices.{% elif value == 'peap' %}Username and password inside a TLS tunnel. Devices must trust the server CA and validate its name. Users need NT hashes.{% else %}Certificate authentication. Each device needs a client certificate and private key from a CA trusted by RADIUS.{% endif %}</p></div>{% endfor %}
+<label class="form-label" for="preferred">Preferred mode</label><select class="form-select mb-3" id="preferred" name="preferred" required>{% if authentication.preferred not in modes %}<option value="" selected>Select a preferred mode</option>{% endif %}{% for value, label in modes.items() %}<option value="{{ value }}" {% if authentication.preferred == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+<p class="form-text">The server offers this mode first. Devices can negotiate any other enabled mode. Select at least one mode, and enable the preferred mode.</p>
+<div class="form-check my-3"><input class="form-check-input" type="checkbox" id="confirm-modes" name="confirm" value="yes" required><label class="form-check-label" for="confirm-modes">I understand this restarts RADIUS and devices may need updated connection profiles.</label></div>
+<button class="btn btn-primary">Apply modes</button></fieldset>
+<div class="alert alert-info mt-4 mb-0" data-mode-certificates {% if not authentication.uses_certificates %}hidden{% endif %}><p>PEAP and EAP-TLS use server certificates. Prepare valid certificates and distribute CA trust before switching devices.</p><a class="btn btn-outline-primary" href="{{ url_for('radius_certificates.index', prepare=1) }}">{{ 'Manage certificates' if authentication.uses_certificates else 'Prepare certificates' }}</a></div>
+</form></div></section>
+{% endif %}
+<script src="{{ url_for('static', filename='radius_modes.js') }}" defer></script>
+{% endblock %}

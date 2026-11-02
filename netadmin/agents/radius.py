@@ -7,121 +7,91 @@ import os
 import re
 import secrets
 import subprocess  # nosec B404
+import time
 from collections.abc import Callable
+from dataclasses import replace
+from functools import wraps
 from pathlib import Path
 from typing import Any, cast
 
 from flask import Flask, current_app, jsonify
 
 from netadmin.agents.common import (
-    atomic_validated_write,
     configured_path,
     create_agent,
     json_object,
     validated_transaction,
 )
 from netadmin.agents.radius_certificates import register_certificates
+from netadmin.agents.radius_modes import register_modes
+from netadmin.agents.radius_state import file_lock, recover, transaction
 from netadmin.agents.service_logs import register_logs
 from netadmin.services.radius_files import (
     edit_client,
-    migrate_authorize,
-    migrate_to_managed,
-    parse_authorize,
     parse_clients,
     render_clients,
 )
-
-USER_PATTERN = re.compile(
-    r"^(?P<disabled>#DISABLED )?(?P<username>[A-Za-z0-9_.@-]+)\s+"
-    r"Crypt-Password\s*:=\s*\"(?P<password>[^\"]+)\""
-    r"(?:,\s*Filter-Id\s*:=\s*\"(?P<role>[^\"]+)\")?\s*$"
+from netadmin.services.radius_users import (
+    ManagedUser,
+    PasswordHashes,
+    managed_entries,
+    migrate_to_managed,
+    parse_authorize,
+    parse_users,
+    render_users,
+    user_blocks,
 )
 
-
-def parse_users(text: str) -> list[dict[str, Any]]:
-    """Parse NetAdmin-managed RADIUS users without returning password hashes."""
-    users = []
-    for line in text.splitlines():
-        match = USER_PATTERN.match(line)
-        if match:
-            users.append(
-                {
-                    "username": match.group("username"),
-                    "role": match.group("role") or "netadmin-standard",
-                    "disabled": bool(match.group("disabled")),
-                }
-            )
-    return users
+__all__ = ["create_radius_agent", "hash_password", "hash_passwords", "parse_users", "render_users"]
 
 
-def _entries(text: str) -> dict[str, tuple[str, str, bool]]:
-    result = {}
-    for line in text.splitlines():
-        match = USER_PATTERN.match(line)
-        if match:
-            result[match.group("username")] = (
-                match.group("password"),
-                match.group("role") or "netadmin-standard",
-                bool(match.group("disabled")),
-            )
-    return result
+def _entries(text: str) -> dict[str, ManagedUser]:
+    return managed_entries(text)
 
 
-def render_users(entries: dict[str, tuple[str, str, bool]]) -> str:
-    """Render a dedicated FreeRADIUS users include."""
-    lines = ["# Managed by NetAdmin. Password hashes are never returned by the API."]
-    for username, (password_hash, role, disabled) in sorted(entries.items()):
-        prefix = "#DISABLED " if disabled else ""
-        lines.append(
-            f'{prefix}{username} Crypt-Password := "{password_hash}", Filter-Id := "{role}"'
-        )
-    return "\n".join(lines) + "\n"
+def validate_password(password: str, minimum_length: int = 12) -> None:
+    """Reject invalid password length, UTF-8 byte size or unsupported characters."""
+    if (
+        len(password) < minimum_length
+        or len(password.encode("utf-8")) > 256
+        or any(c in password for c in "\x00\r\n")
+    ):
+        raise ValueError("Password length or characters are invalid")
 
 
-def hash_password(password: str) -> str:
-    """Generate SHA-512 crypt for broad FreeRADIUS libc compatibility."""
-    if len(password) < 12:
-        raise ValueError("Password must be at least 12 characters")
-    result = subprocess.run(
+def hash_passwords(
+    password: str, *, minimum_length: int = 12, timeout: float = 10
+) -> PasswordHashes:
+    """Derive synchronized crypt and NT hashes from one validated plaintext value."""
+    validate_password(password, minimum_length)
+    crypt = subprocess.run(
         ["/usr/bin/openssl", "passwd", "-6", "-stdin"],
         input=password,
         text=True,
         capture_output=True,
         check=True,
-        timeout=10,
-    )
-    return result.stdout.strip()
+        timeout=timeout,
+    ).stdout.strip()
+    nt = subprocess.run(
+        ["/usr/bin/openssl", "dgst", "-provider", "legacy", "-md4", "-binary"],
+        input=password.encode("utf-16-le"),
+        capture_output=True,
+        check=True,
+        timeout=timeout,
+    ).stdout
+    if not crypt.startswith("$6$") or len(nt) != 16:
+        raise ValueError("Password hashing failed")
+    return PasswordHashes(crypt, nt.hex())
+
+
+def hash_password(password: str, *, minimum_length: int = 12) -> str:
+    """Compatibility wrapper for callers expecting a crypt string."""
+    return hash_passwords(password, minimum_length=minimum_length).crypt
 
 
 def _managed_text(managed: Path) -> str:
     """Contents of a managed file, empty when it does not exist yet."""
     return managed.read_text(encoding="utf-8") if managed.exists() else ""
-
-
-def _stage_for(target: Path) -> Callable[[Path], None]:
-    """Build a validator that stages a candidate into the live file for radiusd."""
-    original = target.read_text(encoding="utf-8") if target.exists() else None
-
-    def validate(candidate: Path) -> None:
-        try:
-            # False positive (S2083): target is a path the agent read from the
-            # environment at startup via _configured_path(), which refuses
-            # anything non-absolute or containing '..'; candidate is the agent's
-            # own staged file. Neither is request-controlled.
-            target.write_text(candidate.read_text(encoding="utf-8"), encoding="utf-8")  # NOSONAR
-            subprocess.run(
-                ["/usr/sbin/radiusd", "-XC"],
-                check=True,
-                capture_output=True,
-                timeout=20,
-            )
-        finally:
-            if original is None:
-                target.unlink(missing_ok=True)
-            else:
-                target.write_text(original, encoding="utf-8")
-
-    return validate
 
 
 def _validate_radius() -> None:
@@ -148,10 +118,50 @@ def _reload() -> list[str]:
     return cast(list[str], current_app.config["RADIUS_RELOAD"])
 
 
+def _journal() -> Path:
+    return _path("RADIUS_MANAGED").parent / ".netadmin-users-transaction.json"
+
+
+def _activate_users() -> None:
+    _validate_radius()
+    if _reload():
+        subprocess.run(_reload(), check=True, timeout=30)  # noqa: S603
+
+
+def _recover_users() -> None:
+    recover(
+        _journal(),
+        {_path("RADIUS_AUTHORIZE").resolve(), _path("RADIUS_MANAGED").resolve()},
+        _activate_users,
+    )
+
+
+def _serialized_users(view: Callable[[], Any]) -> Callable[[], Any]:
+    @wraps(view)
+    def locked() -> Any:
+        with file_lock(_path("RADIUS_MANAGED").parent / ".netadmin-users.lock"):
+            _recover_users()
+            return view()
+
+    return locked
+
+
+def _write_users(managed: Path, entries: dict[str, ManagedUser], original: str) -> None:
+    transaction(
+        {managed: render_users(entries)},
+        _validate_radius,
+        _reload(),
+        journal=_journal(),
+        rollback=_activate_users,
+        expected={managed.resolve(): original.encode() if managed.exists() else None},
+    )
+
+
 def _health() -> Any:
     return jsonify({"status": "ok"})
 
 
+@_serialized_users
 def _users() -> Any:
     legacy = parse_authorize(_path("RADIUS_AUTHORIZE").read_text(encoding="utf-8"), "authorize")
     return jsonify(
@@ -169,83 +179,139 @@ def _users() -> Any:
     )
 
 
-def _migration_preview() -> Any:
-    _, names = migrate_authorize(
-        _path("RADIUS_AUTHORIZE").read_text(encoding="utf-8"),
-        lambda _password: "preview",
-        _pools(),
-        "netadmin-admin",
-        "netadmin-standard",
-    )
-    return jsonify({"users": names, "count": len(names)})
+def _preview_hash(password: str) -> PasswordHashes:
+    validate_password(password, 1)
+    return PasswordHashes("preview", "0" * 32)
 
 
-def _migration_apply() -> Any:
+def _migration_plan(
+    hasher: Callable[[str], PasswordHashes],
+) -> tuple[str, dict[str, ManagedUser], dict[Path, bytes | None]]:
     authorize = _path("RADIUS_AUTHORIZE")
     managed = _path("RADIUS_MANAGED")
-    remaining, legacy_entries = migrate_to_managed(
-        authorize.read_text(encoding="utf-8"),
-        hash_password,
-        _pools(),
-        "netadmin-admin",
-        "netadmin-standard",
+    source = authorize.read_text(encoding="utf-8")
+    original = _managed_text(managed)
+    existing = _entries(original)
+    # Verify eligibility and overlap before doing any expensive hashing.
+    _, preview = migrate_to_managed(
+        source, _preview_hash, _pools(), "netadmin-admin", "netadmin-standard"
     )
-    entries = _entries(_managed_text(managed))
+    if existing.keys() & preview.keys():
+        raise ValueError("Legacy and managed usernames overlap")
+    remaining, entries = migrate_to_managed(
+        source, hasher, _pools(), "netadmin-admin", "netadmin-standard"
+    )
+    expected = {
+        authorize.resolve(): source.encode(),
+        managed.resolve(): original.encode() if managed.exists() else None,
+    }
+    return remaining, entries, expected
+
+
+@_serialized_users
+def _migration_preview() -> Any:
+    try:
+        _, entries, _ = _migration_plan(_preview_hash)
+    except ValueError:
+        return jsonify(
+            {
+                "users": [],
+                "count": 0,
+                "blocked": True,
+                "reason": "Migration requires native editing: check unsupported entries, "
+                "duplicate usernames or invalid legacy passwords.",
+            }
+        )
+    names = sorted(entries)
+    return jsonify({"users": names, "count": len(names), "blocked": False})
+
+
+@_serialized_users
+def _migration_apply() -> Any:
+    deadline = time.monotonic() + 10
+
+    def bounded_hash(password: str) -> PasswordHashes:
+        if time.monotonic() >= deadline:
+            raise ValueError(
+                "Migration hashing budget exceeded; split the legacy file into batches"
+            )
+        return hash_passwords(password, minimum_length=1, timeout=5)
+
+    remaining, legacy_entries, expected = _migration_plan(bounded_hash)
+    authorize = _path("RADIUS_AUTHORIZE")
+    managed = _path("RADIUS_MANAGED")
+    original = _managed_text(managed)
+    entries = _entries(original)
     entries.update(legacy_entries)
-    validated_transaction(
+    transaction(
         {authorize: remaining, managed: render_users(entries)},
         _validate_radius,
         _reload(),
-        allowed_roots=(authorize.parent, managed.parent),
+        journal=_journal(),
+        rollback=_activate_users,
+        expected=expected,
     )
     names = sorted(legacy_entries)
     return jsonify({"users": names, "count": len(names)})
 
 
+@_serialized_users
 def _save_user() -> Any:
     body = json_object()
     username = str(body.get("username", ""))
-    if not re.fullmatch(r"[A-Za-z0-9_.@-]+", username):
+    if username == "DEFAULT" or not re.fullmatch(r"[A-Za-z0-9_.@-]+", username):
         return jsonify({"error": "Invalid username"}), 400
     managed = _path("RADIUS_MANAGED")
-    entries = _entries(_managed_text(managed))
+    original = _managed_text(managed)
+    entries = _entries(original)
+    if any(name == username for name, _ in user_blocks(_managed_text(_path("RADIUS_AUTHORIZE")))):
+        return jsonify({"error": "Migrate this legacy user before editing it"}), 409
     existing = entries.get(username)
     password = str(body.get("password", ""))
     if password:
-        password_hash = hash_password(password)
+        password_hash = hash_passwords(password)
     elif existing:
-        password_hash = existing[0]
+        password_hash = existing.passwords
     else:
-        password_hash = ""
-    if not password_hash:
+        password_hash = PasswordHashes()
+    if not password_hash.kind:
         return jsonify({"error": "Password required for a new user"}), 400
     role = str(body.get("role", "standard"))
     role_value = "netadmin-admin" if role == "admin" else "netadmin-standard"
     disabled = bool(body.get("disabled", False))
-    entries[username] = (password_hash, role_value, disabled)
-    atomic_validated_write(managed, render_users(entries), _stage_for(managed), _reload())
+    entries[username] = (
+        replace(existing, passwords=password_hash, role=role_value, disabled=disabled)
+        if existing
+        else ManagedUser(password_hash, role_value, disabled)
+    )
+    _write_users(managed, entries, original)
     return jsonify({"username": username, "role": role, "disabled": disabled})
 
 
+@_serialized_users
 def _delete_user() -> Any:
     username = str(json_object().get("username", ""))
     managed = _path("RADIUS_MANAGED")
-    entries = _entries(_managed_text(managed))
+    original = _managed_text(managed)
+    entries = _entries(original)
     entries.pop(username, None)
-    atomic_validated_write(managed, render_users(entries), _stage_for(managed), _reload())
+    _write_users(managed, entries, original)
     return jsonify({"deleted": username})
 
 
+@_serialized_users
 def _change_password() -> Any:
     body = json_object()
     username = str(body.get("username", ""))
     managed = _path("RADIUS_MANAGED")
-    entries = _entries(_managed_text(managed))
+    original = _managed_text(managed)
+    entries = _entries(original)
     if username not in entries:
         return jsonify({"error": "Unknown user"}), 404
-    _, role, disabled = entries[username]
-    entries[username] = (hash_password(str(body.get("password", ""))), role, disabled)
-    atomic_validated_write(managed, render_users(entries), _stage_for(managed), _reload())
+    entries[username] = replace(
+        entries[username], passwords=hash_passwords(str(body.get("password", "")))
+    )
+    _write_users(managed, entries, original)
     return jsonify({"changed": username, "nonce": secrets.token_hex(4)})
 
 
@@ -338,10 +404,7 @@ def create_radius_agent() -> Flask:
     @app.errorhandler(ValueError)
     def invalid_client(_error: ValueError) -> Any:
         return jsonify(
-            {
-                "error": "Invalid or ambiguous configuration; "
-                "nested client definitions require native editing"
-            }
+            {"error": "Invalid or ambiguous user/client configuration; no changes were applied"}
         ), 400
 
     app.config.update(
@@ -371,6 +434,11 @@ def create_radius_agent() -> Flask:
     app.add_url_rule("/clients", view_func=_save_client, methods=["POST"])
     app.add_url_rule("/clients/delete", view_func=_delete_client, methods=["POST"])
     register_certificates(app)
+    register_modes(app)
+    with app.app_context():
+        if _journal().exists():
+            with file_lock(_path("RADIUS_MANAGED").parent / ".netadmin-users.lock"):
+                _recover_users()
     return app
 
 
