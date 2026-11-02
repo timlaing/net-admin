@@ -114,15 +114,7 @@ def changes(directory: Path, password: bytes, body: dict[str, Any]) -> dict[str,
         raise ValueError("Local CA operations are disabled for step-ca certificates")
     chain = validate_server_chain(pem, trusted_root())
     leaf = chain[0]
-    # Newly activated identities must support signed TLS handshakes (including TLS 1.3).
-    # Inspecting the old identity above remains permissive so legacy keys can be renewed.
-    try:
-        usage = leaf.extensions.get_extension_for_class(x509.KeyUsage).value
-    except x509.ExtensionNotFound:
-        pass
-    else:
-        if not usage.digital_signature:
-            raise ValueError("New server certificate KeyUsage must permit digital signatures")
+    _validate_new_usage(leaf)
     if not key_matches(leaf, key) or leaf.subject != expected_subject:
         raise ValueError("Issued certificate does not match the requested identity")
     if leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value != expected_sans:
@@ -136,6 +128,18 @@ def changes(directory: Path, password: bytes, body: dict[str, Any]) -> dict[str,
             "ascii"
         ),
     }
+
+
+def _validate_new_usage(leaf: x509.Certificate) -> None:
+    # Newly activated identities must support signed TLS handshakes (including TLS 1.3).
+    # Inspecting the old identity above remains permissive so legacy keys can be renewed.
+    try:
+        usage = leaf.extensions.get_extension_for_class(x509.KeyUsage).value
+    except x509.ExtensionNotFound:
+        pass
+    else:
+        if not usage.digital_signature:
+            raise ValueError("New server certificate KeyUsage must permit digital signatures")
 
 
 def renewal_due(bundle: bytes) -> bool:

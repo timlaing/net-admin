@@ -979,8 +979,9 @@ def test_issued_sans_must_match_csr_even_when_key_and_subject_match(material):
         .add_extension(x509.SubjectAlternativeName([x509.DNSName("other.test")]), False)
         .sign(material[3], hashes.SHA256())
     )
+    pem = certificate.public_bytes(PEM)
     with pytest.raises(ValueError, match="SANs do not match"):
-        issued_matches_csr(certificate.public_bytes(PEM), request)
+        issued_matches_csr(pem, request)
 
 
 def test_new_step_ca_leaf_requires_signing_key_usage(material, monkeypatch):
@@ -1075,5 +1076,26 @@ def test_sanless_csr_only_allows_cn_derived_san(material, common_name, name):
     extra = builder.add_extension(
         x509.SubjectAlternativeName([name, x509.DNSName("extra.test")]), False
     ).sign(material[3], hashes.SHA256())
+    pem = extra.public_bytes(PEM)
     with pytest.raises(ValueError, match="SANs do not match"):
-        issued_matches_csr(extra.public_bytes(PEM), request)
+        issued_matches_csr(pem, request)
+
+
+@pytest.mark.parametrize("identifier", ["..", "%2e%2e", "abc%3Fignored", "a" * 31 + "%25"])
+def test_certificate_routes_reject_noncanonical_ids_before_calling_agent(
+    tmp_path, monkeypatch, identifier
+):
+    _, client = admin_client(tmp_path)
+    calls = []
+    remote = SimpleNamespace(
+        read_only=lambda: False,
+        get=lambda *args: calls.append(args),
+        post=lambda *args, **kwargs: calls.append(args),
+    )
+    monkeypatch.setattr("netadmin.ca_web._client", lambda: remote)
+    assert client.get(f"/certificates/{identifier}/download").status_code == 404
+    assert (
+        client.post(f"/certificates/{identifier}/revoke", data={"confirm": "yes"}).status_code
+        == 404
+    )
+    assert calls == []

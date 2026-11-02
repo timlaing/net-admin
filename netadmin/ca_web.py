@@ -61,6 +61,12 @@ def _request_id(value: str | None = None) -> str:
     return uuid.UUID(hex=value).hex
 
 
+def _certificate_id(value: str) -> str:
+    if len(value) != 32 or any(char not in "0123456789abcdef" for char in value):
+        abort(404)
+    return uuid.UUID(hex=value).hex
+
+
 def _unknown_outcome(action: str, details: dict[str, str]) -> Any:
     _audit(action, None, details)
     flash("CA operation outcome is unknown. Inspect the inventory before retrying.", "warning")
@@ -196,6 +202,7 @@ def issue() -> Any:
 @admin_required
 def revoke(identifier: str) -> Any:
     """Record irreversible revocation at the authority."""
+    identifier = _certificate_id(identifier)
     client = _client()
     if client.read_only():
         abort(403)
@@ -245,8 +252,14 @@ def revoke_serial() -> Any:
 @admin_required
 def download(identifier: str) -> Any:
     """Download public certificate chains only."""
+    if identifier == "crl":
+        path = "crl"
+    elif identifier == "root":
+        path = "certificates/root"
+    else:
+        path = f"certificates/{_certificate_id(identifier)}"
     try:
-        result = _client().get("crl" if identifier == "crl" else f"certificates/{identifier}")
+        result = _client().get(path)
     except httpx.HTTPStatusError as error:
         if error.response.status_code == 404:
             abort(404)
