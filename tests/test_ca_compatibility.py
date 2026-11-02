@@ -93,7 +93,8 @@ def test_legacy_ca_preview_without_sans_and_nonjson_rejection(legacy_web):
     )
     pem = csr.public_bytes(Encoding.PEM).decode()
     page = client.post("/certificates/inspect", data={"csr": pem, "days": 1})
-    assert page.status_code == 200 and b"No SANs requested" in page.data
+    assert page.status_code == 200
+    assert b"No SANs requested" in page.data
 
     def reject(*_args, **_kwargs):
         response = httpx.Response(

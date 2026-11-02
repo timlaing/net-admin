@@ -51,7 +51,8 @@ def test_dhcp_invalid_reservations_conflicts_and_external_move(dhcp_state):
         ).status_code
         == 409
     )
-    assert state.main.read_bytes() == before and state.managed.read_text() == ""
+    assert state.main.read_bytes() == before
+    assert state.managed.read_text() == ""
     response = state.client.post(
         "/reservations",
         headers=DHCP_AUTH,
@@ -90,7 +91,8 @@ def test_dhcp_invalid_subnet_edits_and_remove_backup(dhcp_state):
     response = state.client.post(
         "/subnets/delete", headers=DHCP_AUTH, json={"network": "192.0.2.0"}
     )
-    assert response.status_code == 200 and response.json["leases_preserved"]
+    assert response.status_code == 200
+    assert response.json["leases_preserved"]
     assert state.main.with_name(state.main.name + ".before-netadmin-subnets").read_bytes() == before
     assert state.leases.read_text() == "retained synthetic leases"
 
@@ -143,7 +145,8 @@ def test_radius_user_and_client_invalid_inputs_retain_native_files(tmp_path, mon
         {"name": "new", "address": "192.0.2.20", "secret": "short"},
     ):
         assert client.post("/clients", headers=AUTH, json=payload).status_code == 400
-    assert native.read_bytes() == original and managed_clients.read_text() == ""
+    assert native.read_bytes() == original
+    assert managed_clients.read_text() == ""
     assert (
         client.post(
             "/clients",
@@ -186,7 +189,8 @@ def test_radius_user_activation_validates_before_operator_reload(monkeypatch):
     monkeypatch.setattr(radius, "_validate_radius", lambda: events.append("validate"))
 
     def execute(command, **kwargs):
-        assert command == ["synthetic", "reload"] and kwargs == {"check": True, "timeout": 30}
+        assert command == ["synthetic", "reload"]
+        assert kwargs == {"check": True, "timeout": 30}
         events.append("reload")
 
     monkeypatch.setattr(radius.subprocess, "run", execute)
@@ -210,4 +214,5 @@ def test_new_radius_file_transaction_has_durable_commit_and_clears_journal(tmp_p
         journal=journal,
         rollback=lambda: pytest.fail("Successful update must not roll back"),
     )
-    assert path.read_text() == "created" and not journal.exists()
+    assert path.read_text() == "created"
+    assert not journal.exists()

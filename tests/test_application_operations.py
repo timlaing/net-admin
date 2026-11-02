@@ -188,11 +188,13 @@ def test_radius_password_change_uses_current_identity_and_invalidates_only_its_s
     assert store.get_session(token)
     monkeypatch.setattr("netadmin.app.authenticate_radius", lambda *_args: "standard")
     success = client.post("/password", data=payload)
-    assert success.status_code == 302 and "/login" in success.location
+    assert success.status_code == 302
+    assert "/login" in success.location
     assert calls == [
         ("users/password", {"username": "ordinary", "password": "new-synthetic-password"})
     ]
-    assert store.get_session(token) is None and store.get_session(second) is None
+    assert store.get_session(token) is None
+    assert store.get_session(second) is None
     assert store.get_session(other) is not None
     assert "netadmin_session=;" in success.headers["Set-Cookie"]
 

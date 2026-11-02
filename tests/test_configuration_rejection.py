@@ -22,7 +22,8 @@ def test_kea_strings_comments_and_new_subnet_arrays_are_preserved():
     subnet = json.loads(rendered)["Dhcp4"]["subnet4"][0]
     assert subnet["pools"] == [{"pool": "192.0.2.10 - 192.0.2.20"}]
     assert subnet["option-data"] == [{"name": "routers", "data": "192.0.2.1"}]
-    assert subnet["valid-lifetime"] == 7200 and subnet["user-context"] == {}
+    assert subnet["valid-lifetime"] == 7200
+    assert subnet["user-context"] == {}
     text = (
         '"reservations": [ /* retained comment */ '
         + json.dumps(
@@ -100,7 +101,8 @@ def test_radius_migration_retains_passwordless_native_policies():
         pytest.fail("Passwordless policy must not invoke password hashing")
 
     remaining, entries = radius_users.migrate_to_managed(native, hasher, set(), "admin", "standard")
-    assert remaining == native and entries == {}
+    assert remaining == native
+    assert entries == {}
     assert radius_users.migrate_authorize(native, hasher, set(), "admin", "standard") == (
         native,
         [],

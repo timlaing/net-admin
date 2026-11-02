@@ -231,7 +231,9 @@ def test_recovery_rejects_untrusted_journals_and_restores_absent_files(tmp_path,
     write([{**original, "contents": None}])
     activations = []
     radius_state.recover(journal, {target}, lambda: activations.append(True))
-    assert not target.exists() and not journal.exists() and activations == [True]
+    assert not target.exists()
+    assert not journal.exists()
+    assert activations == [True]
     write([original])
     with pytest.raises(RuntimeError, match="previous transaction"):
         radius_state.transaction(
