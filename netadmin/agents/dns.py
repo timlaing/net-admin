@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import subprocess  # nosec B404 - fixed daemon tools, no shell
@@ -18,7 +19,7 @@ from flask import Flask, current_app, jsonify, request  # pylint: disable=wrong-
 
 from netadmin.agents.common import configured_path, create_agent, json_object, validated_transaction
 from netadmin.agents.service_logs import register_logs
-from netadmin.services.dns import BindService, discover_zones
+from netadmin.services.dns import BindService, DnsRecord, discover_zones
 
 
 def _record_backend(zone: str) -> BindService:
@@ -120,16 +121,36 @@ def _record_change(delete: bool = False) -> Any:
     if delete:
         backend.delete(zone, name, record_type, value)
         return jsonify({"deleted": name})
+    _save_record(backend, zone, name, record_type, body)
+    return jsonify({"saved": name})
+
+
+def _save_record(
+    backend: BindService, zone: str, name: str, record_type: str, body: dict[str, Any]
+) -> None:
+    """Validate single records or a bounded A RRset before the native update."""
+    value = str(body.get("value", ""))
     ttl = body.get("ttl", 300)
     if (
         isinstance(ttl, bool)
         or not isinstance(ttl, int)
         or not 1 <= ttl <= 2_147_483_647
-        or not value
+        or (not value and "values" not in body)
     ):
         raise ValueError("Record requires a positive TTL and value")
-    backend.upsert(zone, name, record_type, ttl, value)
-    return jsonify({"saved": name})
+    if "values" in body:
+        values = body["values"]
+        if (
+            record_type != "A"
+            or not isinstance(values, list)
+            or not 1 <= len(values) <= 100
+            or not all(isinstance(item, str) for item in values)
+        ):
+            raise ValueError("Invalid address RRset")
+        addresses = [DnsRecord(name, ttl, "A", str(ipaddress.IPv4Address(item))) for item in values]
+        backend.restore_addresses(zone, name, addresses)
+    else:
+        backend.upsert(zone, name, record_type, ttl, value)
 
 
 def _delete_record() -> Any:

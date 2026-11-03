@@ -117,13 +117,15 @@ def test_radius_user_and_client_invalid_inputs_retain_native_files(tmp_path, mon
     app.config.update(RADIUS_CLIENTS=native, RADIUS_MANAGED_CLIENTS=managed_clients)
     client = app.test_client()
     original = native.read_bytes()
+    authorize.write_text('legacy Cleartext-Password := "synthetic-password"\n')
+    authorize_before = authorize.read_bytes()
     assert client.get("/health", headers=AUTH).json == {"status": "ok"}
     for payload in (
         {"username": "DEFAULT", "password": "synthetic-password"},
         {"username": "new", "password": ""},
     ):
         assert client.post("/users", headers=AUTH, json=payload).status_code == 400
-    authorize.write_text('legacy Cleartext-Password := "synthetic-password"\n')
+    assert authorize.read_bytes() == authorize_before
     assert (
         client.post(
             "/users",

@@ -12,7 +12,8 @@ def test_kea_strings_comments_and_new_subnet_arrays_are_preserved():
     original = {
         "Dhcp4": {
             "subnet4": [
-                {"user-context": {}, "id": 1, "subnet": "192.0.2.0/24", "valid-lifetime": 7200}
+                {"user-context": {}, "id": 1, "subnet": "192.0.2.0/24", "valid-lifetime": 7200},
+                {"id": 2, "subnet": "198.51.100.0/24", "valid-lifetime": 3600},
             ]
         }
     }
@@ -24,6 +25,7 @@ def test_kea_strings_comments_and_new_subnet_arrays_are_preserved():
     assert subnet["option-data"] == [{"name": "routers", "data": "192.0.2.1"}]
     assert subnet["valid-lifetime"] == 7200
     assert subnet["user-context"] == {}
+    assert json.loads(rendered)["Dhcp4"]["subnet4"][1] == original["Dhcp4"]["subnet4"][1]
     text = (
         '"reservations": [ /* retained comment */ '
         + json.dumps(

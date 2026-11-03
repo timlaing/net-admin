@@ -145,12 +145,33 @@ class BindService:  # pylint: disable=too-many-instance-attributes
         reverse_suffix = reverse_zone.rstrip(".")
         full_pointer = parsed.reverse_pointer
         pointer_name = full_pointer.removesuffix(f".{reverse_suffix}").rstrip(".")
+        previous = [
+            item
+            for item in self.records(forward_zone)
+            if item.record_type == "A" and item.name.rstrip(".") == forward_name
+        ]
         self.upsert(forward_zone, forward_name, "A", ttl, str(parsed))
         try:
             self.upsert(reverse_zone, pointer_name, "PTR", ttl, fqdn)
         except Exception:
-            self.delete(forward_zone, forward_name, "A", str(parsed))
+            if previous:
+                self.restore_addresses(forward_zone, forward_name, previous)
+            else:
+                self.delete(forward_zone, forward_name, "A", str(parsed))
             raise
+
+    def restore_addresses(self, zone: str, name: str, previous: list[DnsRecord]) -> None:
+        """Restore the full original A RRset in one authenticated update."""
+        update = dns.update.Update(
+            zone,
+            keyring=self.keyring,
+            keyname=dns.name.from_text(self.key_name),
+            keyalgorithm=self.algorithm,
+        )
+        update.replace(name, previous[0].ttl, "A", *(item.value for item in previous))
+        response = dns.query.tcp(update, self.server, port=self.port, timeout=10)
+        if response.rcode() != 0:
+            raise RuntimeError(f"DNS rollback failed with rcode {response.rcode()}")
 
 
 class AgentDnsService(BindService):
@@ -189,4 +210,17 @@ class AgentDnsService(BindService):
         self.client.post(
             "records/delete",
             {"zone": zone, "name": name, "record_type": record_type, "value": value},
+        )
+
+    def restore_addresses(self, zone: str, name: str, previous: list[DnsRecord]) -> None:
+        """Restore an A RRset through the authenticated agent, never directly."""
+        self.client.post(
+            "records",
+            {
+                "zone": zone,
+                "name": name,
+                "record_type": "A",
+                "ttl": previous[0].ttl,
+                "values": [item.value for item in previous],
+            },
         )

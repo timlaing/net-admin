@@ -155,6 +155,7 @@ def test_paired_dns_creation_compensates_failed_reverse_update(monkeypatch):
         if arguments[2] == "PTR":
             raise OSError("reverse zone unavailable")
 
+    monkeypatch.setattr(bind, "records", lambda _zone: [])
     monkeypatch.setattr(bind, "upsert", upsert)
     monkeypatch.setattr(bind, "delete", lambda *args: calls.append(("delete", args)))
     with pytest.raises(OSError):
@@ -233,3 +234,54 @@ def test_radius_explicit_standard_and_unknown_role_contract(tmp_path, monkeypatc
     assert auth.authenticate_radius("ordinary", "synthetic-password", settings) == "standard"
     result.stdout = 'Access-Accept\nFilter-Id = "unknown-role"\n'
     assert auth.authenticate_radius("ordinary", "synthetic-password", settings) == "standard"
+
+
+def test_paired_dns_failure_restores_complete_previous_rrset_and_ttl(monkeypatch):
+    from netadmin.services.dns import DnsRecord
+
+    bind = BindService("192.0.2.53", "", "")
+    original = [DnsRecord("node", 3600, "A", value) for value in ("192.0.2.10", "192.0.2.11")]
+    monkeypatch.setattr(bind, "records", lambda _zone: original)
+    calls = []
+
+    def upsert(*args):
+        if args[2] == "PTR":
+            raise OSError("synthetic PTR failure")
+
+    def update(message, server, **kwargs):
+        calls.append(message)
+        assert server == "192.0.2.53"
+        assert kwargs == {"port": 53, "timeout": 10}
+        return SimpleNamespace(rcode=lambda: 0)
+
+    monkeypatch.setattr(bind, "upsert", upsert)
+    monkeypatch.setattr("dns.query.tcp", update)
+    with pytest.raises(OSError, match="PTR failure"):
+        bind.add_host("node", "192.0.2.9", "example.test", "2.0.192.in-addr.arpa", 600)
+    records = [rrset for rrset in calls[0].authority if len(rrset)]
+    assert {rrset.ttl for rrset in records} == {3600}
+    assert {item.to_text() for rrset in records for item in rrset} == {"192.0.2.10", "192.0.2.11"}
+    assert len(calls) == 1
+    monkeypatch.setattr("dns.query.tcp", lambda *_args, **_kwargs: SimpleNamespace(rcode=lambda: 5))
+    with pytest.raises(RuntimeError, match="rollback failed"):
+        bind.restore_addresses("example.test", "node", original)
+
+
+def test_agent_dns_rollback_never_bypasses_agent():
+    from netadmin.services.dns import AgentDnsService, DnsRecord
+
+    calls = []
+    bind = AgentDnsService(SimpleNamespace(post=lambda *args: calls.append(args)))
+    bind.restore_addresses("example.test", "node", [DnsRecord("node", 300, "A", "192.0.2.10")])
+    assert calls == [
+        (
+            "records",
+            {
+                "zone": "example.test",
+                "name": "node",
+                "record_type": "A",
+                "ttl": 300,
+                "values": ["192.0.2.10"],
+            },
+        )
+    ]

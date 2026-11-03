@@ -36,14 +36,19 @@ Choose a private interface reachable by the app; the script does not alter the
 firewall, device trust or existing service containers. It rejects an existing
 conflicting Compose project. Re-running against its own installation reports the
 existing deployment and leaves state intact. Upgrades use that project's Compose
-file explicitly; they do not reinitialize the CA.
+file explicitly; they do not reinitialize the CA. A rerun validates configuration only;
+it does not check startup or resume an interrupted pull/start. Run that project's
+`pull` and `up -d --no-build` commands to resume. Installer bearer tokens cannot
+contain apostrophes; use the manual Compose deployment below for such tokens.
 
 The runtime image is a new release artifact. Until a release publishes it, build
 this branch locally for evaluation:
 
 ```sh
-docker build -f docker/Dockerfile.ca-runtime -t netadmin-ca-runtime:test .
-docker build -f docker/Dockerfile.ca-agent -t netadmin-ca-agent:test .
+docker build -f docker/Dockerfile.ca-runtime -t ghcr.io/timlaing/netadmin-ca-runtime:local .
+docker build -f docker/Dockerfile.ca-agent -t ghcr.io/timlaing/netadmin-ca-agent:local .
+# Set NETADMIN_VERSION=local in the deployment .env, then use up --no-build.
+# Skip pull for these local-only images until a release publishes them.
 ```
 
 For manual Compose deployment, prepare `transport/server.crt`, `server.key` and
@@ -178,3 +183,11 @@ private material.
 To disconnect, clear the CA agent URL in Settings and stop only this
 Compose project. Retain its volumes and secrets. Existing independent NetAdmin
 service containers and certificate backends are not changed.
+
+Managed issuers run as separate numeric users (20000–20015). The controller
+retains only CHOWN, SETUID, SETGID and KILL capabilities to prepare read-only native
+inputs, drop privileges and stop expired or shutting-down child processes. Each issuer has its own writable runtime directory,
+no supplementary groups and a minimal environment without lifecycle credentials.
+Root keys, wrapping secrets, controller metadata and sibling issuer keys remain
+inaccessible to issuer users. Native logs rotate at one MiB with one backup;
+failed issuer restarts back off from five seconds to five minutes.

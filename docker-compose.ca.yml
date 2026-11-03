@@ -9,6 +9,7 @@ services:
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, KILL]
     security_opt: [no-new-privileges:true]
     environment:
       CA_MANAGEMENT_TOKEN_FILE: /run/secrets/management-token

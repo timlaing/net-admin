@@ -61,8 +61,13 @@ def options(body: dict[str, Any]) -> dict[str, Any]:
     ):
         raise CAInputError("Country must contain two letters")
     result["country"] = result["country"].upper()
-    if body.get("sans"):
-        result["sans"] = certificate_options({"sans": body["sans"]})["sans"]
+    if body.get("sans", "") != "":
+        try:
+            result["sans"] = certificate_options({"sans": body["sans"]})["sans"]
+        except ValueError as error:
+            raise CAInputError(
+                "Invalid SANs; use comma separated DNS names or IP addresses"
+            ) from error
     return result
 
 

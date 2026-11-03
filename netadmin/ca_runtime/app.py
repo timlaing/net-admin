@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import os
+import shutil
 import signal
 import subprocess  # nosec B404
 import threading
@@ -109,7 +110,13 @@ def _subordinate(store: AuthorityStore, body: dict[str, Any]) -> dict[str, Any]:
             raise CAInputError("At most 16 managed issuers are supported")
     result = store.create_subordinate({**body, "effective_policy": limits})
     if not body.get("csr"):
-        issuer.configure(store, result["id"], body)
+        try:
+            issuer.configure(store, result["id"], body)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            shutil.rmtree(store.directory(result["id"]))
+            raise CAInputError(
+                "Issuer preparation failed; authority rolled back. Use a new request ID."
+            ) from error
     return result
 
 
@@ -162,12 +169,21 @@ def download_crl(authority_id: str) -> Any:
 @controller.get("/authorities/<authority_id>/certificates")
 def certificates(authority_id: str) -> Any:
     """List public leaf certificates recorded by this issuer."""
+    after = request.args.get("after", "")
+    if after:
+        identifier(after)
+    paths = sorted(
+        path
+        for path in _store().directory(authority_id).glob("*.pem")
+        if len(path.stem) == 32 and path.stem > after
+    )
     result = []
-    for path in sorted(_store().directory(authority_id).glob("*.pem")):
-        if len(path.stem) == 32:
-            cert = x509.load_pem_x509_certificate(path.read_bytes())
-            result.append({**certificate_info(cert), "pem": path.read_text()})
-    return jsonify({"certificates": result})
+    for path in paths[:50]:
+        cert = x509.load_pem_x509_certificate(path.read_bytes())
+        result.append({**certificate_info(cert), "pem": path.read_text()})
+    return jsonify(
+        {"certificates": result, "next_cursor": paths[49].stem if len(paths) > 50 else None}
+    )
 
 
 @controller.get("/authorities/<authority_id>/chain")

@@ -223,7 +223,15 @@ def issued(authority_id: str) -> Any:
     try:
         remote = client()
         state = remote.get("authorities")
-        result = remote.get(AUTHORITY_API + authority_id + "/certificates")
+        after = request.args.get("after", "")
+        if after:
+            try:
+                identifier(after)
+            except ValueError:
+                abort(400)
+        result = remote.get(
+            AUTHORITY_API + authority_id + "/certificates" + ("?after=" + after if after else "")
+        )
         read_only = remote.read_only()
     except httpx.HTTPError:
         return render_template(CA_TEMPLATE, unavailable=True), 502
@@ -234,6 +242,7 @@ def issued(authority_id: str) -> Any:
         "ca_issuer.html",
         issuer=selected,
         certificates=result["certificates"],
+        next_cursor=result.get("next_cursor"),
         read_only=read_only,
         fresh_request_id=lambda: uuid.uuid4().hex,
     )

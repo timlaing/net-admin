@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import secrets
 import subprocess  # nosec B404
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_network
-from typing import Any
+from pathlib import Path
+from typing import Any, BinaryIO
 
 from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
 
+from netadmin.ca_runtime import isolation
 from netadmin.ca_runtime.certificates import CAInputError
 from netadmin.ca_runtime.store import AuthorityStore, durable
 from netadmin.services.radius_certificates import certificate_options
@@ -108,7 +113,8 @@ def configure(store: AuthorityStore, authority_id: str, body: dict[str, Any]) ->
     metadata = store.metadata(authority_id)
     host = service_host(body)
     configured = list((store.root / "authorities").glob("*/config.json"))
-    port = 9100 + len(configured)
+    used_ports = {store.metadata(path.parent.name)["port"] for path in configured}
+    port = next(port for port in range(9100, 9116) if port not in used_ports)
     password_path = directory / PROVISIONER_CREDENTIAL_FILE
     durable(password_path, secrets.token_urlsafe(48).encode())
     run(
@@ -151,7 +157,7 @@ def configure(store: AuthorityStore, authority_id: str, body: dict[str, Any]) ->
         "key": str(directory / "ca.key"),
         "address": f":{port}",
         "dnsNames": ["localhost", "ca-runtime", host],
-        "db": {"type": "badgerv2", "dataSource": str(directory / "db")},
+        "db": {"type": "badgerv2", "dataSource": str(directory / "runtime" / "db")},
         "crl": {"enabled": True, "generateOnRevoke": True},
         "authority": {
             "provisioners": [
@@ -184,13 +190,28 @@ def configure(store: AuthorityStore, authority_id: str, body: dict[str, Any]) ->
     }
     # Open-source step-ca supports authority-level policies, not per-JWK policies.
     config["authority"]["policy"] = config["authority"]["provisioners"][0].pop("policy")
-    durable(directory / "config.json", json.dumps(config).encode())
     durable(
         directory / "metadata.json",
         json.dumps(
             {**metadata, "port": port, "endpoint": f"https://{host}:{port}", "policy": limits}
         ).encode(),
     )
+
+    # Publish the config last: supervision treats it as the committed marker.
+    durable(directory / "config.json", json.dumps(config).encode())
+
+
+def capture_log(stream: BinaryIO, path: Path) -> None:
+    """Drain child output with at most two one-MiB log files per issuer."""
+    with stream:
+        while chunk := stream.read(8192):
+            if path.exists():
+                path.chmod(0o600)
+                if path.stat().st_size + len(chunk) > 1024 * 1024:
+                    path.replace(path.with_suffix(".log.1"))
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(descriptor, "ab") as output:
+                output.write(chunk)
 
 
 class Issuers:
@@ -199,33 +220,53 @@ class Issuers:
     def __init__(self, store: AuthorityStore):
         self.store = store
         self.processes: dict[str, subprocess.Popen[bytes]] = {}
+        self.retry_at: dict[str, float] = {}
+        self.failures: dict[str, int] = {}
 
     def reconcile(self) -> None:
-        """Start eligible issuers and stop expired signing services."""
+        """A broken issuer must never stop supervision of its healthy siblings."""
         for path in (self.store.root / "authorities").glob("*/config.json"):
-            authority_id = path.parent.name
-            process = self.processes.get(authority_id)
+            try:
+                self._reconcile_one(path)
+            except (OSError, ValueError):
+                logging.getLogger(__name__).warning("Issuer unavailable: %s", path.parent.name)
+
+    def _reconcile_one(self, path: Path) -> None:
+        authority_id = path.parent.name
+        process = self.processes.get(authority_id)
+        try:
             cert = self.store.certificate(authority_id)
-            if cert.not_valid_after_utc <= datetime.now(UTC):
-                if process and process.poll() is None:
-                    process.terminate()
-                continue
+            eligible = cert.not_valid_after_utc > datetime.now(UTC)
+        except (OSError, ValueError):
+            eligible = False
+        if not eligible:
             if process and process.poll() is None:
-                continue
-            # Logs remain in the CA's restricted volume, never returned to the UI.
-            with (path.parent / "service.log").open("ab") as log:
-                self.processes[authority_id] = subprocess.Popen(  # noqa: S603 # pylint: disable=consider-using-with
-                    [
-                        "/usr/local/bin/step-ca",
-                        str(path),
-                        "--password-file",
-                        str(path.parent / "password"),
-                    ],
-                    stdout=log,
-                    stderr=log,
-                    stdin=subprocess.DEVNULL,
-                    env={**os.environ, "HOME": str(self.store.root)},
-                )
+                process.terminate()
+            return
+        if process and process.poll() is None:
+            return
+        if time.monotonic() >= self.retry_at.get(authority_id, 0):
+            self._start(path)
+
+    def _start(self, path: Path) -> None:
+        authority_id = path.parent.name
+        failures = min(self.failures.get(authority_id, 0) + 1, 7)
+        self.failures[authority_id] = failures
+        self.retry_at[authority_id] = time.monotonic() + min(300, 5 * 2 ** (failures - 1))
+        identity = isolation.prepare(self.store, authority_id)
+        child = subprocess.Popen(  # noqa: S603 # pylint: disable=consider-using-with
+            ["/usr/local/bin/step-ca", str(path), "--password-file", str(path.parent / "password")],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            env=isolation.environment(path.parent),
+            **identity,
+        )
+        self.processes[authority_id] = child
+        if child.stdout:
+            threading.Thread(
+                target=capture_log, args=(child.stdout, path.parent / "service.log"), daemon=True
+            ).start()
 
     def close(self) -> None:
         """Reap every child when the controller shuts down."""
@@ -252,6 +293,8 @@ def sign(store: AuthorityStore, authority_id: str, body: dict[str, Any]) -> dict
         > store.certificate(authority_id).not_valid_after_utc
     ):
         raise CAInputError("Requested leaf lifetime exceeds issuing CA expiry")
+    if days > metadata["policy"]["leaf_days"]:
+        raise CAInputError("Requested leaf lifetime exceeds issuer policy")
     operation_id = str(body["request_id"])
     request = directory / (operation_id + ".csr")
     output = directory / (operation_id + ".pem")

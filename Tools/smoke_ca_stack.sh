@@ -15,6 +15,8 @@ trap cleanup EXIT
 docker build -q -f docker/Dockerfile.ca-agent -t "$name-agent-image" . >/dev/null
 docker network create "$name" >/dev/null
 docker run --rm -i -v "$name-fixture:/fixture" --entrypoint python "$image" - <<'PY'
+import os
+os.umask(0o077)
 from pathlib import Path
 from datetime import UTC,datetime,timedelta
 from cryptography import x509
@@ -33,7 +35,7 @@ for role,basename,eku in [('agent','server',ExtendedKeyUsageOID.SERVER_AUTH),('c
  (p/role/'ca.crt').write_bytes(ca.public_bytes(serialization.Encoding.PEM))
 (p/'secrets/management-token').write_text('synthetic-management-token-longer-than-32-characters')
 PY
-docker run -d --name "$name-runtime" --network "$name" --cap-drop ALL --read-only --tmpfs /tmp \
+docker run -d --name "$name-runtime" --network "$name" --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add KILL --read-only --tmpfs /tmp \
   -v "$name-state:/state" -v "$name-control:/control" -v "$name-fixture:/fixture:ro" \
   -e CA_MANAGEMENT_TOKEN_FILE=/fixture/secrets/management-token "$image" >/dev/null
 docker run -d --name "$name-agent" --network "$name" --network-alias ca-agent --cap-drop ALL --read-only --tmpfs /tmp \

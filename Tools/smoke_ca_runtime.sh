@@ -10,10 +10,10 @@ cleanup() {
   docker volume rm "$name-state" "$name-control" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
-docker run -d --name "$name" --read-only --cap-drop ALL --security-opt no-new-privileges \
+docker run -d --name "$name" --read-only --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add KILL --security-opt no-new-privileges \
   --tmpfs /tmp:rw,noexec,nosuid,size=64m -v "$name-state:/state" -v "$name-control:/control" \
   -e CA_MANAGEMENT_TOKEN_FILE=/state/token --entrypoint sh "$image" -c \
-  'printf %s synthetic-management-token-with-more-than-32-characters > /state/token; exec python -m netadmin.ca_runtime.app' >/dev/null
+  'umask 077; printf %s synthetic-management-token-with-more-than-32-characters > /state/token; exec python -m netadmin.ca_runtime.app' >/dev/null
 docker exec -i "$name" python - <<'PY'
 import json,time,uuid
 from pathlib import Path
@@ -85,6 +85,57 @@ for issuer in issuer_ids:
     with httpx.Client(verify=ssl.create_default_context(cafile=str(directory/'root.crt'))) as public:
         crl=x509.load_der_x509_crl(public.get(f'https://localhost:{port}/1.0/crl').content)
         assert crl.get_revoked_certificate_by_serial_number(cert.serial_number)
+# Prove the real native processes dropped privileges, not only their Popen options.
+import os, subprocess, sys
+process_users=[]
+for status in Path('/proc').glob('[0-9]*/status'):
+    try:
+        text=status.read_text()
+        if text.splitlines()[0].split()[-1]=='step-ca':
+            process_users.append(int(next(line for line in text.splitlines() if line.startswith('Uid:')).split()[1]))
+    except FileNotFoundError:
+        pass
+assert sorted(process_users)==[20000,20001],process_users
+probe = """
+import json,sys
+from pathlib import Path
+allowed,blocked=json.loads(sys.argv[1])
+assert Path(allowed).read_bytes()
+for value in blocked:
+    try:
+        Path(value).read_bytes()
+    except PermissionError:
+        continue
+    raise AssertionError('Issuer could read controller or sibling file: '+value)
+"""
+for index,issuer in enumerate(issuer_ids):
+    directory=Path('/state/authorities')/issuer
+    sibling=Path('/state/authorities')/issuer_ids[1-index]
+    blocked=['/state/token','/state/root.key','/state/root.password',str(directory/'metadata.json'),str(directory/'provisioner.password'),str(sibling/'ca.key')]
+    subprocess.run([sys.executable,'-c',probe,json.dumps([str(directory/'ca.key'),blocked])],user=20000+index,group=20000+index,extra_groups=(),check=True)
+print('Distinct native issuer UIDs cannot read root vault, controller metadata, provisioner secrets or sibling keys')
+# Controller can terminate its unprivileged child; supervision restarts only it.
+import signal
+for status in Path('/proc').glob('[0-9]*/status'):
+    try:
+        text=status.read_text()
+        if text.splitlines()[0].split()[-1]=='step-ca' and next(line for line in text.splitlines() if line.startswith('Uid:')).split()[1]=='20000':
+            os.kill(int(status.parent.name),signal.SIGTERM)
+            break
+    except FileNotFoundError:
+        pass
+else:
+    raise AssertionError('Missing isolated child to test restart')
+time.sleep(1)
+for attempt in range(30):
+    try:
+        assert run(['ca','health','--ca-url','https://localhost:9100','--root',str(Path('/state/authorities')/issuer_ids[0]/'root.crt')])=='ok'
+        break
+    except Exception:
+        if attempt==29:raise
+        time.sleep(1)
+print('Controller signaling and backoff restart restored the isolated issuer')
+
 backup=post('/authorities/export-root',password='synthetic-independent-recovery-passphrase')
 post('/authorities/archive-root',recovery_key=backup['key'],recovery_password='synthetic-independent-recovery-passphrase',confirmation='ARCHIVE ROOT')
 assert not Path('/state/root.key').exists()

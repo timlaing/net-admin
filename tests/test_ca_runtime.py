@@ -3,6 +3,7 @@
 import json
 import uuid
 from dataclasses import replace
+from ipaddress import ip_network
 
 import pytest
 from cryptography import x509
@@ -298,6 +299,7 @@ def test_external_subordinate_scope_becomes_certificate_constraints(runtime):
     extension = certificate.extensions.get_extension_for_class(x509.NameConstraints)
     assert extension.critical
     assert x509.DNSName("devices.example.test") in extension.value.permitted_subtrees
+    assert x509.IPAddress(ip_network("192.168.50.0/24")) in extension.value.permitted_subtrees
 
 
 def test_parent_policy_cannot_be_expanded(tmp_path):

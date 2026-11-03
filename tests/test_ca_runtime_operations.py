@@ -339,6 +339,7 @@ def test_supervisor_reuses_restarts_expires_and_reaps_issuer_processes(configure
 
     class Process:
         def __init__(self):
+            self.stdout = None
             self.code = None
             self.terminated = 0
             self.killed = 0
@@ -369,7 +370,8 @@ def test_supervisor_reuses_restarts_expires_and_reaps_issuer_processes(configure
             str(state.store.directory(state.authority_id) / "password"),
         ]
         assert kwargs["stdin"] == subprocess.DEVNULL
-        assert kwargs["stdout"] is kwargs["stderr"]
+        assert kwargs["stdout"] == subprocess.PIPE
+        assert kwargs["stderr"] == subprocess.STDOUT
         process = Process()
         created.append(process)
         return process
@@ -380,6 +382,9 @@ def test_supervisor_reuses_restarts_expires_and_reaps_issuer_processes(configure
     supervisor.reconcile()
     assert len(created) == 1
     created[0].code = 1
+    supervisor.reconcile()
+    assert len(created) == 1
+    monkeypatch.setattr(issuer.time, "monotonic", lambda: 100000000000)
     supervisor.reconcile()
     assert len(created) == 2
     original = state.store.certificate

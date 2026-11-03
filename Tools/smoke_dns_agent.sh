@@ -55,6 +55,12 @@ with tempfile.TemporaryDirectory() as directory:
         assert client.post('/records', headers=headers, json=record).status_code == 200
         records = client.get('/records?zone=example.net', headers=headers).json
         assert any(item['name'] == 'agent-client' and item['value'] == '192.0.2.3' and item['ttl'] == 600 for item in records)
+        restored = {'zone':'example.net','name':'agent-client','record_type':'A','ttl':3600,'values':['192.0.2.10','192.0.2.11']}
+        assert client.post('/records', headers=headers, json=restored).status_code == 200
+        records = [item for item in client.get('/records?zone=example.net', headers=headers).json if item['name']=='agent-client']
+        assert {item['value'] for item in records} == {'192.0.2.10','192.0.2.11'}
+        assert {item['ttl'] for item in records} == {3600}
+        record.pop('value')
         assert client.post('/records/delete', headers=headers, json=record).status_code == 200
         assert not any(item['name'] == 'agent-client' for item in client.get('/records?zone=example.net', headers=headers).json)
         assert client.get('/records?zone=unmanaged.example', headers=headers).status_code == 400

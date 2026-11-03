@@ -237,7 +237,11 @@ The installer should:
    certificate fingerprint. Display the secret once to the operator, never in
    Docker command arguments or normal logs.
 4. Start only the CA runtime and registration agent with `--no-build`, fixed
-   permissions, dropped capabilities and persistent volumes. Handle the step-ca
+   permissions and persistent volumes. Drop all capabilities except the CA
+   controller's CHOWN, SETUID, SETGID and KILL, used to start issuer users without
+   supplementary groups. Keep controller secrets root-owned and grant each
+   issuer read access only to its own native inputs, plus a separate writable
+   runtime directory. Handle the step-ca
    executable's file capabilities in the runtime image build; do not grant host
    privileges. Disable the Gunicorn control socket on read-only agent filesystems.
 5. Print the endpoint, fingerprint and next UI action, then exit after readiness

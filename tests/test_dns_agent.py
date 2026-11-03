@@ -154,3 +154,38 @@ def test_zone_snapshot_uses_journal_without_writing_or_reconfiguring(tmp_path, m
         == 400
     )
     assert sum(c[0].endswith("named-compilezone") for c in calls) == 1
+
+
+def test_atomic_address_restore_validates_rrset_before_backend(tmp_path, monkeypatch):
+    from netadmin.services.dns import BindService, DnsRecord
+
+    client, _main = agent(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(BindService, "restore_addresses", lambda _self, *args: calls.append(args))
+    payload = {
+        "zone": "existing.example",
+        "name": "node",
+        "record_type": "A",
+        "ttl": 300,
+        "values": ["192.0.2.10", "192.0.2.11"],
+    }
+    response = client.post("/records", headers=AUTH, json=payload)
+    assert response.status_code == 200
+    assert calls == [
+        (
+            "existing.example",
+            "node",
+            [DnsRecord("node", 300, "A", "192.0.2.10"), DnsRecord("node", 300, "A", "192.0.2.11")],
+        )
+    ]
+    for invalid in ([], "192.0.2.10", [False], ["invalid"], ["192.0.2.10"] * 101):
+        assert (
+            client.post("/records", headers=AUTH, json={**payload, "values": invalid}).status_code
+            == 400
+        )
+    assert len(calls) == 1
+    assert (
+        client.post("/records", headers=AUTH, json={**payload, "record_type": "TXT"}).status_code
+        == 400
+    )
+    assert len(calls) == 1

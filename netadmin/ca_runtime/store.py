@@ -103,6 +103,13 @@ class AuthorityStore:
                 (root / ROOT_WRAP_FILE).unlink(missing_ok=True)
             elif not (root / ROOT_PRIVATE_FILE).exists() or not (root / ROOT_WRAP_FILE).exists():
                 raise CAInputError("Missing root material; recovery required")
+            if not self.manifest.get("root_archived"):
+                key = self.key(self.manifest["root_id"], {})
+                public = key.public_key().public_bytes(
+                    serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+                )
+                if hashlib.sha256(public).hexdigest() != self.manifest["public_key_sha256"]:
+                    raise CAInputError("Root key does not match manifest fingerprint")
 
     @contextlib.contextmanager
     def lock(self) -> Iterator[None]:
@@ -242,6 +249,11 @@ class AuthorityStore:
         """Sign a fixed CA template using a managed or externally held child key."""
         parent_id = identifier(str(body.get("parent_id", "")))
         parent = self.certificate(parent_id)
+        if (
+            parent_id != self.manifest["root_id"]
+            and not (self.directory(parent_id) / "ca.key").is_file()
+        ):
+            raise CAInputError("Parent signing key is externally held")
         values = options(body)
         key = new_key()
         csr_pem = body.get("csr", "")

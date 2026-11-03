@@ -228,3 +228,24 @@ def test_download_requires_a_configured_management_connection(tmp_path):
     response = client.get("/certificates/authorities/" + uuid.uuid4().hex + "/chain")
     assert response.status_code == 409
     assert b"Configure the CA endpoint" in response.data
+
+
+def test_issuer_inventory_forwards_validated_cursor_and_renders_next_page(web):
+    original = web.remote.get
+    cursor = uuid.uuid4().hex
+    expected = "authorities/" + web.state.authority_id + "/certificates?after=" + cursor
+
+    def get(path):
+        if path == expected:
+            web.calls.append(("GET", path))
+            return {"certificates": [], "next_cursor": cursor}
+        return original(path)
+
+    web.remote.get = get
+    path = "/certificates/authorities/" + web.state.authority_id + "/issued"
+    response = web.client.get(path + "?after=" + cursor)
+    assert response.status_code == 200
+    assert ("GET", expected) in web.calls
+    assert b"Next page" in response.data
+    assert ("after=" + cursor).encode() in response.data
+    assert web.client.get(path + "?after=invalid").status_code == 400

@@ -35,6 +35,7 @@ def test_host_update_compensates_on_ptr_failure(monkeypatch: pytest.MonkeyPatch)
         if args[2] == "PTR":
             raise RuntimeError("reverse failed")
 
+    monkeypatch.setattr(service, "records", lambda _zone: [])
     monkeypatch.setattr(service, "upsert", upsert)
     monkeypatch.setattr(service, "delete", lambda *args: calls.append(tuple(args)))
     with pytest.raises(RuntimeError):
