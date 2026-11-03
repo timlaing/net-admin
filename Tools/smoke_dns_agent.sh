@@ -89,13 +89,13 @@ with tempfile.TemporaryDirectory() as directory:
         def post(path,payload):
             result = client.post('/'+path,headers=headers,json=payload)
             if result.status_code >= 400:
-                raise RuntimeError('Synthetic agent request rejected')
+                raise RuntimeError(f"Synthetic agent request rejected: {payload.get('record_type', 'unknown')}")
             return result.json
         paired = AgentDnsService(SimpleNamespace(get=get,post=post))
         try:
             paired.add_host('mixed','192.0.2.200','example.net','2.0.192.in-addr.arpa',600)
-        except RuntimeError:
-            pass
+        except RuntimeError as error:
+            assert str(error).endswith(': PTR'),str(error)
         else:
             raise AssertionError('Unconfigured reverse zone unexpectedly accepted')
         saved = get('records/addresses?zone=example.net&name=mixed')

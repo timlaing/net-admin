@@ -163,3 +163,42 @@ assert len(state['authorities'])==3
 assert not Path('/state/root.key').exists()
 print('Container restart preserved public root identity, archived root and both issuers')
 PY
+if [[ "${CA_SMOKE_ISOLATE:-1}" == 0 ]]; then
+  # Reuse the real non-isolated Badger databases, then prove isolated ownership
+  # conversion preserves identity, inventory and revocation history.
+  docker rm -f "$name" >/dev/null
+  docker run -d --name "$name" --read-only --cap-drop ALL \
+    --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add KILL \
+    --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+    -v "$name-state:/state" -v "$name-control:/control" \
+    -e CA_ISOLATE_ISSUERS=1 -e CA_MANAGEMENT_TOKEN_FILE=/state/token "$image" >/dev/null
+  docker exec -i "$name" python - <<'PY'
+import time
+from pathlib import Path
+import httpx
+from cryptography import x509
+from netadmin.ca_runtime.issuer import run
+client=httpx.Client(transport=httpx.HTTPTransport(uds='/control/ca.sock'),base_url='http://controller',headers={'X-CA-Management-Token':Path('/state/token').read_text()})
+for attempt in range(30):
+    try:
+        response=client.get('/authorities');response.raise_for_status();state=response.json()
+        for authority in state['authorities']:
+            if not authority['managed']:continue
+            directory=Path('/state/authorities')/authority['id']
+            assert run(['ca','health','--ca-url',f"https://localhost:{authority['port']}",'--root',str(directory/'root.crt')])=='ok'
+            leaves=client.get(f"/authorities/{authority['id']}/certificates").json()['certificates']
+            assert leaves
+            serial=x509.load_pem_x509_certificate(leaves[0]['pem'].encode()).serial_number
+            crl=x509.load_pem_x509_crl(client.get(f"/authorities/{authority['id']}/crl").json()['pem'].encode())
+            assert crl.get_revoked_certificate_by_serial_number(serial)
+        break
+    except Exception:
+        if attempt==29:raise
+        time.sleep(1)
+assert state['public_key_sha256']==Path('/state/test-key-fingerprint').read_text()
+assert state['root_online'] is False
+print('Non-isolated to isolated ownership conversion preserved native databases, inventory, CRLs and root identity')
+PY
+else
+  CA_SMOKE_ISOLATE=0 bash "$0" "$image"
+fi

@@ -249,3 +249,18 @@ def test_issuer_inventory_forwards_validated_cursor_and_renders_next_page(web):
     assert b"Next page" in response.data
     assert ("after=" + cursor).encode() in response.data
     assert web.client.get(path + "?after=invalid").status_code == 400
+
+
+def test_partial_inventory_import_is_visible_and_can_be_continued(web):
+    original = web.remote.get
+
+    def get(path):
+        if path.endswith("/certificates"):
+            return {"certificates": [], "next_cursor": None, "import_pending": True}
+        return original(path)
+
+    web.remote.get = get
+    response = web.client.get("/certificates/authorities/" + web.state.authority_id + "/issued")
+    assert response.status_code == 200
+    assert b"Refresh to continue the import" in response.data
+    assert b"No leaf certificates have been issued" not in response.data

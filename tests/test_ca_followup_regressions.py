@@ -3,7 +3,6 @@
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -149,7 +148,8 @@ def test_legacy_inventory_import_happens_once_and_skips_invalid_outputs(configur
     assert inventory.page(directory, "") == ([pem], None)
     assert inventory.path.stat().st_mode & 0o777 == 0o600
     monkeypatch.setattr(
-        Path, "glob", lambda *_a, **_k: pytest.fail("Indexed pages must not rescan PEM files")
+        "netadmin.ca_runtime.inventory.os.scandir",
+        lambda *_a, **_k: pytest.fail("Indexed pages must not rescan PEM files"),
     )
     for number in range(60):
         inventory.record(directory, f"{number:032x}", pem)

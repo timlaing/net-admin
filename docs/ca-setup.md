@@ -199,5 +199,14 @@ client certificate; use that connection test before treating the agent as ready.
 
 The CA runtime indexes only public issued certificates in a private local SQLite
 inventory. No private keys, passwords or service configuration enter this index.
-Existing public leaf PEMs are imported once per issuer; subsequent pages use an
-indexed cursor and parse at most 50 certificates.
+Existing public leaf PEMs are imported in resumable batches: at most 50 file
+reads, 1,000 directory entries and a 0.5-second work budget per request. The UI
+shows import progress and a refresh link; unreadable files are retried. Once
+imported, pages use an indexed cursor and parse at most 50 certificates. An index
+write failure still returns the signed chain and completes its original operation
+ID; retries return that same chain while later inventory reads reconcile it.
+
+When switching a stopped, controller-owned non-isolated issuer to isolation, the
+runtime preflights and converts its entire database tree without following links.
+Interrupted conversions can resume. Foreign-owned trees require an explicit
+operator migration; links and special files are refused before changing ownership.

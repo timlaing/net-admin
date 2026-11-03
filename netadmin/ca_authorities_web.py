@@ -243,6 +243,7 @@ def issued(authority_id: str) -> Any:
         issuer=selected,
         certificates=result["certificates"],
         next_cursor=result.get("next_cursor"),
+        import_pending=result.get("import_pending", False),
         read_only=read_only,
         fresh_request_id=lambda: uuid.uuid4().hex,
     )

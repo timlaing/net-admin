@@ -3,11 +3,45 @@
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 from typing import Any
 
 from netadmin.ca_runtime.certificates import CAInputError
 from netadmin.ca_runtime.store import AuthorityStore
+
+
+def _walk_error(error: OSError) -> None:
+    raise error
+
+
+def _migrate_home(home: Path, uid: int) -> None:
+    """Convert controller-owned local state without following links or touching vaults.
+
+    Preflight the complete tree before mutation. Already converted paths are
+    accepted so interruption can resume without granting extra capabilities.
+    """
+    paths = [home]
+    for parent, directories, files in os.walk(home, followlinks=False, onerror=_walk_error):
+        paths.extend(Path(parent) / name for name in [*directories, *files])
+    for path in paths:
+        info = path.lstat()
+        directory = stat.S_ISDIR(info.st_mode)
+        if not directory and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
+            raise CAInputError("Issuer ownership migration refuses links or special files")
+        if info.st_uid not in {0, uid}:
+            raise CAInputError(
+                "Stop the issuer and migrate its non-controller-owned runtime explicitly"
+            )
+        mode = 0o770 if directory else 0o660
+        if info.st_uid == uid and (info.st_gid != 0 or info.st_mode & 0o777 != mode):
+            raise CAInputError("Issuer runtime has unexpected ownership or permissions")
+    # Publish the top-level owner last; a partial conversion remains resumable.
+    for path in reversed(paths):
+        info = path.stat()
+        if info.st_uid == 0:
+            path.chmod(0o770 if stat.S_ISDIR(info.st_mode) else 0o660)
+            os.chown(path, uid, 0)
 
 
 def prepare(store: AuthorityStore, authority_id: str) -> dict[str, Any]:
@@ -30,10 +64,14 @@ def prepare(store: AuthorityStore, authority_id: str) -> dict[str, Any]:
     for path in (store.root, store.root / "authorities", directory):
         path.chmod(0o711)
     home = directory / "runtime"
+    if home.is_symlink():
+        raise CAInputError("Issuer runtime must not be a symbolic link")
     if not home.exists():
         home.mkdir(mode=0o770)
         home.chmod(0o770)
         os.chown(home, uid, 0)
+    elif home.stat().st_uid == 0:
+        _migrate_home(home, uid)
     elif (
         home.stat().st_uid != uid or home.stat().st_gid != 0 or home.stat().st_mode & 0o777 != 0o770
     ):

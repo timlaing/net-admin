@@ -96,9 +96,17 @@ def operation_status(operation_id: str) -> Any:
     return jsonify({"state": result["state"], "result": result.get("result")})
 
 
+def _known_parent(store: AuthorityStore, value: str) -> str:
+    parent_id = identifier(value)
+    directory = store.directory(parent_id)
+    if not all((directory / name).is_file() for name in ("metadata.json", "ca.crt")):
+        raise CAInputError("Unknown parent authority")
+    return parent_id
+
+
 def _subordinate(store: AuthorityStore, body: dict[str, Any]) -> dict[str, Any]:
     limits = None
-    parent_id = str(body.get("parent_id", ""))
+    parent_id = _known_parent(store, str(body.get("parent_id", "")))
     if not body.get("csr") or body.get("dns_suffixes") or body.get("ip_ranges"):
         limits = issuer.policy(body)
         issuer.check_parent_policy(store, parent_id, limits)
@@ -178,7 +186,13 @@ def certificates(authority_id: str) -> Any:
         {**certificate_info(x509.load_pem_x509_certificate(pem.encode())), "pem": pem}
         for pem in pems
     ]
-    return jsonify({"certificates": result, "next_cursor": next_cursor})
+    return jsonify(
+        {
+            "certificates": result,
+            "next_cursor": next_cursor,
+            "import_pending": store.inventory.pending(store.directory(authority_id)),
+        }
+    )
 
 
 @controller.get("/authorities/<authority_id>/chain")
@@ -232,6 +246,7 @@ def main() -> None:
     finally:
         server.shutdown()
         processes.close()
+        app.extensions["ca_store"].inventory.close()
         thread.join(timeout=5)
 
 

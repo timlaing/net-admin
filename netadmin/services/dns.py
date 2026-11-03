@@ -179,8 +179,11 @@ class BindService:  # pylint: disable=too-many-instance-attributes
 
     def addresses(self, zone: str, name: str) -> list[DnsRecord]:
         """Read an authoritative owner RRset without transfer or recursion rights."""
-        origin = dns.name.from_text(zone)
-        owner = dns.name.from_text(name, origin=origin)
+        try:
+            origin = dns.name.from_text(zone)
+            owner = dns.name.from_text(name, origin=origin)
+        except dns.exception.DNSException as error:
+            raise ValueError("Invalid record name or zone") from error
         if not owner.is_subdomain(origin):
             raise ValueError("Record name must belong to the selected zone")
         query = dns.message.make_query(owner, "A", flags=0)

@@ -335,7 +335,12 @@ def sign(store: AuthorityStore, authority_id: str, body: dict[str, Any]) -> dict
     certificate = issued_matches_csr(output.read_bytes(), csr)
     certificate.verify_directly_issued_by(store.certificate(authority_id))
     pem = output.read_text()
-    store.inventory.record(directory, operation_id, pem)
+    try:
+        store.inventory.record(directory, operation_id, pem)
+    except OSError:
+        logging.getLogger(__name__).warning(
+            "Issued certificate retained; inventory needs reconciliation: %s", authority_id
+        )
     return {"pem": pem, "issuer_id": authority_id}
 
 
