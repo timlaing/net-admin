@@ -370,7 +370,16 @@ def test_operator_can_clear_only_unissued_attempt_and_keep_audit_copy(state):
     directory = state.store.directory(state.authority_id)
     operation_id = uuid.uuid4().hex
     record = state.store.root / "operations" / (operation_id + ".json")
-    record.write_text(json.dumps({"state": "attempted", "digest": "original"}))
+    record.write_text(
+        json.dumps(
+            {
+                "state": "attempted",
+                "digest": "original",
+                "authority_id": state.authority_id,
+                "action": "issue",
+            }
+        )
+    )
     (directory / (operation_id + ".csr")).write_text("original request")
     state.store.inventory.prepare(directory, operation_id)
     clear_failed_signing(state.store, state.authority_id, operation_id)
@@ -384,7 +393,7 @@ def test_operator_can_clear_only_unissued_attempt_and_keep_audit_copy(state):
     }
 
 
-@pytest.mark.parametrize("reason", ["complete", "no-csr", "output", "indexed"])
+@pytest.mark.parametrize("reason", ["complete", "output", "indexed"])
 def test_operator_clear_refuses_issued_or_unrelated_operations(state, reason):
     from netadmin.ca_runtime.certificates import CAInputError
     from netadmin.ca_runtime.reconcile import clear_failed_signing
@@ -392,9 +401,16 @@ def test_operator_clear_refuses_issued_or_unrelated_operations(state, reason):
     directory = state.store.directory(state.authority_id)
     operation_id = uuid.uuid4().hex
     record = state.store.root / "operations" / (operation_id + ".json")
-    record.write_text(json.dumps({"state": "complete" if reason == "complete" else "attempted"}))
-    if reason != "no-csr":
-        (directory / (operation_id + ".csr")).write_text("original request")
+    record.write_text(
+        json.dumps(
+            {
+                "state": "complete" if reason == "complete" else "attempted",
+                "authority_id": state.authority_id,
+                "action": "issue",
+            }
+        )
+    )
+    (directory / (operation_id + ".csr")).write_text("original request")
     state.store.inventory.prepare(directory, operation_id)
     if reason == "output":
         (directory / (operation_id + ".pem")).write_text("output must be investigated")
@@ -405,8 +421,10 @@ def test_operator_clear_refuses_issued_or_unrelated_operations(state, reason):
     assert record.exists()
 
 
-def test_recovery_cli_requires_explicit_confirmation(tmp_path, monkeypatch):
+def test_recovery_cli_requires_explicit_confirmation(state, monkeypatch, capsys):
     from netadmin.ca_runtime import reconcile
+
+    monkeypatch.setattr(reconcile, "STATE_DIRECTORY", state.store.root)
 
     monkeypatch.setattr(
         "sys.argv",
@@ -421,7 +439,7 @@ def test_recovery_cli_requires_explicit_confirmation(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as error:
         reconcile.main()
     assert error.value.code == 2
-    assert not (tmp_path / "manifest.json").exists()
+    assert "--confirm-no-certificate-issued" in capsys.readouterr().err
 
 
 def test_recovery_cli_clears_attempt_with_explicit_confirmation(state, monkeypatch):
@@ -430,7 +448,16 @@ def test_recovery_cli_clears_attempt_with_explicit_confirmation(state, monkeypat
     directory = state.store.directory(state.authority_id)
     operation_id = uuid.uuid4().hex
     record = state.store.root / "operations" / (operation_id + ".json")
-    record.write_text(json.dumps({"state": "attempted", "digest": "original"}))
+    record.write_text(
+        json.dumps(
+            {
+                "state": "attempted",
+                "digest": "original",
+                "authority_id": state.authority_id,
+                "action": "issue",
+            }
+        )
+    )
     (directory / (operation_id + ".csr")).write_text("original request")
     state.store.inventory.prepare(directory, operation_id)
     monkeypatch.setattr(
@@ -456,7 +483,16 @@ def test_interrupted_operator_acknowledgement_keeps_guard_and_can_resume(state, 
     directory = state.store.directory(state.authority_id)
     operation_id = uuid.uuid4().hex
     record = state.store.root / "operations" / (operation_id + ".json")
-    record.write_text(json.dumps({"state": "attempted", "digest": "original"}))
+    record.write_text(
+        json.dumps(
+            {
+                "state": "attempted",
+                "digest": "original",
+                "authority_id": state.authority_id,
+                "action": "issue",
+            }
+        )
+    )
     (directory / (operation_id + ".csr")).write_text("original request")
     state.store.inventory.prepare(directory, operation_id)
     real_flush = reconcile._flush_directory
@@ -495,3 +531,142 @@ def test_recovery_cli_does_not_initialize_missing_state(tmp_path, monkeypatch):
         reconcile.main()
     assert error.value.code == 2
     assert not (tmp_path / "manifest.json").exists()
+
+
+@pytest.mark.parametrize("source", ["legacy", "operation"])
+def test_leaf_without_basic_constraints_is_imported_and_reconciled(state, source):
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    csr = leaf_csr()
+    now = datetime.now(UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(csr.subject)
+        .issuer_name(state.store.certificate(state.authority_id).subject)
+        .public_key(csr.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        .sign(state.store.key(state.authority_id, {}), hashes.SHA384())
+    )
+    pem = certificate.public_bytes(Encoding.PEM).decode()
+    if source == "legacy":
+        (directory / (operation_id + ".pem")).write_text(pem)
+    else:
+        state.store.inventory.prepare(directory, operation_id)
+        (state.store.root / "operations" / (operation_id + ".json")).write_text(
+            json.dumps(
+                {"state": "complete", "result": {"issuer_id": state.authority_id, "pem": pem}}
+            )
+        )
+    assert state.store.inventory.page(directory, "") == ([pem], None)
+    assert not state.store.inventory.pending(directory)
+
+
+@pytest.mark.parametrize("kind", ["malformed", "ca", "foreign-leaf"])
+def test_pending_rejects_unverified_operation_result_with_matching_issuer(state, kind):
+    from netadmin.ca_runtime.certificates import new_key
+
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    state.store.inventory.prepare(directory, operation_id)
+    pem = "bad"
+    if kind == "ca":
+        pem = state.store.certificate(state.authority_id).public_bytes(Encoding.PEM).decode()
+    elif kind == "foreign-leaf":
+        csr = leaf_csr()
+        now = datetime.now(UTC)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(csr.subject)
+            .issuer_name(state.store.certificate(state.authority_id).subject)
+            .public_key(csr.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now)
+            .not_valid_after(now + timedelta(days=1))
+            .sign(new_key(), hashes.SHA384())
+        )
+        pem = cert.public_bytes(Encoding.PEM).decode()
+    (state.store.root / "operations" / (operation_id + ".json")).write_text(
+        json.dumps({"state": "complete", "result": {"issuer_id": state.authority_id, "pem": pem}})
+    )
+    assert state.store.inventory.page(directory, "") == ([], None)
+    assert state.store.inventory.pending(directory)
+
+
+def test_repeated_clearances_preserve_both_audit_copies_and_allow_missing_pending(state):
+    from netadmin.ca_runtime.reconcile import clear_failed_signing
+
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    record = state.store.root / "operations" / (operation_id + ".json")
+    # Even an interruption before CSR/intent creation has an explicit binding.
+    assert not (directory / (operation_id + ".csr")).exists()
+    for digest in ("first", "second"):
+        record.write_text(
+            json.dumps(
+                {
+                    "state": "attempted",
+                    "digest": digest,
+                    "authority_id": state.authority_id,
+                    "action": "issue",
+                }
+            )
+        )
+        clear_failed_signing(state.store, state.authority_id, operation_id)
+        assert not record.exists()
+    assert not (directory / "inventory-pending").exists()
+    copies = list((state.store.root / "reconciled").glob(operation_id + "*.json"))
+    assert len(copies) == 2
+    assert {json.loads(path.read_text())["digest"] for path in copies} == {"first", "second"}
+
+
+@pytest.mark.parametrize("binding", ["other-authority", "no-authority", "revoke"])
+def test_clearance_refuses_stale_csr_for_another_attempt(state, binding):
+    from netadmin.ca_runtime.certificates import CAInputError
+    from netadmin.ca_runtime.reconcile import clear_failed_signing
+
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    record = state.store.root / "operations" / (operation_id + ".json")
+    previous = {"state": "attempted", "authority_id": state.authority_id, "action": "issue"}
+    if binding == "other-authority":
+        previous["authority_id"] = uuid.uuid4().hex
+    elif binding == "no-authority":
+        previous.pop("authority_id")
+    else:
+        previous["action"] = "revoke"
+    record.write_text(json.dumps(previous))
+    (directory / (operation_id + ".csr")).write_text("stale CSR")
+    state.store.inventory.prepare(directory, operation_id)
+    with pytest.raises(CAInputError, match="not a signing attempt for this authority"):
+        clear_failed_signing(state.store, state.authority_id, operation_id)
+    assert json.loads(record.read_text()) == previous
+    assert (directory / "inventory-pending" / operation_id).exists()
+    assert not (state.store.root / "reconciled").exists()
+
+
+def test_failed_native_signing_records_server_owned_authority_and_action(state, monkeypatch):
+    import subprocess
+
+    def failed(_arguments):
+        raise subprocess.CalledProcessError(1, "step")
+
+    monkeypatch.setattr(issuer, "run", failed)
+    operation_id = uuid.uuid4().hex
+    response = state.client.post(
+        "/authorities/" + state.authority_id + "/issue",
+        headers=state.headers,
+        json={
+            "request_id": operation_id,
+            "days": 1,
+            "csr": leaf_csr().public_bytes(Encoding.PEM).decode(),
+            "action": "revoke",
+            "issuer_id": "untrusted",
+        },
+    )
+    assert response.status_code == 409
+    record = json.loads((state.store.root / "operations" / (operation_id + ".json")).read_text())
+    assert record["state"] == "attempted"
+    assert record["authority_id"] == state.authority_id
+    assert record["action"] == "issue"

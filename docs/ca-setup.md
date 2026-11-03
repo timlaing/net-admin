@@ -243,8 +243,9 @@ docker compose -p netadmin-ca -f compose.yml up -d --no-build
 ```
 
 The command refuses completed operations, existing output, indexed certificates,
-and operations without a matching signing CSR. It saves the original operation
+and records without a matching signing action and authority binding. It saves the original operation
 with the explicit operator resolution under `/state/reconciled/`, then clears
-its pending inventory intent and retry guard. The same request ID can then be
-retried. An interrupted acknowledgement can be repeated; ambiguous attempts that
+its pending inventory intent and retry guard. Each clearance retains its own audit snapshot, including repeated failures under
+one request ID. The same request ID can then be retried. An interruption before
+CSR or inventory-intent creation can also be cleared using the recorded binding. An interrupted acknowledgement can be repeated; ambiguous attempts that
 have not been explicitly cleared remain protected from automatic retry.

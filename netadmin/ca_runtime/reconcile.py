@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import uuid
 from pathlib import Path
 
 from netadmin.ca_runtime.certificates import CAInputError
@@ -31,8 +32,8 @@ def clear_failed_signing(store: AuthorityStore, authority_id: str, operation_id:
         previous = json.loads(record.read_text())
         if previous.get("state") != "attempted":
             raise CAInputError("Only an uncertain attempted operation can be cleared")
-        if not (directory / (operation_id + ".csr")).is_file():
-            raise CAInputError("No signing request exists for this authority and operation")
+        if previous.get("authority_id") != authority_id or previous.get("action") != "issue":
+            raise CAInputError("Operation is not a signing attempt for this authority")
         if (directory / (operation_id + ".pem")).exists():
             raise CAInputError("Signing output exists; reconcile the certificate instead")
         with store.inventory.connection() as connection:
@@ -43,8 +44,11 @@ def clear_failed_signing(store: AuthorityStore, authority_id: str, operation_id:
                 raise CAInputError("Certificate is already indexed; do not retry signing")
         archive = store.root / "reconciled"
         archive.mkdir(exist_ok=True, mode=0o700)
+        target = archive / (operation_id + ".json")
+        if target.exists():
+            target = archive / (operation_id + "-" + uuid.uuid4().hex + ".json")
         durable(
-            archive / (operation_id + ".json"),
+            target,
             json.dumps(
                 {
                     **previous,
@@ -55,8 +59,9 @@ def clear_failed_signing(store: AuthorityStore, authority_id: str, operation_id:
         )
         _flush_directory(store.root)
         pending = directory / PENDING_DIRECTORY
-        (pending / operation_id).unlink(missing_ok=True)
-        _flush_directory(pending)
+        if pending.is_dir():
+            (pending / operation_id).unlink(missing_ok=True)
+            _flush_directory(pending)
         # Clear the retry guard last. Interrupted acknowledgement can be repeated.
         record.unlink()
         _flush_directory(record.parent)

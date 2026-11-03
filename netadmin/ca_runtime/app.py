@@ -151,7 +151,7 @@ def issue(authority_id: str) -> Any:
     """Issue a leaf using the explicitly selected native issuer."""
     body = _body()
     identifier(authority_id)
-    payload = {**body, "issuer_id": authority_id}
+    payload = {**body, "issuer_id": authority_id, "action": "issue"}
     store = _store()
     return jsonify(store.operation(payload, lambda: issuer.sign(store, authority_id, payload)))
 

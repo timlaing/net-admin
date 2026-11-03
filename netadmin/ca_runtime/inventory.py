@@ -174,10 +174,11 @@ class CertificateInventory:
     def _verified_leaf(pem: str, parent: x509.Certificate) -> str | None:
         try:
             certificate = x509.load_pem_x509_certificate(pem.encode())
-            if certificate.extensions.get_extension_for_class(x509.BasicConstraints).value.ca:
-                return None
+            with contextlib.suppress(x509.ExtensionNotFound):
+                if certificate.extensions.get_extension_for_class(x509.BasicConstraints).value.ca:
+                    return None
             certificate.verify_directly_issued_by(parent)
-        except (ValueError, InvalidSignature, x509.ExtensionNotFound):
+        except (ValueError, InvalidSignature):
             return None
         return pem
 

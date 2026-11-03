@@ -227,7 +227,17 @@ class AuthorityStore:
                         "Operation needs reconciliation; inspect authority state before retry"
                     )
                 return cast(dict[str, Any], previous["result"])
-            durable(record, json.dumps({"digest": digest, "state": "attempted"}).encode())
+            durable(
+                record,
+                json.dumps(
+                    {
+                        "digest": digest,
+                        "state": "attempted",
+                        "authority_id": body.get("issuer_id"),
+                        "action": body.get("action"),
+                    }
+                ).encode(),
+            )
             try:
                 result = action()
             except CAInputError as error:
