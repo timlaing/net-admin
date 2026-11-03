@@ -15,6 +15,8 @@ from typing import Protocol
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 
+PENDING_DIRECTORY = "inventory-pending"
+
 
 class _Scan(Protocol):
     def __next__(self) -> os.DirEntry[str]: ...
@@ -66,18 +68,74 @@ class CertificateInventory:
         except sqlite3.Error as error:
             raise OSError("Public certificate inventory unavailable") from error
 
-    def record(self, directory: Path, operation_id: str, pem: str) -> None:
-        """An optional index failure must never lose the signed public output."""
+    @staticmethod
+    def prepare(directory: Path, operation_id: str) -> None:
+        """Persist reconciliation intent before any external signing side effect."""
+        pending = directory / PENDING_DIRECTORY
+        pending.mkdir(exist_ok=True, mode=0o700)
+        marker = pending / operation_id
+        created = False
         try:
-            with self.connection() as connection:
-                connection.execute(
-                    "INSERT OR REPLACE INTO certificates VALUES (?, ?, ?)",
-                    (directory.name, operation_id, pem),
-                )
+            descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            created = True
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            for path in (pending, directory):
+                descriptor = os.open(path, os.O_RDONLY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
         except OSError:
-            with contextlib.suppress(OSError):
-                (directory / "inventory-dirty").touch(mode=0o600)
+            if created:
+                with contextlib.suppress(OSError):
+                    marker.unlink(missing_ok=True)
             raise
+
+    def record(self, directory: Path, operation_id: str, pem: str) -> None:
+        """Index verified output; remove intent only after its committed row exists."""
+        with self.connection() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO certificates VALUES (?, ?, ?)",
+                (directory.name, operation_id, pem),
+            )
+        with contextlib.suppress(OSError):
+            (directory / PENDING_DIRECTORY / operation_id).unlink(missing_ok=True)
+
+    def _reconcile_pending(self, connection: sqlite3.Connection, directory: Path) -> list[Path]:
+        pending = directory / PENDING_DIRECTORY
+        if not pending.is_dir():
+            return []
+        key = "pending:" + directory.name
+        if key not in self.scans:
+            self.scans[key] = os.scandir(pending)
+        parent = x509.load_pem_x509_certificate((directory / "ca.crt").read_bytes())
+        complete = []
+        for _ in range(50):
+            try:
+                entry = next(self.scans[key])
+            except StopIteration:
+                self._reset(key)
+                break
+            if not re.fullmatch(r"[0-9a-f]{32}", entry.name):
+                continue
+            marker = Path(entry.path)
+            identity = (directory.name, entry.name)
+            if connection.execute(
+                "SELECT 1 FROM certificates WHERE authority=? AND id=?", identity
+            ).fetchone():
+                complete.append(marker)
+                continue
+            try:
+                pem = self._read_leaf(directory / (entry.name + ".pem"), parent)
+            except OSError:
+                continue
+            if pem is not None:
+                connection.execute("INSERT INTO certificates VALUES (?, ?, ?)", (*identity, pem))
+                complete.append(marker)
+        return complete
 
     def _reset(self, authority: str) -> None:
         scan = self.scans.pop(authority, None)
@@ -145,13 +203,18 @@ class CertificateInventory:
             reads += self._candidate(connection, directory, entry, parent)
 
     def pending(self, directory: Path) -> bool:
-        """Expose partial import honestly so administrators can continue it."""
+        """Expose partial imports and unresolved issuance intents honestly."""
         with self.connection() as connection:
-            return not bool(
+            incomplete = not bool(
                 connection.execute(
                     "SELECT 1 FROM imported WHERE authority=?", (directory.name,)
                 ).fetchone()
             )
+        pending = directory / PENDING_DIRECTORY
+        if pending.is_dir():
+            with os.scandir(pending) as scan:
+                return incomplete or next(scan, None) is not None
+        return incomplete
 
     def page(self, directory: Path, after: str) -> tuple[list[str], str | None]:
         """Import one bounded batch, then fetch at most a page plus one row."""
@@ -162,6 +225,7 @@ class CertificateInventory:
                 if refresh:
                     connection.execute("DELETE FROM imported WHERE authority=?", (directory.name,))
                     self._reset(directory.name)
+                completed = self._reconcile_pending(connection, directory)
                 self._import_batch(connection, directory)
                 rows = connection.execute(
                     "SELECT id, pem FROM certificates WHERE authority=? AND id>? "
@@ -171,7 +235,11 @@ class CertificateInventory:
         except (OSError, ValueError):
             # Never retain a cursor advanced by a transaction that rolled back.
             self._reset(directory.name)
+            self._reset("pending:" + directory.name)
             raise
+        for marker in completed:
+            with contextlib.suppress(OSError):
+                marker.unlink(missing_ok=True)
         if refresh:
             with contextlib.suppress(OSError):
                 dirty.unlink()

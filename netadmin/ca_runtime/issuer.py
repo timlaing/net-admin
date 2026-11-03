@@ -314,6 +314,10 @@ def sign(store: AuthorityStore, authority_id: str, body: dict[str, Any]) -> dict
     request = directory / (operation_id + ".csr")
     output = directory / (operation_id + ".pem")
     durable(request, str(body["csr"]).encode())
+    try:
+        store.inventory.prepare(directory, operation_id)
+    except OSError as error:
+        raise CAInputError("Cannot persist inventory intent; signing was not attempted") from error
     run(
         [
             "ca",

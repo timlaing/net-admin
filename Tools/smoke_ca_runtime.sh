@@ -182,8 +182,9 @@ client=httpx.Client(transport=httpx.HTTPTransport(uds='/control/ca.sock'),base_u
 for attempt in range(30):
     try:
         response=client.get('/authorities');response.raise_for_status();state=response.json()
-        for authority in state['authorities']:
-            if not authority['managed']:continue
+        managed=[authority for authority in state['authorities'] if authority['managed']]
+        assert len(managed)==2
+        for authority in managed:
             directory=Path('/state/authorities')/authority['id']
             assert run(['ca','health','--ca-url',f"https://localhost:{authority['port']}",'--root',str(directory/'root.crt')])=='ok'
             leaves=client.get(f"/authorities/{authority['id']}/certificates").json()['certificates']

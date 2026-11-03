@@ -262,5 +262,5 @@ def test_partial_inventory_import_is_visible_and_can_be_continued(web):
     web.remote.get = get
     response = web.client.get("/certificates/authorities/" + web.state.authority_id + "/issued")
     assert response.status_code == 200
-    assert b"Refresh to continue the import" in response.data
+    assert b"Refresh to continue indexing" in response.data
     assert b"No leaf certificates have been issued" not in response.data

@@ -1,5 +1,6 @@
 """Review and release regressions for bounded migration and recoverable issuance."""
 
+import contextlib
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -140,10 +141,11 @@ def test_index_failure_still_returns_and_replays_the_signed_chain(state, monkeyp
     assert status["result"] == response.json
     assert len(calls) == 1
     assert "synthetic-private-database-diagnostic" not in caplog.text
-    assert (directory / "inventory-dirty").is_file()
+    marker = directory / "inventory-pending" / payload["request_id"]
+    assert marker.is_file()
     monkeypatch.setattr(state.store.inventory, "connection", real_connection)
     assert state.store.inventory.page(directory, "") == ([response.json["pem"]], None)
-    assert not (directory / "inventory-dirty").exists()
+    assert not marker.exists()
 
 
 def test_ownership_conversion_preflights_and_resumes_controller_owned_database(
@@ -222,3 +224,91 @@ def test_ownership_conversion_refuses_links_before_changing_any_file(tmp_path, m
     with pytest.raises(CAInputError, match="links or special"):
         isolation._migrate_home(home, 20000)
     assert not changed
+
+
+def test_missing_durable_intent_refuses_signing_before_native_call(state, monkeypatch):
+    def fail_prepare(*_args):
+        raise OSError("synthetic marker failure")
+
+    monkeypatch.setattr(state.store.inventory, "prepare", fail_prepare)
+    monkeypatch.setattr(issuer, "run", lambda *_args: pytest.fail("No durable intent: no signing"))
+    payload = {
+        "request_id": uuid.uuid4().hex,
+        "csr": leaf_csr().public_bytes(Encoding.PEM).decode(),
+        "days": 1,
+    }
+    path = "/authorities/" + state.authority_id + "/issue"
+    response = state.client.post(path, json=payload, headers=state.headers)
+    assert response.status_code == 400
+    assert "signing was not attempted" in response.json["error"]
+    assert state.client.post(path, json=payload, headers=state.headers).json == response.json
+    assert not (
+        state.store.directory(state.authority_id) / (payload["request_id"] + ".pem")
+    ).exists()
+
+
+def test_reconciliation_intent_is_private_and_flushed_before_use(state, monkeypatch):
+    import os
+    import stat
+
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    fsync = os.fsync
+    flushed = []
+
+    def sync(descriptor):
+        flushed.append("directory" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "file")
+        fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", sync)
+    state.store.inventory.prepare(directory, operation_id)
+    marker = directory / "inventory-pending" / operation_id
+    assert marker.is_file()
+    assert marker.stat().st_mode & 0o777 == 0o600
+    assert flushed == ["file", "directory", "directory"]
+
+
+def test_pending_intent_waits_for_output_and_survives_index_transaction_failure(state, monkeypatch):
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    inventory = state.store.inventory
+    inventory.prepare(directory, operation_id)
+    marker = directory / "inventory-pending" / operation_id
+    assert inventory.page(directory, "") == ([], None)
+    assert inventory.pending(directory)
+    pem = public_leaf(state)
+    (directory / (operation_id + ".pem")).write_text(pem)
+    real_connection = inventory.connection
+
+    @contextlib.contextmanager
+    def interrupted_commit():
+        with real_connection() as connection:
+            yield connection
+            raise OSError("synthetic interrupted commit")
+
+    monkeypatch.setattr(inventory, "connection", interrupted_commit)
+    with pytest.raises(OSError, match="interrupted commit"):
+        inventory.page(directory, "")
+    assert marker.is_file()
+    monkeypatch.setattr(inventory, "connection", real_connection)
+    assert inventory.page(directory, "") == ([pem], None)
+    assert not inventory.pending(directory)
+    assert not marker.exists()
+
+
+def test_failed_intent_flush_removes_only_the_new_uncommitted_marker(state, monkeypatch):
+    import os
+
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    marker = directory / "inventory-pending" / operation_id
+    monkeypatch.setattr(
+        os, "fsync", lambda _fd: (_ for _ in ()).throw(OSError("synthetic sync failure"))
+    )
+    with pytest.raises(OSError, match="sync failure"):
+        state.store.inventory.prepare(directory, operation_id)
+    assert not marker.exists()
+    marker.write_text("prior durable intent must remain")
+    with pytest.raises(FileExistsError):
+        state.store.inventory.prepare(directory, operation_id)
+    assert marker.read_text() == "prior durable intent must remain"

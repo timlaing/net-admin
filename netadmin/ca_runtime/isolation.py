@@ -15,6 +15,21 @@ def _walk_error(error: OSError) -> None:
     raise error
 
 
+def _check_runtime_path(path: Path, uid: int) -> None:
+    """Validate each ownership transition before changing any directory entry."""
+    info = path.lstat()
+    directory = stat.S_ISDIR(info.st_mode)
+    if not directory and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
+        raise CAInputError("Issuer ownership migration refuses links or special files")
+    if info.st_uid not in {0, uid}:
+        raise CAInputError(
+            "Stop the issuer and migrate its non-controller-owned runtime explicitly"
+        )
+    mode = 0o770 if directory else 0o660
+    if info.st_uid == uid and (info.st_gid != 0 or info.st_mode & 0o777 != mode):
+        raise CAInputError("Issuer runtime has unexpected ownership or permissions")
+
+
 def _migrate_home(home: Path, uid: int) -> None:
     """Convert controller-owned local state without following links or touching vaults.
 
@@ -25,17 +40,7 @@ def _migrate_home(home: Path, uid: int) -> None:
     for parent, directories, files in os.walk(home, followlinks=False, onerror=_walk_error):
         paths.extend(Path(parent) / name for name in [*directories, *files])
     for path in paths:
-        info = path.lstat()
-        directory = stat.S_ISDIR(info.st_mode)
-        if not directory and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
-            raise CAInputError("Issuer ownership migration refuses links or special files")
-        if info.st_uid not in {0, uid}:
-            raise CAInputError(
-                "Stop the issuer and migrate its non-controller-owned runtime explicitly"
-            )
-        mode = 0o770 if directory else 0o660
-        if info.st_uid == uid and (info.st_gid != 0 or info.st_mode & 0o777 != mode):
-            raise CAInputError("Issuer runtime has unexpected ownership or permissions")
+        _check_runtime_path(path, uid)
     # Publish the top-level owner last; a partial conversion remains resumable.
     for path in reversed(paths):
         info = path.stat()
