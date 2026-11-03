@@ -13,6 +13,7 @@ from netadmin.ca_runtime.inventory import PENDING_DIRECTORY
 from netadmin.ca_runtime.store import AuthorityStore, durable, identifier
 
 STATE_DIRECTORY = Path("/state")
+JSON_SUFFIX = ".json"
 
 
 def _flush_directory(path: Path) -> None:
@@ -27,7 +28,7 @@ def clear_failed_signing(store: AuthorityStore, authority_id: str, operation_id:
     """Keep an audit copy, then permit retry after the operator's external verification."""
     directory = store.directory(identifier(authority_id))
     operation_id = identifier(operation_id)
-    record = store.root / "operations" / (operation_id + ".json")
+    record = store.root / "operations" / (operation_id + JSON_SUFFIX)
     with store.lock():
         previous = json.loads(record.read_text())
         if previous.get("state") != "attempted":
@@ -44,9 +45,9 @@ def clear_failed_signing(store: AuthorityStore, authority_id: str, operation_id:
                 raise CAInputError("Certificate is already indexed; do not retry signing")
         archive = store.root / "reconciled"
         archive.mkdir(exist_ok=True, mode=0o700)
-        target = archive / (operation_id + ".json")
+        target = archive / (operation_id + JSON_SUFFIX)
         if target.exists():
-            target = archive / (operation_id + "-" + uuid.uuid4().hex + ".json")
+            target = archive / (operation_id + "-" + uuid.uuid4().hex + JSON_SUFFIX)
         durable(
             target,
             json.dumps(
