@@ -92,6 +92,16 @@ jobs:
             runner: ubuntu-24.04-arm
             dockerfile: docker/Dockerfile.dns-agent
             smoke: Tools/smoke_agent.sh Tools/smoke_dns_agent.sh
+          - flavour: ca-runtime
+            arch: amd64
+            runner: ubuntu-24.04
+            dockerfile: docker/Dockerfile.ca-runtime
+            smoke: Tools/smoke_ca_runtime.sh Tools/smoke_ca_stack.sh
+          - flavour: ca-runtime
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+            dockerfile: docker/Dockerfile.ca-runtime
+            smoke: Tools/smoke_ca_runtime.sh Tools/smoke_ca_stack.sh
           - flavour: ca-agent
             arch: amd64
             runner: ubuntu-24.04
@@ -251,7 +261,7 @@ jobs:
           base="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/netadmin"
           prerelease=false
           [[ "$PUBLISH_VERSION" == *-* ]] && prerelease=true
-          for suffix in '' '-dhcp-agent' '-dns-agent' '-radius-agent' '-ca-agent' '-dns' '-dhcp' '-radius'; do
+          for suffix in '' '-dhcp-agent' '-dns-agent' '-radius-agent' '-ca-agent' '-ca-runtime' '-dns' '-dhcp' '-radius'; do
             image="${base}${suffix}"
             sources=()
             for arch in amd64 aarch64; do

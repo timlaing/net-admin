@@ -200,3 +200,7 @@ Reset their passwords to generate the missing hash; it cannot be derived
 from the other hash. Editing a role without supplying a password preserves
 existing credentials. Passwords must fit within 256 UTF-8 bytes to avoid
 OpenSSL input truncation. Ambiguous native configuration is rejected before changes.
+
+For container-generated root keys and creating root/subordinate CAs in the UI, see
+[Create a root and issuing CAs](docs/ca-setup.md). The optional installer prepares
+an isolated runtime/agent deployment using existing agent mTLS trust.

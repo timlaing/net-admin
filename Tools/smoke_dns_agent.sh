@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory() as directory:
     main = root / 'named.conf'
     main.write_text('include "' + str(key) + '";\noptions { directory "' + directory + '"; '
         'listen-on port 9153 {127.0.0.1;}; listen-on-v6 {none;}; recursion no; '
-        'dnssec-validation no; pid-file "' + directory + '/named.pid"; };'
+        'dnssec-validation no; max-records-per-type 0; pid-file "' + directory + '/named.pid"; };'
         'controls { inet 127.0.0.1 port 953 allow {127.0.0.1;} keys {"test";}; };')
     daemon = subprocess.Popen(['/usr/sbin/named', '-g', '-c', str(main)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -55,12 +55,63 @@ with tempfile.TemporaryDirectory() as directory:
         assert client.post('/records', headers=headers, json=record).status_code == 200
         records = client.get('/records?zone=example.net', headers=headers).json
         assert any(item['name'] == 'agent-client' and item['value'] == '192.0.2.3' and item['ttl'] == 600 for item in records)
+        restored = {'zone':'example.net','name':'agent-client','record_type':'A','ttl':3600,'values':['192.0.2.10','192.0.2.11']}
+        assert client.post('/records', headers=headers, json=restored).status_code == 200
+        records = [item for item in client.get('/records?zone=example.net', headers=headers).json if item['name']=='agent-client']
+        assert {item['value'] for item in records} == {'192.0.2.10','192.0.2.11'}
+        assert {item['ttl'] for item in records} == {3600}
+        record.pop('value')
         assert client.post('/records/delete', headers=headers, json=record).status_code == 200
         assert not any(item['name'] == 'agent-client' for item in client.get('/records?zone=example.net', headers=headers).json)
         assert client.get('/records?zone=unmanaged.example', headers=headers).status_code == 400
         original = (root/'managed.conf').read_bytes()
         assert client.post('/zones', headers=headers, json={'name':'bad.example','content':'invalid zone'}).status_code == 502
         assert (root/'managed.conf').read_bytes() == original
+        # Paired writes must work with authoritative queries when AXFR is denied.
+        managed = root/'managed.conf'
+        config = managed.read_text()
+        restricted = config.replace('allow-transfer { key "test"; };', 'allow-transfer { none; };')
+        assert restricted != config
+        managed.write_text(restricted)
+        subprocess.run(['/usr/bin/named-checkconf',str(main)],check=True)
+        subprocess.run(['/usr/sbin/rndc','reconfig'],check=True,capture_output=True)
+        assert client.get('/records?zone=example.net',headers=headers).status_code == 502
+        old_addresses = [f'192.0.2.{index}' for index in range(1,102)]
+        restore = {'zone':'example.net','name':'MiXeD','record_type':'A','ttl':0,'values':old_addresses}
+        large = client.post('/records',headers=headers,json=restore)
+        assert large.status_code == 200,large.json
+        from types import SimpleNamespace
+        from netadmin.services.dns import AgentDnsService
+        def get(path):
+            result = client.get('/'+path,headers=headers)
+            assert result.status_code == 200,result.json
+            return result.json
+        def post(path,payload):
+            result = client.post('/'+path,headers=headers,json=payload)
+            if result.status_code >= 400:
+                raise RuntimeError(f"Synthetic agent request rejected: {payload.get('record_type', 'unknown')}")
+            return result.json
+        paired = AgentDnsService(SimpleNamespace(get=get,post=post))
+        try:
+            paired.add_host('mixed','192.0.2.200','example.net','2.0.192.in-addr.arpa',600)
+        except RuntimeError as error:
+            assert str(error).endswith(': PTR'),str(error)
+        else:
+            raise AssertionError('Unconfigured reverse zone unexpectedly accepted')
+        saved = get('records/addresses?zone=example.net&name=mixed')
+        assert {item['value'] for item in saved} == set(old_addresses)
+        assert {item['ttl'] for item in saved} == {0}
+        current = {'zone':'example.net','name':'mixed','record_type':'A','ttl':600,'value':'192.0.2.200'}
+        assert client.post('/records',headers=headers,json=current).status_code == 200
+        concurrent = dns.update.Update('example.net',keyring=dns.tsigkeyring.from_text({'test':'YWJj'}))
+        concurrent.add('mixed',600,'A','192.0.2.201')
+        assert dns.query.tcp(concurrent,'127.0.0.1',port=9153,timeout=5).rcode()==0
+        assert client.post('/records',headers=headers,json={**restore,'expected':'192.0.2.200'}).status_code==502
+        assert {item['value'] for item in get('records/addresses?zone=example.net&name=mixed')}=={'192.0.2.200','192.0.2.201'}
+        assert client.post('/records',headers=headers,json=current).status_code == 200
+        assert client.post('/records',headers=headers,json={**restore,'values':[],'expected':'192.0.2.200'}).status_code==200
+        assert get('records/addresses?zone=example.net&name=mixed')==[]
+        print('AXFR denied: mixed-case paired rollback restored 101 zero-TTL addresses; prerequisite preserved concurrent writes')
         assert client.post('/zones/delete', headers=headers, json={'name':'example.net'}).status_code == 200
         assert (root/'zones/example.net.zone').exists()
         os.environ['NETADMIN_AGENT_READ_ONLY'] = 'true'

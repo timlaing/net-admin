@@ -1,0 +1,45 @@
+# Standalone, first-run CA runtime + agent. Transport PKI is independent of managed CAs.
+# scripts/install-ca.sh prepares runtime.env and transport/ using existing agent trust.
+services:
+  ca-runtime:
+    image: ghcr.io/timlaing/netadmin-ca-runtime:${NETADMIN_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ca-runtime
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, KILL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      CA_MANAGEMENT_TOKEN_FILE: /run/secrets/management-token
+    volumes:
+      - ca-state:/state
+      - ca-control:/control
+      - ./secrets/management-token:/run/secrets/management-token:ro
+    tmpfs: [/tmp:rw,noexec,nosuid,size=64m]
+    ports: ["${CA_BIND_ADDRESS:-127.0.0.1}:9100-9115:9100-9115"]
+  ca-agent:
+    image: ghcr.io/timlaing/netadmin-ca-agent:${NETADMIN_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ca-agent
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    env_file: ./runtime.env
+    environment:
+      CA_CONTROL_SOCKET: /control/ca.sock
+      CA_MANAGEMENT_TOKEN_FILE: /run/secrets/management-token
+    volumes:
+      - ca-control:/control:ro
+      - ca-agent-data:/data
+      - ./secrets/management-token:/run/secrets/management-token:ro
+      - ./transport:/pki:ro
+    tmpfs: [/tmp:rw,noexec,nosuid,size=64m]
+    ports: ["${CA_BIND_ADDRESS:-127.0.0.1}:8084:8084"]
+volumes:
+  ca-state:
+  ca-control:
+  ca-agent-data:

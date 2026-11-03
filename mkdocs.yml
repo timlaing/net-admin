@@ -46,6 +46,8 @@ nav:
       - 'Deploying 0.5.0': deployment-0.5.0.md
       - 'ISC → Kea migration': migration.md
       - 'Certificate management': certificates.md
+      - 'Create a root and issuing CAs': ca-setup.md
+      - 'CA initialization design': ca-bootstrap-design.md
       - 'RADIUS authentication modes': radius-authentication.md
   - Service logs: service-logs.md
   - Security: security.md

@@ -271,7 +271,10 @@ def _crl() -> Any:
 
 def create_ca_agent() -> Flask:
     """Create a token/mTLS-protected registration service."""
+    from netadmin.agents.ca_lifecycle import register_lifecycle  # pylint: disable=import-outside-toplevel
+
     app = create_agent(__name__)
+    register_lifecycle(app)
     app.config.update(CA_DATA_DIR=configured_path("CA_DATA_DIR", "/data"), MAX_CONTENT_LENGTH=65536)
     root = Path(app.config["CA_DATA_DIR"])
     root.mkdir(parents=True, exist_ok=True, mode=0o700)

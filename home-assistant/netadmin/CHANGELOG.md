@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0
+
+- Add first-run CA setup in the interface: the CA runtime generates its encrypted root private key on first boot, and administrators choose certificate CN, subject, DNS/IP SANs, lifetime and hierarchy limits.
+- Create managed issuing CAs or sign external CA CSRs, with scoped leaf issuance, indexed public certificate inventory, revocation, CRLs and encrypted root recovery/archival. Managed issuers run as separate users without access to root material, lifecycle credentials or sibling keys.
+- Add a standalone CA Compose deployment and optional installer using existing agent transport trust. Existing CA deployments are not automatically migrated and RADIUS is not automatically enrolled; see the CA setup documentation before deployment.
+- Preserve original DNS A records and TTLs when paired PTR creation fails, without requiring AXFR. Conditional rollback protects concurrent writers. Update the DNS agent alongside the app before using paired host creation.
+- Reject invalid DHCP reservations with HTTP 400 before writing configuration. Expand regression coverage across CA recovery, native issuer lifecycle, service transactions, account sessions and parser failures.
+
 ## 0.7.2
 
 - Correct the release/add-on version alignment after v0.7.1 container publishing was blocked. No v0.7.1 images were published.

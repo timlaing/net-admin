@@ -35,8 +35,13 @@ def test_host_update_compensates_on_ptr_failure(monkeypatch: pytest.MonkeyPatch)
         if args[2] == "PTR":
             raise RuntimeError("reverse failed")
 
+    monkeypatch.setattr(service, "addresses", lambda *_args: [])
     monkeypatch.setattr(service, "upsert", upsert)
-    monkeypatch.setattr(service, "delete", lambda *args: calls.append(tuple(args)))
+    monkeypatch.setattr(
+        service,
+        "restore_addresses",
+        lambda zone, name, _old, **kw: calls.append((zone, name, kw["expected"])),
+    )
     with pytest.raises(RuntimeError):
         service.add_host("pi", "192.168.50.20", "dyn.example", "50.168.192.in-addr.arpa", 300)
-    assert calls[-1] == ("dyn.example", "pi", "A", "192.168.50.20")
+    assert calls[-1] == ("dyn.example", "pi", "192.168.50.20")

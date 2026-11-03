@@ -95,7 +95,7 @@ def settings_page() -> Any:
         form=form,
         sections={
             name: SECTIONS[name]
-            for name in ("DNS", "Direct Bind", "DHCP", "RADIUS", "Agent security")
+            for name in ("DNS", "Direct Bind", "DHCP", "RADIUS", "CA", "Agent security")
         },
         secrets={name: bool(previous[name]) for name in SECRET_FIELDS},
         editable=editable,

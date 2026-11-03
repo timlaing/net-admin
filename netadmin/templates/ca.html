@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}Certificates · NetAdmin{% endblock %}
 {% block content %}
+<a class="btn btn-outline-secondary mb-3" href="{{ url_for('authorities.index') }}">Certificate authorities</a>
 <div class="page-heading"><div><p class="eyebrow">TRUST &amp; IDENTITY</p><h1>Certificates</h1><p>Issue certificates from CSRs using step-ca. Private keys stay with the requester.</p></div></div>
 {% if operation_error %}<output class="alert alert-danger d-block">{{ operation_error }}</output><a href="{{ url_for('ca.index') }}">Back to certificates</a>{% elif unavailable %}<output class="alert alert-warning d-block">The CA agent is unavailable. Check its connection before retrying an operation.</output>{% else %}
 <a class="btn btn-outline-secondary mb-3" href="{{ url_for('ca.download', identifier='root') }}">Download root CA</a>

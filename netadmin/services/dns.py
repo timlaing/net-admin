@@ -8,8 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
 
+import dns.exception
+import dns.flags
+import dns.message
 import dns.name
 import dns.query
+import dns.rcode
 import dns.tsigkeyring
 import dns.update
 import dns.zone
@@ -25,6 +29,26 @@ class DnsRecord:
     ttl: int
     record_type: str
     value: str
+
+
+def _address_records(
+    response: dns.message.Message, owner: dns.name.Name, name: str, require_tsig: bool
+) -> list[DnsRecord]:
+    """Reject unknown state and aliases before projecting the exact owner RRset."""
+    if (
+        not response.flags & dns.flags.AA
+        or response.rcode() not in {dns.rcode.NOERROR, dns.rcode.NXDOMAIN}
+        or (require_tsig and not response.had_tsig)
+    ):
+        raise RuntimeError("Cannot establish prior authoritative A records")
+    if any(rrset.rdtype == dns.rdatatype.CNAME for rrset in response.answer):
+        raise RuntimeError("Owner is an alias; paired address update refused")
+    return [
+        DnsRecord(name, rrset.ttl, "A", item.to_text())
+        for rrset in response.answer
+        if rrset.name == owner and rrset.rdtype == dns.rdatatype.A
+        for item in rrset
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,12 +169,51 @@ class BindService:  # pylint: disable=too-many-instance-attributes
         reverse_suffix = reverse_zone.rstrip(".")
         full_pointer = parsed.reverse_pointer
         pointer_name = full_pointer.removesuffix(f".{reverse_suffix}").rstrip(".")
+        previous = self.addresses(forward_zone, forward_name)
         self.upsert(forward_zone, forward_name, "A", ttl, str(parsed))
         try:
             self.upsert(reverse_zone, pointer_name, "PTR", ttl, fqdn)
         except Exception:
-            self.delete(forward_zone, forward_name, "A", str(parsed))
+            self.restore_addresses(forward_zone, forward_name, previous, expected=str(parsed))
             raise
+
+    def addresses(self, zone: str, name: str) -> list[DnsRecord]:
+        """Read an authoritative owner RRset without transfer or recursion rights."""
+        try:
+            origin = dns.name.from_text(zone)
+            owner = dns.name.from_text(name, origin=origin)
+        except dns.exception.DNSException as error:
+            raise ValueError("Invalid record name or zone") from error
+        if not owner.is_subdomain(origin):
+            raise ValueError("Record name must belong to the selected zone")
+        query = dns.message.make_query(owner, "A", flags=0)
+        if self.keyring:
+            query.use_tsig(self.keyring, keyname=self.key_name, algorithm=self.algorithm)
+        try:
+            response = dns.query.tcp(query, self.server, port=self.port, timeout=10)
+        except (dns.exception.DNSException, OSError) as error:
+            raise RuntimeError("Cannot read prior authoritative A records") from error
+        return _address_records(response, owner, name, bool(self.keyring))
+
+    def restore_addresses(
+        self, zone: str, name: str, previous: list[DnsRecord], *, expected: str | None = None
+    ) -> None:
+        """Restore the full original A RRset in one authenticated update."""
+        update = dns.update.Update(
+            zone,
+            keyring=self.keyring,
+            keyname=dns.name.from_text(self.key_name),
+            keyalgorithm=self.algorithm,
+        )
+        if expected is not None:
+            update.present(name, "A", str(ipaddress.IPv4Address(expected)))
+        if previous:
+            update.replace(name, previous[0].ttl, "A", *(item.value for item in previous))
+        else:
+            update.delete(name, "A")
+        response = dns.query.tcp(update, self.server, port=self.port, timeout=10)
+        if response.rcode() != 0:
+            raise RuntimeError(f"DNS rollback failed with rcode {response.rcode()}")
 
 
 class AgentDnsService(BindService):
@@ -189,4 +252,29 @@ class AgentDnsService(BindService):
         self.client.post(
             "records/delete",
             {"zone": zone, "name": name, "record_type": record_type, "value": value},
+        )
+
+    def addresses(self, zone: str, name: str) -> list[DnsRecord]:
+        """Read exactly one authoritative A RRset through the restricted agent."""
+        return [
+            DnsRecord(**item)
+            for item in self.client.get(
+                "records/addresses?" + urlencode({"zone": zone, "name": name})
+            )
+        ]
+
+    def restore_addresses(
+        self, zone: str, name: str, previous: list[DnsRecord], *, expected: str | None = None
+    ) -> None:
+        """Restore an A RRset through the authenticated agent, never directly."""
+        self.client.post(
+            "records",
+            {
+                "zone": zone,
+                "name": name,
+                "record_type": "A",
+                "ttl": previous[0].ttl if previous else 0,
+                "values": [item.value for item in previous],
+                **({"expected": expected} if expected is not None else {}),
+            },
         )

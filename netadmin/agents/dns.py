@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import subprocess  # nosec B404 - fixed daemon tools, no shell
@@ -18,7 +19,7 @@ from flask import Flask, current_app, jsonify, request  # pylint: disable=wrong-
 
 from netadmin.agents.common import configured_path, create_agent, json_object, validated_transaction
 from netadmin.agents.service_logs import register_logs
-from netadmin.services.dns import BindService, discover_zones
+from netadmin.services.dns import BindService, DnsRecord, discover_zones
 
 
 def _record_backend(zone: str) -> BindService:
@@ -52,6 +53,16 @@ def _records() -> Any:
         return jsonify([asdict(item) for item in _record_backend(zone).records(zone)])
     except dns.query.TransferError:
         return jsonify({"error": "zone_transfer_refused"}), 502
+
+
+def _addresses() -> Any:
+    zone = request.args.get("zone", "")
+    return jsonify(
+        [
+            asdict(item)
+            for item in _record_backend(zone).addresses(zone, request.args.get("name", ""))
+        ]
+    )
 
 
 def _file_records(zone: str) -> Any:
@@ -120,16 +131,49 @@ def _record_change(delete: bool = False) -> Any:
     if delete:
         backend.delete(zone, name, record_type, value)
         return jsonify({"deleted": name})
+    _save_record(backend, zone, name, record_type, body)
+    return jsonify({"saved": name})
+
+
+def _save_record(
+    backend: BindService, zone: str, name: str, record_type: str, body: dict[str, Any]
+) -> None:
+    """Validate single records or a bounded A RRset before the native update."""
+    value = str(body.get("value", ""))
     ttl = body.get("ttl", 300)
     if (
         isinstance(ttl, bool)
         or not isinstance(ttl, int)
-        or not 1 <= ttl <= 2_147_483_647
-        or not value
+        or not (0 if "values" in body else 1) <= ttl <= 2_147_483_647
+        or (not value and "values" not in body)
     ):
         raise ValueError("Record requires a positive TTL and value")
-    backend.upsert(zone, name, record_type, ttl, value)
-    return jsonify({"saved": name})
+    if "values" in body:
+        _restore_record(backend, zone, name, record_type, body)
+    else:
+        backend.upsert(zone, name, record_type, ttl, value)
+
+
+def _restore_record(
+    backend: BindService, zone: str, name: str, record_type: str, body: dict[str, Any]
+) -> None:
+    """Apply a validated snapshot and its optional value-dependent prerequisite."""
+    ttl = body.get("ttl", 300)
+    values = body["values"]
+    if (
+        record_type != "A"
+        or not isinstance(values, list)
+        or (not values and "expected" not in body)
+        or not all(isinstance(item, str) for item in values)
+    ):
+        raise ValueError("Invalid address RRset")
+    addresses = [DnsRecord(name, ttl, "A", str(ipaddress.IPv4Address(item))) for item in values]
+    kwargs = {}
+    if "expected" in body:
+        if not isinstance(body["expected"], str):
+            raise ValueError("Invalid expected address")
+        kwargs["expected"] = str(ipaddress.IPv4Address(body["expected"]))
+    backend.restore_addresses(zone, name, addresses, **kwargs)
 
 
 def _delete_record() -> Any:
@@ -302,6 +346,7 @@ def create_dns_agent() -> Flask:
     app.add_url_rule("/zones", view_func=_create, methods=["POST"])
     app.add_url_rule("/zones/delete", view_func=_delete, methods=["POST"])
     app.add_url_rule("/records", view_func=_records, methods=["GET"])
+    app.add_url_rule("/records/addresses", view_func=_addresses, methods=["GET"])
     app.add_url_rule("/records", view_func=_record_change, methods=["POST"])
     app.add_url_rule("/records/delete", view_func=_delete_record, methods=["POST"])
     return app

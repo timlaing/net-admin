@@ -1,0 +1,672 @@
+"""Review and release regressions for bounded migration and recoverable issuance."""
+
+import contextlib
+import json
+import uuid
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.serialization import Encoding
+
+from netadmin.ca_runtime import issuer
+from tests.test_ca_followup_regressions import public_leaf
+from tests.test_ca_runtime import body
+from tests.test_ca_runtime_operations import configured, leaf_csr  # noqa: F401
+from tests.test_dns_agent import AUTH, agent
+
+
+@pytest.fixture
+def state(configured):  # noqa: F811
+    return configured
+
+
+def test_malformed_owner_is_input_error_not_bind_failure(tmp_path, monkeypatch):
+    client, _main = agent(tmp_path, monkeypatch)
+    response = client.get(
+        "/records/addresses?zone=existing.example&name=bad..existing.example.", headers=AUTH
+    )
+    assert response.status_code == 400
+    assert response.json == {"error": "Invalid record name or zone"}
+
+
+def test_unknown_parent_replays_a_deterministic_rejection(state):
+    payload = body(
+        parent_id=uuid.uuid4().hex,
+        common_name="Child",
+        dns_suffixes="example.test",
+        service_host="localhost",
+    )
+    before = len(state.store.status()["authorities"])
+    response = state.client.post("/authorities/subordinate", json=payload, headers=state.headers)
+    assert response.status_code == 400
+    assert response.json["error"] == "Unknown parent authority"
+    assert (
+        state.client.post("/authorities/subordinate", json=payload, headers=state.headers).json
+        == response.json
+    )
+    record = json.loads(
+        (state.store.root / "operations" / (payload["request_id"] + ".json")).read_text()
+    )
+    assert record["state"] == "rejected"
+    assert len(state.store.status()["authorities"]) == before
+
+
+def test_unreadable_legacy_leaf_is_retried_before_import_completes(state, monkeypatch):
+    directory = state.store.directory(state.authority_id)
+    path = directory / (uuid.uuid4().hex + ".pem")
+    pem = public_leaf(state)
+    path.write_text(pem)
+    original = Path.read_text
+
+    def read(candidate, *args, **kwargs):
+        if candidate == path:
+            raise OSError("synthetic temporary read failure")
+        return original(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    assert state.store.inventory.page(directory, "") == ([], None)
+    assert state.store.inventory.pending(directory)
+    monkeypatch.setattr(Path, "read_text", original)
+    assert state.store.inventory.page(directory, "") == ([pem], None)
+    assert not state.store.inventory.pending(directory)
+
+
+def test_first_import_is_batched_and_restart_does_not_lose_progress(state, monkeypatch):
+    directory = state.store.directory(state.authority_id)
+    pem = public_leaf(state)
+    for number in range(61):
+        (directory / (f"{number:032x}" + ".pem")).write_text(pem)
+    # Malformed bytes are invalid output, not a temporary filesystem failure.
+    (directory / (uuid.uuid4().hex + ".pem")).write_bytes(b"\xff")
+    monkeypatch.setattr("netadmin.ca_runtime.inventory.time.monotonic", lambda: 0)
+    first, _cursor = state.store.inventory.page(directory, "")
+    assert len(first) <= 50
+    assert state.store.inventory.pending(directory)
+    state.store.inventory.close()
+    for _ in range(3):
+        state.store.inventory.page(directory, "")
+        if not state.store.inventory.pending(directory):
+            break
+    assert not state.store.inventory.pending(directory)
+    with state.store.inventory.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM certificates").fetchone()[0] == 61
+
+
+def test_index_failure_still_returns_and_replays_the_signed_chain(state, monkeypatch, caplog):
+    directory = state.store.directory(state.authority_id)
+    assert state.store.inventory.page(directory, "") == ([], None)
+    assert not state.store.inventory.pending(directory)
+    real_connection = state.store.inventory.connection
+
+    def fail_index():
+        raise OSError("synthetic-private-database-diagnostic")
+
+    monkeypatch.setattr(state.store.inventory, "connection", fail_index)
+    calls = []
+    csr = leaf_csr()
+
+    def sign(arguments):
+        calls.append(arguments)
+        now = datetime.now(UTC)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(csr.subject)
+            .issuer_name(state.store.certificate(state.authority_id).subject)
+            .public_key(csr.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=1))
+            .not_valid_after(now + timedelta(days=1))
+            .add_extension(csr.extensions[0].value, False)
+            .add_extension(x509.BasicConstraints(False, None), True)
+            .sign(state.store.key(state.authority_id, {}), hashes.SHA384())
+        )
+        Path(arguments[3]).write_bytes(cert.public_bytes(Encoding.PEM))
+        return ""
+
+    monkeypatch.setattr(issuer, "run", sign)
+    payload = {
+        "request_id": uuid.uuid4().hex,
+        "csr": csr.public_bytes(Encoding.PEM).decode(),
+        "days": 1,
+    }
+    path = "/authorities/" + state.authority_id + "/issue"
+    response = state.client.post(path, json=payload, headers=state.headers)
+    assert response.status_code == 200
+    assert state.client.post(path, json=payload, headers=state.headers).json == response.json
+    status = state.client.get("/operations/" + payload["request_id"], headers=state.headers).json
+    assert status["state"] == "complete"
+    assert status["result"] == response.json
+    assert len(calls) == 1
+    assert "synthetic-private-database-diagnostic" not in caplog.text
+    marker = directory / "inventory-pending" / payload["request_id"]
+    assert marker.is_file()
+    monkeypatch.setattr(state.store.inventory, "connection", real_connection)
+    assert state.store.inventory.page(directory, "") == ([response.json["pem"]], None)
+    assert not marker.exists()
+
+
+def test_ownership_conversion_preflights_and_resumes_controller_owned_database(
+    tmp_path, monkeypatch
+):
+    import os
+
+    from netadmin.ca_runtime import isolation
+    from netadmin.ca_runtime.certificates import CAInputError
+
+    home = tmp_path / "runtime"
+    (home / "db").mkdir(parents=True)
+    data = home / "db" / "data.sst"
+    data.write_bytes(b"synthetic persistent issuer database")
+    original_stat = Path.stat
+    owners = {}
+    changed = []
+
+    def info(path, *args, **kwargs):
+        value = original_stat(path, *args, **kwargs)
+        if path == home or home in path.parents:
+            return os.stat_result((*value[:4], owners.get(path, 0), 0, *value[6:]))
+        return value
+
+    monkeypatch.setattr(Path, "stat", info)
+    monkeypatch.setattr(Path, "lstat", lambda path: info(path, follow_symlinks=False))
+    monkeypatch.setattr(
+        isolation.os,
+        "chown",
+        lambda path, uid, gid: (owners.__setitem__(path, uid), changed.append(path)),
+    )
+    # A partial prior conversion may leave already converted regular files.
+    owners[data] = 20000
+    data.chmod(0o660)
+    isolation._migrate_home(home, 20000)
+    assert owners[home] == 20000
+    assert owners[home / "db"] == 20000
+    assert changed[-1] == home
+    assert data not in changed
+    assert data.read_bytes() == b"synthetic persistent issuer database"
+    assert home.stat().st_mode & 0o777 == 0o770
+    # A foreign owner is never silently adopted.
+    owners[data] = 999
+    with pytest.raises(CAInputError, match="non-controller-owned"):
+        isolation._migrate_home(home, 20000)
+
+
+def test_ownership_conversion_refuses_links_before_changing_any_file(tmp_path, monkeypatch):
+    import os
+
+    from netadmin.ca_runtime import isolation
+    from netadmin.ca_runtime.certificates import CAInputError
+
+    home = tmp_path / "runtime"
+    home.mkdir()
+    outside = tmp_path / "outside"
+    outside.write_text("must remain unchanged")
+    link = home / "linked"
+    link.symlink_to(outside)
+    original_stat = Path.stat
+    changed = []
+
+    def info(path, *args, **kwargs):
+        value = original_stat(path, *args, **kwargs)
+        return os.stat_result((*value[:4], 0, 0, *value[6:]))
+
+    monkeypatch.setattr(Path, "stat", info)
+    monkeypatch.setattr(Path, "lstat", lambda path: info(path, follow_symlinks=False))
+    monkeypatch.setattr(isolation.os, "chown", lambda *args: changed.append(args))
+    with pytest.raises(CAInputError, match="links or special"):
+        isolation._migrate_home(home, 20000)
+    assert not changed
+    assert outside.read_text() == "must remain unchanged"
+    link.unlink()
+    os.link(outside, link)
+    with pytest.raises(CAInputError, match="links or special"):
+        isolation._migrate_home(home, 20000)
+    assert not changed
+
+
+def test_missing_durable_intent_refuses_signing_before_native_call(state, monkeypatch):
+    def fail_prepare(*_args):
+        raise OSError("synthetic marker failure")
+
+    monkeypatch.setattr(state.store.inventory, "prepare", fail_prepare)
+    monkeypatch.setattr(issuer, "run", lambda *_args: pytest.fail("No durable intent: no signing"))
+    payload = {
+        "request_id": uuid.uuid4().hex,
+        "csr": leaf_csr().public_bytes(Encoding.PEM).decode(),
+        "days": 1,
+    }
+    path = "/authorities/" + state.authority_id + "/issue"
+    response = state.client.post(path, json=payload, headers=state.headers)
+    assert response.status_code == 400
+    assert "signing was not attempted" in response.json["error"]
+    assert state.client.post(path, json=payload, headers=state.headers).json == response.json
+    assert not (
+        state.store.directory(state.authority_id) / (payload["request_id"] + ".pem")
+    ).exists()
+
+
+def test_reconciliation_intent_is_private_and_flushed_before_use(state, monkeypatch):
+    import os
+    import stat
+
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    fsync = os.fsync
+    flushed = []
+
+    def sync(descriptor):
+        flushed.append("directory" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "file")
+        fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", sync)
+    state.store.inventory.prepare(directory, operation_id)
+    marker = directory / "inventory-pending" / operation_id
+    assert marker.is_file()
+    assert marker.stat().st_mode & 0o777 == 0o600
+    assert flushed == ["file", "directory", "directory"]
+
+
+def test_pending_intent_waits_for_output_and_survives_index_transaction_failure(state, monkeypatch):
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    inventory = state.store.inventory
+    inventory.prepare(directory, operation_id)
+    marker = directory / "inventory-pending" / operation_id
+    assert inventory.page(directory, "") == ([], None)
+    assert inventory.pending(directory)
+    pem = public_leaf(state)
+    (directory / (operation_id + ".pem")).write_text(pem)
+    real_connection = inventory.connection
+
+    @contextlib.contextmanager
+    def interrupted_commit():
+        with real_connection() as connection:
+            yield connection
+            raise OSError("synthetic interrupted commit")
+
+    monkeypatch.setattr(inventory, "connection", interrupted_commit)
+    with pytest.raises(OSError, match="interrupted commit"):
+        inventory.page(directory, "")
+    assert marker.is_file()
+    with real_connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM certificates WHERE authority=? AND id=?",
+                (directory.name, operation_id),
+            ).fetchall()
+            == []
+        )
+    monkeypatch.setattr(inventory, "connection", real_connection)
+    assert inventory.page(directory, "") == ([pem], None)
+    assert not inventory.pending(directory)
+    assert not marker.exists()
+
+
+def test_failed_intent_flush_removes_only_the_new_uncommitted_marker(state, monkeypatch):
+    import os
+
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    marker = directory / "inventory-pending" / operation_id
+    monkeypatch.setattr(
+        os, "fsync", lambda _fd: (_ for _ in ()).throw(OSError("synthetic sync failure"))
+    )
+    with pytest.raises(OSError, match="sync failure"):
+        state.store.inventory.prepare(directory, operation_id)
+    assert not marker.exists()
+    marker.write_text("prior durable intent must remain")
+    with pytest.raises(FileExistsError):
+        state.store.inventory.prepare(directory, operation_id)
+    assert marker.read_text() == "prior durable intent must remain"
+
+
+@pytest.mark.parametrize("output", [None, "damaged output"])
+def test_pending_recovers_from_completed_operation_without_valid_output(state, output):
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    pem = public_leaf(state)
+    state.store.inventory.prepare(directory, operation_id)
+    if output is not None:
+        (directory / (operation_id + ".pem")).write_text(output)
+    record = state.store.root / "operations" / (operation_id + ".json")
+    record.write_text(
+        json.dumps(
+            {
+                "state": "complete",
+                "result": {
+                    "issuer_id": state.authority_id,
+                    "pem": pem,
+                },
+            }
+        )
+    )
+    assert state.store.inventory.page(directory, "") == ([pem], None)
+    assert not state.store.inventory.pending(directory)
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        "bad json",
+        "[]",
+        '{"state":"attempted"}',
+        '{"state":"complete","result":{"issuer_id":"other","pem":"bad"}}',
+    ],
+)
+def test_pending_does_not_trust_invalid_operation_fallback(state, record):
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    state.store.inventory.prepare(directory, operation_id)
+    (state.store.root / "operations" / (operation_id + ".json")).write_text(record)
+    assert state.store.inventory.page(directory, "") == ([], None)
+    assert state.store.inventory.pending(directory)
+
+
+def test_operator_can_clear_only_unissued_attempt_and_keep_audit_copy(state):
+    from netadmin.ca_runtime.reconcile import clear_failed_signing
+
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    record = state.store.root / "operations" / (operation_id + ".json")
+    record.write_text(
+        json.dumps(
+            {
+                "state": "attempted",
+                "digest": "original",
+                "authority_id": state.authority_id,
+                "action": "issue",
+            }
+        )
+    )
+    (directory / (operation_id + ".csr")).write_text("original request")
+    state.store.inventory.prepare(directory, operation_id)
+    clear_failed_signing(state.store, state.authority_id, operation_id)
+    assert not record.exists()
+    assert not (directory / "inventory-pending" / operation_id).exists()
+    audit = json.loads((state.store.root / "reconciled" / (operation_id + ".json")).read_text())
+    assert audit["digest"] == "original"
+    assert audit["resolution"] == "operator-confirmed-no-issuance"
+    assert state.store.operation({"request_id": operation_id}, lambda: {"retried": True}) == {
+        "retried": True
+    }
+
+
+@pytest.mark.parametrize("reason", ["complete", "output", "indexed"])
+def test_operator_clear_refuses_issued_or_unrelated_operations(state, reason):
+    from netadmin.ca_runtime.certificates import CAInputError
+    from netadmin.ca_runtime.reconcile import clear_failed_signing
+
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    record = state.store.root / "operations" / (operation_id + ".json")
+    record.write_text(
+        json.dumps(
+            {
+                "state": "complete" if reason == "complete" else "attempted",
+                "authority_id": state.authority_id,
+                "action": "issue",
+            }
+        )
+    )
+    (directory / (operation_id + ".csr")).write_text("original request")
+    state.store.inventory.prepare(directory, operation_id)
+    if reason == "output":
+        (directory / (operation_id + ".pem")).write_text("output must be investigated")
+    if reason == "indexed":
+        state.store.inventory.record(directory, operation_id, public_leaf(state))
+    with pytest.raises(CAInputError):
+        clear_failed_signing(state.store, state.authority_id, operation_id)
+    assert record.exists()
+
+
+def test_recovery_cli_requires_explicit_confirmation(state, monkeypatch, capsys):
+    from netadmin.ca_runtime import reconcile
+
+    monkeypatch.setattr(reconcile, "STATE_DIRECTORY", state.store.root)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "reconcile",
+            "--authority",
+            uuid.uuid4().hex,
+            "--operation",
+            uuid.uuid4().hex,
+        ],
+    )
+    with pytest.raises(SystemExit) as error:
+        reconcile.main()
+    assert error.value.code == 2
+    assert "--confirm-no-certificate-issued" in capsys.readouterr().err
+
+
+def test_recovery_cli_clears_attempt_with_explicit_confirmation(state, monkeypatch):
+    from netadmin.ca_runtime import reconcile
+
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    record = state.store.root / "operations" / (operation_id + ".json")
+    record.write_text(
+        json.dumps(
+            {
+                "state": "attempted",
+                "digest": "original",
+                "authority_id": state.authority_id,
+                "action": "issue",
+            }
+        )
+    )
+    (directory / (operation_id + ".csr")).write_text("original request")
+    state.store.inventory.prepare(directory, operation_id)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "reconcile",
+            "--authority",
+            state.authority_id,
+            "--operation",
+            operation_id,
+            "--confirm-no-certificate-issued",
+        ],
+    )
+    monkeypatch.setattr(reconcile, "STATE_DIRECTORY", state.store.root)
+    reconcile.main()
+    assert not record.exists()
+    assert not (directory / "inventory-pending" / operation_id).exists()
+
+
+def test_interrupted_operator_acknowledgement_keeps_guard_and_can_resume(state, monkeypatch):
+    from netadmin.ca_runtime import reconcile
+
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    record = state.store.root / "operations" / (operation_id + ".json")
+    record.write_text(
+        json.dumps(
+            {
+                "state": "attempted",
+                "digest": "original",
+                "authority_id": state.authority_id,
+                "action": "issue",
+            }
+        )
+    )
+    (directory / (operation_id + ".csr")).write_text("original request")
+    state.store.inventory.prepare(directory, operation_id)
+    real_flush = reconcile._flush_directory
+
+    def interrupted(path):
+        if path == directory / "inventory-pending":
+            raise OSError("synthetic interrupted intent cleanup")
+        real_flush(path)
+
+    monkeypatch.setattr(reconcile, "_flush_directory", interrupted)
+    with pytest.raises(OSError, match="interrupted intent cleanup"):
+        reconcile.clear_failed_signing(state.store, state.authority_id, operation_id)
+    assert record.exists()
+    assert (state.store.root / "reconciled" / (operation_id + ".json")).exists()
+    monkeypatch.setattr(reconcile, "_flush_directory", real_flush)
+    reconcile.clear_failed_signing(state.store, state.authority_id, operation_id)
+    assert not record.exists()
+
+
+def test_recovery_cli_does_not_initialize_missing_state(tmp_path, monkeypatch):
+    from netadmin.ca_runtime import reconcile
+
+    monkeypatch.setattr(reconcile, "STATE_DIRECTORY", tmp_path)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "reconcile",
+            "--authority",
+            uuid.uuid4().hex,
+            "--operation",
+            uuid.uuid4().hex,
+            "--confirm-no-certificate-issued",
+        ],
+    )
+    with pytest.raises(SystemExit) as error:
+        reconcile.main()
+    assert error.value.code == 2
+    assert not (tmp_path / "manifest.json").exists()
+
+
+@pytest.mark.parametrize("source", ["legacy", "operation"])
+def test_leaf_without_basic_constraints_is_imported_and_reconciled(state, source):
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    csr = leaf_csr()
+    now = datetime.now(UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(csr.subject)
+        .issuer_name(state.store.certificate(state.authority_id).subject)
+        .public_key(csr.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        .sign(state.store.key(state.authority_id, {}), hashes.SHA384())
+    )
+    pem = certificate.public_bytes(Encoding.PEM).decode()
+    if source == "legacy":
+        (directory / (operation_id + ".pem")).write_text(pem)
+    else:
+        state.store.inventory.prepare(directory, operation_id)
+        (state.store.root / "operations" / (operation_id + ".json")).write_text(
+            json.dumps(
+                {"state": "complete", "result": {"issuer_id": state.authority_id, "pem": pem}}
+            )
+        )
+    assert state.store.inventory.page(directory, "") == ([pem], None)
+    assert not state.store.inventory.pending(directory)
+
+
+@pytest.mark.parametrize("kind", ["malformed", "ca", "foreign-leaf"])
+def test_pending_rejects_unverified_operation_result_with_matching_issuer(state, kind):
+    from netadmin.ca_runtime.certificates import new_key
+
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    state.store.inventory.prepare(directory, operation_id)
+    pem = "bad"
+    if kind == "ca":
+        pem = state.store.certificate(state.authority_id).public_bytes(Encoding.PEM).decode()
+    elif kind == "foreign-leaf":
+        csr = leaf_csr()
+        now = datetime.now(UTC)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(csr.subject)
+            .issuer_name(state.store.certificate(state.authority_id).subject)
+            .public_key(csr.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now)
+            .not_valid_after(now + timedelta(days=1))
+            .sign(new_key(), hashes.SHA384())
+        )
+        pem = cert.public_bytes(Encoding.PEM).decode()
+    (state.store.root / "operations" / (operation_id + ".json")).write_text(
+        json.dumps({"state": "complete", "result": {"issuer_id": state.authority_id, "pem": pem}})
+    )
+    assert state.store.inventory.page(directory, "") == ([], None)
+    assert state.store.inventory.pending(directory)
+
+
+def test_repeated_clearances_preserve_both_audit_copies_and_allow_missing_pending(state):
+    from netadmin.ca_runtime.reconcile import clear_failed_signing
+
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    record = state.store.root / "operations" / (operation_id + ".json")
+    # Even an interruption before CSR/intent creation has an explicit binding.
+    assert not (directory / (operation_id + ".csr")).exists()
+    for digest in ("first", "second"):
+        record.write_text(
+            json.dumps(
+                {
+                    "state": "attempted",
+                    "digest": digest,
+                    "authority_id": state.authority_id,
+                    "action": "issue",
+                }
+            )
+        )
+        clear_failed_signing(state.store, state.authority_id, operation_id)
+        assert not record.exists()
+    assert not (directory / "inventory-pending").exists()
+    copies = list((state.store.root / "reconciled").glob(operation_id + "*.json"))
+    assert len(copies) == 2
+    assert {json.loads(path.read_text())["digest"] for path in copies} == {"first", "second"}
+
+
+@pytest.mark.parametrize("binding", ["other-authority", "no-authority", "revoke"])
+def test_clearance_refuses_stale_csr_for_another_attempt(state, binding):
+    from netadmin.ca_runtime.certificates import CAInputError
+    from netadmin.ca_runtime.reconcile import clear_failed_signing
+
+    directory = state.store.directory(state.authority_id)
+    operation_id = uuid.uuid4().hex
+    record = state.store.root / "operations" / (operation_id + ".json")
+    previous = {"state": "attempted", "authority_id": state.authority_id, "action": "issue"}
+    if binding == "other-authority":
+        previous["authority_id"] = uuid.uuid4().hex
+    elif binding == "no-authority":
+        previous.pop("authority_id")
+    else:
+        previous["action"] = "revoke"
+    record.write_text(json.dumps(previous))
+    (directory / (operation_id + ".csr")).write_text("stale CSR")
+    state.store.inventory.prepare(directory, operation_id)
+    with pytest.raises(CAInputError, match="not a signing attempt for this authority"):
+        clear_failed_signing(state.store, state.authority_id, operation_id)
+    assert json.loads(record.read_text()) == previous
+    assert (directory / "inventory-pending" / operation_id).exists()
+    assert not (state.store.root / "reconciled").exists()
+
+
+def test_failed_native_signing_records_server_owned_authority_and_action(state, monkeypatch):
+    import subprocess
+
+    def failed(_arguments):
+        raise subprocess.CalledProcessError(1, "step")
+
+    monkeypatch.setattr(issuer, "run", failed)
+    operation_id = uuid.uuid4().hex
+    response = state.client.post(
+        "/authorities/" + state.authority_id + "/issue",
+        headers=state.headers,
+        json={
+            "request_id": operation_id,
+            "days": 1,
+            "csr": leaf_csr().public_bytes(Encoding.PEM).decode(),
+            "action": "revoke",
+            "issuer_id": "untrusted",
+        },
+    )
+    assert response.status_code == 409
+    record = json.loads((state.store.root / "operations" / (operation_id + ".json")).read_text())
+    assert record["state"] == "attempted"
+    assert record["authority_id"] == state.authority_id
+    assert record["action"] == "issue"

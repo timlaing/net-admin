@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# Disposable full runtime: boot key, real multi-issuer signing, archive and restart.
+set -euo pipefail
+image="${1:?Usage: smoke_ca_runtime.sh <ca-runtime-image>}"
+name="netadmin-ca-runtime-smoke-${RANDOM}"
+cleanup() {
+  code=$?
+  if ((code)); then docker logs --tail 20 "$name" >&2 || true; fi
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  docker volume rm "$name-state" "$name-control" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+docker run -d --name "$name" --read-only --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add KILL --security-opt no-new-privileges \
+  --tmpfs /tmp:rw,noexec,nosuid,size=64m -v "$name-state:/state" -v "$name-control:/control" \
+  -e CA_ISOLATE_ISSUERS="${CA_SMOKE_ISOLATE:-1}" -e CA_MANAGEMENT_TOKEN_FILE=/state/token --entrypoint sh "$image" -c \
+  'umask 077; printf %s synthetic-management-token-with-more-than-32-characters > /state/token; exec python -m netadmin.ca_runtime.app' >/dev/null
+docker exec -i "$name" python - <<'PY'
+import json,time,uuid,os
+from pathlib import Path
+import httpx
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes,serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
+transport=httpx.HTTPTransport(uds='/control/ca.sock')
+client=httpx.Client(transport=transport,base_url='http://controller',headers={'X-CA-Management-Token':Path('/state/token').read_text()},timeout=90)
+for attempt in range(30):
+    try:
+        status=client.get('/authorities');status.raise_for_status();break
+    except httpx.HTTPError:
+        if attempt==29:raise
+        time.sleep(1)
+before=status.json()['public_key_sha256']
+Path('/state/test-key-fingerprint').write_text(before)
+def post(path,**body):
+    body.setdefault('request_id',uuid.uuid4().hex)
+    response=client.post(path,json=body)
+    assert response.status_code==200,(path,response.status_code,response.text)
+    return response.json()
+root=post('/authorities/root',common_name='Synthetic Root',days=7300,path_length=2)['id']
+issuer_ids=[]
+for label in ('Servers','Devices'):
+    issuer=post('/authorities/subordinate',parent_id=root,common_name=label,days=365,path_length=0,
+                service_host='localhost',dns_suffixes='example.test' if label=='Servers' else '',ip_ranges='192.168.0.0/16' if label=='Devices' else '',leaf_days=30)['id']
+    issuer_ids.append(issuer)
+from netadmin.ca_runtime.issuer import run
+for issuer in issuer_ids:
+    directory=Path('/state/authorities')/issuer
+    metadata=json.loads((directory/'metadata.json').read_text())
+    port=metadata['port']
+    for attempt in range(30):
+        try:
+            assert run(['ca','health','--ca-url',f'https://localhost:{port}','--root',str(directory/'root.crt')])=='ok';break
+        except Exception:
+            if attempt==29:
+                print((directory/'service.log').read_text());raise
+            time.sleep(1)
+    key=ec.generate_private_key(ec.SECP256R1())
+    from ipaddress import ip_address
+    identity='192.168.50.10' if metadata['policy']['ips'] else 'service.example.test'
+    san=x509.IPAddress(ip_address(identity)) if metadata['policy']['ips'] else x509.DNSName(identity)
+    csr=x509.CertificateSigningRequestBuilder().subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,identity)])).add_extension(x509.SubjectAlternativeName([san]),False).sign(key,hashes.SHA256())
+    body={'csr':csr.public_bytes(serialization.Encoding.PEM).decode(),'days':1,'request_id':uuid.uuid4().hex}
+    signed=post(f'/authorities/{issuer}/issue',**body)
+    replay=post(f'/authorities/{issuer}/issue',**body)
+    assert signed==replay
+    cert=x509.load_pem_x509_certificate(signed['pem'].encode())
+    assert not cert.extensions.get_extension_for_class(x509.BasicConstraints).value.ca
+    assert cert.issuer==x509.load_pem_x509_certificate((directory/'ca.crt').read_bytes()).subject
+    assert cert.public_key().public_numbers()==key.public_key().public_numbers()
+    bad_csr=x509.CertificateSigningRequestBuilder().subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,'outside.invalid')])).add_extension(x509.SubjectAlternativeName([x509.DNSName('outside.invalid')]),False).sign(key,hashes.SHA256())
+    denied=client.post(f'/authorities/{issuer}/issue',json={'request_id':uuid.uuid4().hex,'csr':bad_csr.public_bytes(serialization.Encoding.PEM).decode(),'days':1})
+    assert denied.status_code==409
+    # Native renewal and CRL generation must work for each independently configured issuer.
+    password=directory/'test-leaf-password';password.write_text('synthetic-leaf-password')
+    leaf_key=directory/'test-leaf.key';leaf_key.write_bytes(key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.BestAvailableEncryption(password.read_bytes())))
+    leaf=directory/'test-leaf.pem';leaf.write_text(signed['pem'])
+    flags=['--ca-url',f'https://localhost:{port}','--root',str(directory/'root.crt')]
+    run(['ca','renew',str(leaf),str(leaf_key),'--out',str(directory/'renewed.pem'),'--force','--mtls=false','--password-file',str(password),*flags])
+    assert x509.load_pem_x509_certificate((directory/'renewed.pem').read_bytes()).serial_number!=cert.serial_number
+    result=post(f'/authorities/{issuer}/revoke',serial=format(cert.serial_number,'x'),reason='5')
+    assert result['revoked']
+    assert client.get(f'/authorities/{issuer}/certificates').json()['certificates']
+    import ssl
+    with httpx.Client(verify=ssl.create_default_context(cafile=str(directory/'root.crt'))) as public:
+        crl=x509.load_der_x509_crl(public.get(f'https://localhost:{port}/1.0/crl').content)
+        assert crl.get_revoked_certificate_by_serial_number(cert.serial_number)
+if os.environ['CA_ISOLATE_ISSUERS']=='1':
+    # Prove the real native processes dropped privileges, not only their Popen options.
+    import os, subprocess, sys
+    process_users=[]
+    for status in Path('/proc').glob('[0-9]*/status'):
+        try:
+            text=status.read_text()
+            if text.splitlines()[0].split()[-1]=='step-ca':
+                process_users.append(int(next(line for line in text.splitlines() if line.startswith('Uid:')).split()[1]))
+        except FileNotFoundError:
+            pass
+    assert sorted(process_users)==[20000,20001],process_users
+    probe = """
+    import json,sys
+    from pathlib import Path
+    allowed,blocked=json.loads(sys.argv[1])
+    assert Path(allowed).read_bytes()
+    for value in blocked:
+        try:
+            Path(value).read_bytes()
+        except PermissionError:
+            continue
+        raise AssertionError('Issuer could read controller or sibling file: '+value)
+    """
+    for index,issuer in enumerate(issuer_ids):
+        directory=Path('/state/authorities')/issuer
+        sibling=Path('/state/authorities')/issuer_ids[1-index]
+        blocked=['/state/token','/state/root.key','/state/root.password',str(directory/'metadata.json'),str(directory/'provisioner.password'),str(sibling/'ca.key')]
+        subprocess.run([sys.executable,'-c',probe,json.dumps([str(directory/'ca.key'),blocked])],user=20000+index,group=20000+index,extra_groups=(),check=True)
+    print('Distinct native issuer UIDs cannot read root vault, controller metadata, provisioner secrets or sibling keys')
+    # Controller can terminate its unprivileged child; supervision restarts only it.
+    import signal
+    for status in Path('/proc').glob('[0-9]*/status'):
+        try:
+            text=status.read_text()
+            if text.splitlines()[0].split()[-1]=='step-ca' and next(line for line in text.splitlines() if line.startswith('Uid:')).split()[1]=='20000':
+                os.kill(int(status.parent.name),signal.SIGTERM)
+                break
+        except FileNotFoundError:
+            pass
+    else:
+        raise AssertionError('Missing isolated child to test restart')
+    time.sleep(1)
+    for attempt in range(30):
+        try:
+            assert run(['ca','health','--ca-url','https://localhost:9100','--root',str(Path('/state/authorities')/issuer_ids[0]/'root.crt')])=='ok'
+            break
+        except Exception:
+            if attempt==29:raise
+            time.sleep(1)
+    print('Controller signaling and backoff restart restored the isolated issuer')
+
+else:
+    print('Non-isolated library mode created runtime database directories and served both native issuers')
+backup=post('/authorities/export-root',password='synthetic-independent-recovery-passphrase')
+post('/authorities/archive-root',recovery_key=backup['key'],recovery_password='synthetic-independent-recovery-passphrase',confirmation='ARCHIVE ROOT')
+assert not Path('/state/root.key').exists()
+assert client.get('/authorities',headers={'X-CA-Management-Token':'incorrect'}).status_code==403
+print('Root boot key, two native issuers, leaf signing/replay, renewal, revocation, CRLs and root archival passed')
+PY
+docker restart "$name" >/dev/null
+docker exec -i "$name" python - <<'PY'
+import time
+from pathlib import Path
+import httpx
+client=httpx.Client(transport=httpx.HTTPTransport(uds='/control/ca.sock'),base_url='http://controller',headers={'X-CA-Management-Token':Path('/state/token').read_text()})
+for attempt in range(30):
+    try:
+        response=client.get('/authorities');response.raise_for_status();state=response.json();break
+    except httpx.HTTPError:
+        if attempt==29:raise
+        time.sleep(1)
+assert state['public_key_sha256']==Path('/state/test-key-fingerprint').read_text()
+assert state['root_online'] is False
+assert len(state['authorities'])==3
+assert not Path('/state/root.key').exists()
+print('Container restart preserved public root identity, archived root and both issuers')
+PY
+if [[ "${CA_SMOKE_ISOLATE:-1}" == 0 ]]; then
+  # Reuse the real non-isolated Badger databases, then prove isolated ownership
+  # conversion preserves identity, inventory and revocation history.
+  docker rm -f "$name" >/dev/null
+  docker run -d --name "$name" --read-only --cap-drop ALL \
+    --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add KILL \
+    --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+    -v "$name-state:/state" -v "$name-control:/control" \
+    -e CA_ISOLATE_ISSUERS=1 -e CA_MANAGEMENT_TOKEN_FILE=/state/token "$image" >/dev/null
+  docker exec -i "$name" python - <<'PY'
+import time
+from pathlib import Path
+import httpx
+from cryptography import x509
+from netadmin.ca_runtime.issuer import run
+client=httpx.Client(transport=httpx.HTTPTransport(uds='/control/ca.sock'),base_url='http://controller',headers={'X-CA-Management-Token':Path('/state/token').read_text()})
+for attempt in range(30):
+    try:
+        response=client.get('/authorities');response.raise_for_status();state=response.json()
+        managed=[authority for authority in state['authorities'] if authority['managed']]
+        assert len(managed)==2
+        for authority in managed:
+            directory=Path('/state/authorities')/authority['id']
+            assert run(['ca','health','--ca-url',f"https://localhost:{authority['port']}",'--root',str(directory/'root.crt')])=='ok'
+            leaves=client.get(f"/authorities/{authority['id']}/certificates").json()['certificates']
+            assert leaves
+            serial=x509.load_pem_x509_certificate(leaves[0]['pem'].encode()).serial_number
+            crl=x509.load_pem_x509_crl(client.get(f"/authorities/{authority['id']}/crl").json()['pem'].encode())
+            assert crl.get_revoked_certificate_by_serial_number(serial)
+        break
+    except Exception:
+        if attempt==29:raise
+        time.sleep(1)
+assert state['public_key_sha256']==Path('/state/test-key-fingerprint').read_text()
+assert state['root_online'] is False
+print('Non-isolated to isolated ownership conversion preserved native databases, inventory, CRLs and root identity')
+PY
+else
+  CA_SMOKE_ISOLATE=0 bash "$0" "$image"
+fi
