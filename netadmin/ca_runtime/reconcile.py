@@ -11,6 +11,8 @@ from netadmin.ca_runtime.certificates import CAInputError
 from netadmin.ca_runtime.inventory import PENDING_DIRECTORY
 from netadmin.ca_runtime.store import AuthorityStore, durable, identifier
 
+STATE_DIRECTORY = Path("/state")
+
 
 def _flush_directory(path: Path) -> None:
     descriptor = os.open(path, os.O_RDONLY)
@@ -63,12 +65,13 @@ def clear_failed_signing(store: AuthorityStore, authority_id: str, operation_id:
 def main() -> None:
     """Require explicit confirmation; never infer non-issuance from a CLI failure."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--state", type=Path, default=Path("/state"))
     parser.add_argument("--authority", required=True)
     parser.add_argument("--operation", required=True)
     parser.add_argument("--confirm-no-certificate-issued", action="store_true", required=True)
     args = parser.parse_args()
-    store = AuthorityStore(args.state)
+    if not (STATE_DIRECTORY / "manifest.json").is_file():
+        parser.error("Existing CA state is required at /state")
+    store = AuthorityStore(STATE_DIRECTORY)
     try:
         clear_failed_signing(store, args.authority, args.operation)
     finally:

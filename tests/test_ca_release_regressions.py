@@ -412,8 +412,6 @@ def test_recovery_cli_requires_explicit_confirmation(tmp_path, monkeypatch):
         "sys.argv",
         [
             "reconcile",
-            "--state",
-            str(tmp_path),
             "--authority",
             uuid.uuid4().hex,
             "--operation",
@@ -439,8 +437,6 @@ def test_recovery_cli_clears_attempt_with_explicit_confirmation(state, monkeypat
         "sys.argv",
         [
             "reconcile",
-            "--state",
-            str(state.store.root),
             "--authority",
             state.authority_id,
             "--operation",
@@ -448,6 +444,7 @@ def test_recovery_cli_clears_attempt_with_explicit_confirmation(state, monkeypat
             "--confirm-no-certificate-issued",
         ],
     )
+    monkeypatch.setattr(reconcile, "STATE_DIRECTORY", state.store.root)
     reconcile.main()
     assert not record.exists()
     assert not (directory / "inventory-pending" / operation_id).exists()
@@ -477,3 +474,24 @@ def test_interrupted_operator_acknowledgement_keeps_guard_and_can_resume(state, 
     monkeypatch.setattr(reconcile, "_flush_directory", real_flush)
     reconcile.clear_failed_signing(state.store, state.authority_id, operation_id)
     assert not record.exists()
+
+
+def test_recovery_cli_does_not_initialize_missing_state(tmp_path, monkeypatch):
+    from netadmin.ca_runtime import reconcile
+
+    monkeypatch.setattr(reconcile, "STATE_DIRECTORY", tmp_path)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "reconcile",
+            "--authority",
+            uuid.uuid4().hex,
+            "--operation",
+            uuid.uuid4().hex,
+            "--confirm-no-certificate-issued",
+        ],
+    )
+    with pytest.raises(SystemExit) as error:
+        reconcile.main()
+    assert error.value.code == 2
+    assert not (tmp_path / "manifest.json").exists()
