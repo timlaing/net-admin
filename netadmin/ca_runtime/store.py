@@ -32,6 +32,7 @@ from netadmin.services.radius_certificates import SigningKey, certificate_info
 ROOT_WRAP_FILE = "root.password"
 ROOT_PRIVATE_FILE = "root.key"
 AUTHORITY_CERT_FILE = "ca.crt"
+AUTHORITY_KEY_FILE = "ca.key"
 METADATA_FILE = "metadata.json"
 
 
@@ -148,7 +149,9 @@ class AuthorityStore:
                 raise CAInputError("Recovery key does not match this root")
             return key
         directory = self.directory(authority_id)
-        return load_key((directory / "ca.key").read_bytes(), (directory / "password").read_bytes())
+        return load_key(
+            (directory / AUTHORITY_KEY_FILE).read_bytes(), (directory / "password").read_bytes()
+        )
 
     def metadata(self, authority_id: str) -> dict[str, Any]:
         """Read public identity and issuer configuration metadata."""
@@ -251,7 +254,7 @@ class AuthorityStore:
         parent = self.certificate(parent_id)
         if (
             parent_id != self.manifest["root_id"]
-            and not (self.directory(parent_id) / "ca.key").is_file()
+            and not (self.directory(parent_id) / AUTHORITY_KEY_FILE).is_file()
         ):
             raise CAInputError("Parent signing key is externally held")
         values = options(body)
@@ -286,7 +289,7 @@ class AuthorityStore:
         if not csr_pem:
             password = secrets.token_urlsafe(48).encode()
             durable(directory / "password", password)
-            durable(directory / "ca.key", key_bytes(key, password))
+            durable(directory / AUTHORITY_KEY_FILE, key_bytes(key, password))
         metadata = {
             "parent_id": parent_id,
             "managed": not bool(csr_pem),
