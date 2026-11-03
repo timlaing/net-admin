@@ -214,3 +214,37 @@ When switching a stopped, controller-owned non-isolated issuer to isolation, the
 runtime preflights and converts its entire database tree without following links.
 Interrupted conversions can resume. Foreign-owned trees require an explicit
 operator migration; links and special files are refused before changing ownership.
+
+### Reconciling an uncertain signing attempt
+
+A failed signing command can still have issued a certificate: a lost response is
+not evidence of non-issuance. The runtime retains the operation and inventory
+intent rather than signing again automatically. Completed operations can recover
+their verified public PEM from their stored result if the output file is missing
+or corrupt.
+
+For an `attempted` signing operation, stop the CA stack, back up its state volume,
+and inspect the selected issuer's native database and logs. If a certificate was
+issued, recover its public PEM to `authorities/AUTHORITY_ID/OPERATION_ID.pem`;
+inventory reads will verify and index it after restart. Revoke it if appropriate.
+Never clear the operation merely because the client reported a failure.
+
+Only after establishing that **no certificate was issued**, use the offline
+recovery command from the deployment directory (replace both IDs with the
+canonical UUID hex values shown by the operation and authority):
+
+```sh
+docker compose -p netadmin-ca -f compose.yml stop ca-agent ca-runtime
+docker compose -p netadmin-ca -f compose.yml run --rm --no-deps \
+  --entrypoint python ca-runtime -m netadmin.ca_runtime.reconcile \
+  --authority AUTHORITY_ID --operation OPERATION_ID \
+  --confirm-no-certificate-issued
+docker compose -p netadmin-ca -f compose.yml up -d --no-build
+```
+
+The command refuses completed operations, existing output, indexed certificates,
+and operations without a matching signing CSR. It saves the original operation
+with the explicit operator resolution under `/state/reconciled/`, then clears
+its pending inventory intent and retry guard. The same request ID can then be
+retried. An interrupted acknowledgement can be repeated; ambiguous attempts that
+have not been explicitly cleared remain protected from automatic retry.

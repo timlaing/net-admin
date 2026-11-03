@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import sqlite3
@@ -128,14 +129,32 @@ class CertificateInventory:
             ).fetchone():
                 complete.append(marker)
                 continue
-            try:
-                pem = self._read_leaf(directory / (entry.name + ".pem"), parent)
-            except OSError:
-                continue
+            pem = self._pending_leaf(directory, entry.name, parent)
             if pem is not None:
                 connection.execute("INSERT INTO certificates VALUES (?, ?, ?)", (*identity, pem))
                 complete.append(marker)
         return complete
+
+    def _pending_leaf(
+        self, directory: Path, operation_id: str, parent: x509.Certificate
+    ) -> str | None:
+        """Recover verified public output from either durable copy."""
+        with contextlib.suppress(OSError):
+            pem = self._read_leaf(directory / (operation_id + ".pem"), parent)
+            if pem is not None:
+                return pem
+        try:
+            record = json.loads(
+                (self.path.parent / "operations" / (operation_id + ".json")).read_text()
+            )
+            result = record.get("result", {})
+            if record.get("state") == "complete" and result.get("issuer_id") == directory.name:
+                pem = result.get("pem")
+                if isinstance(pem, str):
+                    return self._verified_leaf(pem, parent)
+        except (OSError, ValueError, AttributeError):
+            pass
+        return None
 
     def _reset(self, authority: str) -> None:
         scan = self.scans.pop(authority, None)
@@ -147,7 +166,13 @@ class CertificateInventory:
     def _read_leaf(path: Path, parent: x509.Certificate) -> str | None:
         # I/O errors are deliberately not swallowed: they keep migration pending.
         try:
-            pem = path.read_text()
+            return CertificateInventory._verified_leaf(path.read_text(), parent)
+        except UnicodeError:
+            return None
+
+    @staticmethod
+    def _verified_leaf(pem: str, parent: x509.Certificate) -> str | None:
+        try:
             certificate = x509.load_pem_x509_certificate(pem.encode())
             if certificate.extensions.get_extension_for_class(x509.BasicConstraints).value.ca:
                 return None
