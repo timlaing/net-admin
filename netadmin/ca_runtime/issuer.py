@@ -222,6 +222,7 @@ class Issuers:
         self.processes: dict[str, subprocess.Popen[bytes]] = {}
         self.retry_at: dict[str, float] = {}
         self.failures: dict[str, int] = {}
+        self.stopping_at: dict[str, float] = {}
 
     def reconcile(self) -> None:
         """A broken issuer must never stop supervision of its healthy siblings."""
@@ -240,13 +241,25 @@ class Issuers:
         except (OSError, ValueError):
             eligible = False
         if not eligible:
-            if process and process.poll() is None:
-                process.terminate()
+            self._stop_ineligible(authority_id, process)
             return
+        if authority_id in self.stopping_at:
+            self._stop_ineligible(authority_id, process)
+            if process and process.poll() is None:
+                return
         if process and process.poll() is None:
             return
         if time.monotonic() >= self.retry_at.get(authority_id, 0):
             self._start(path)
+
+    def _stop_ineligible(self, authority_id: str, process: subprocess.Popen[bytes] | None) -> None:
+        if process is None or process.poll() is not None:
+            self.stopping_at.pop(authority_id, None)
+        elif authority_id not in self.stopping_at:
+            self.stopping_at[authority_id] = time.monotonic()
+            process.terminate()
+        elif time.monotonic() - self.stopping_at[authority_id] >= 5:
+            process.kill()
 
     def _start(self, path: Path) -> None:
         authority_id = path.parent.name
@@ -286,6 +299,8 @@ def sign(store: AuthorityStore, authority_id: str, body: dict[str, Any]) -> dict
 
     directory = store.directory(authority_id)
     metadata = store.metadata(authority_id)
+    if not metadata.get("managed") or not isinstance(metadata.get("policy"), dict):
+        raise CAInputError("Select a managed issuing authority")
     csr = validate_csr(str(body.get("csr", "")))
     days = certificate_options({"days": body.get("days", "365")})["days"]
     if (
@@ -319,7 +334,9 @@ def sign(store: AuthorityStore, authority_id: str, body: dict[str, Any]) -> dict
     )
     certificate = issued_matches_csr(output.read_bytes(), csr)
     certificate.verify_directly_issued_by(store.certificate(authority_id))
-    return {"pem": output.read_text(), "issuer_id": authority_id}
+    pem = output.read_text()
+    store.inventory.record(directory, operation_id, pem)
+    return {"pem": pem, "issuer_id": authority_id}
 
 
 def revocation(store: AuthorityStore, authority_id: str, body: dict[str, Any]) -> dict[str, Any]:

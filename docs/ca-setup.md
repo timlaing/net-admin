@@ -191,3 +191,13 @@ no supplementary groups and a minimal environment without lifecycle credentials.
 Root keys, wrapping secrets, controller metadata and sibling issuer keys remain
 inaccessible to issuer users. Native logs rotate at one MiB with one backup;
 failed issuer restarts back off from five seconds to five minutes.
+
+The installer checks that the runtime responds and the agent is listening, and
+that its TLS files parse. This is not an authenticated TLS chain or hostname
+check. NetAdmin validates those when connecting with its configured trust and
+client certificate; use that connection test before treating the agent as ready.
+
+The CA runtime indexes only public issued certificates in a private local SQLite
+inventory. No private keys, passwords or service configuration enter this index.
+Existing public leaf PEMs are imported once per issuer; subsequent pages use an
+indexed cursor and parse at most 50 certificates.

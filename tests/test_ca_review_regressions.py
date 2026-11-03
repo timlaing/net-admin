@@ -97,7 +97,7 @@ def test_inventory_pages_have_stable_nonoverlapping_cursor(configured):  # noqa:
     directory = state.store.directory(state.authority_id)
     pem = state.store.certificate(state.authority_id).public_bytes(Encoding.PEM)
     for number in range(51):
-        (directory / (f"{number:032x}" + ".pem")).write_bytes(pem)
+        state.store.inventory.record(directory, f"{number:032x}", pem.decode())
     path = "/authorities/" + state.authority_id + "/certificates"
     page = state.client.get(path, headers=state.headers).json
     assert len(page["certificates"]) == 50

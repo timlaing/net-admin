@@ -33,7 +33,12 @@ done
 script_root="$(cd "$(dirname "$0")/.." && pwd)"
 if [[ -f "$deployment/installation.json" ]]; then
   docker compose -p netadmin-ca --project-directory "$deployment" -f "$deployment/compose.yml" config --quiet
-  echo "Existing CA deployment found in $deployment; state preserved. Startup was not checked. Complete an interrupted installation or upgrade with this project: docker compose -p netadmin-ca --project-directory $deployment -f $deployment/compose.yml pull, then up -d --no-build."
+  echo "Existing CA deployment found in $deployment; state preserved. Startup was not checked."
+  printf 'Resume with: '
+  printf '%q ' docker compose -p netadmin-ca --project-directory "$deployment" -f "$deployment/compose.yml" pull
+  printf '\nThen: '
+  printf '%q ' docker compose -p netadmin-ca --project-directory "$deployment" -f "$deployment/compose.yml" up -d --no-build
+  printf '\n'
   exit 0
 fi
 if [[ -n "$(docker ps -aq --filter label=com.docker.compose.project=netadmin-ca)" ]]; then
@@ -97,6 +102,7 @@ for _ in {1..30}; do
   sleep 1
 done
 [[ "$ready" == true ]] || { echo "Runtime is not ready or CA agent is unavailable. Inspect its Compose logs; state and credentials are preserved." >&2; exit 1; }
+echo "The runtime responds and the agent is listening. NetAdmin must still verify the agent TLS chain and hostname using your client credentials."
 echo "Open NetAdmin Settings: CA URL https://$bind:8084."
 echo "Enter the separate management token from $deployment/secrets/management-token."
 echo 'Use the existing agent bearer token and matching client certificate. Then open Certificates.'

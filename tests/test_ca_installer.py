@@ -214,3 +214,26 @@ def test_installer_preparation_copy_failure_removes_only_new_directory(installat
     assert not state.target.exists()
     assert state.environment.is_file()
     assert (state.pki / "server.key").is_file()
+
+
+def test_installer_resume_commands_preserve_paths_and_listening_scope(installation, tmp_path):
+    import shlex
+
+    state = installation
+    target = tmp_path / "CA setup's directory"
+    args = state.args.copy()
+    args[3] = str(target)
+    initial = subprocess.run(  # noqa: S603
+        args, env=state.env, capture_output=True, text=True, check=True
+    )
+    assert "agent is listening" in initial.stdout
+    assert "NetAdmin must still verify the agent TLS chain and hostname" in initial.stdout
+    again = subprocess.run(  # noqa: S603
+        args, env=state.env, capture_output=True, text=True, check=True
+    )
+    for prefix, suffix in (("Resume with: ", ["pull"]), ("Then: ", ["up", "-d", "--no-build"])):
+        command = shlex.split(again.stdout.split(prefix, 1)[1].splitlines()[0])
+        assert command[:4] == ["docker", "compose", "-p", "netadmin-ca"]
+        assert command[command.index("--project-directory") + 1] == str(target)
+        assert command[command.index("-f") + 1] == str(target / "compose.yml")
+        assert command[-len(suffix) :] == suffix

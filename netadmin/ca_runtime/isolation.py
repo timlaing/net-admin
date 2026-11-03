@@ -18,6 +18,7 @@ def prepare(store: AuthorityStore, authority_id: str) -> dict[str, Any]:
     Local library/test use can omit OS isolation; the runtime image enables it.
     """
     if os.environ.get("CA_ISOLATE_ISSUERS") != "1":
+        (store.directory(authority_id) / "runtime").mkdir(exist_ok=True, mode=0o700)
         return {}
     if os.geteuid() != 0:
         raise CAInputError("Issuer isolation requires the privileged lifecycle controller")

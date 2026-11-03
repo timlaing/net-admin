@@ -142,6 +142,7 @@ def test_radius_user_and_client_invalid_inputs_retain_native_files(tmp_path, mon
         ).status_code
         == 404
     )
+    assert authorize.read_bytes() == authorize_before
     for payload in (
         {"name": "bad/name", "address": "192.0.2.20", "secret": "synthetic-new-secret"},
         {"name": "new", "address": "192.0.2.20", "secret": "short"},

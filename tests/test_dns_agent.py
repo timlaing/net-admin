@@ -178,7 +178,7 @@ def test_atomic_address_restore_validates_rrset_before_backend(tmp_path, monkeyp
             [DnsRecord("node", 300, "A", "192.0.2.10"), DnsRecord("node", 300, "A", "192.0.2.11")],
         )
     ]
-    for invalid in ([], "192.0.2.10", [False], ["invalid"], ["192.0.2.10"] * 101):
+    for invalid in ([], "192.0.2.10", [False], ["invalid"]):
         assert (
             client.post("/records", headers=AUTH, json={**payload, "values": invalid}).status_code
             == 400

@@ -172,18 +172,13 @@ def certificates(authority_id: str) -> Any:
     after = request.args.get("after", "")
     if after:
         identifier(after)
-    paths = sorted(
-        path
-        for path in _store().directory(authority_id).glob("*.pem")
-        if len(path.stem) == 32 and path.stem > after
-    )
-    result = []
-    for path in paths[:50]:
-        cert = x509.load_pem_x509_certificate(path.read_bytes())
-        result.append({**certificate_info(cert), "pem": path.read_text()})
-    return jsonify(
-        {"certificates": result, "next_cursor": paths[49].stem if len(paths) > 50 else None}
-    )
+    store = _store()
+    pems, next_cursor = store.inventory.page(store.directory(authority_id), after)
+    result = [
+        {**certificate_info(x509.load_pem_x509_certificate(pem.encode())), "pem": pem}
+        for pem in pems
+    ]
+    return jsonify({"certificates": result, "next_cursor": next_cursor})
 
 
 @controller.get("/authorities/<authority_id>/chain")

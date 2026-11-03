@@ -27,12 +27,14 @@ from netadmin.ca_runtime.certificates import (
     new_key,
     options,
 )
+from netadmin.ca_runtime.inventory import CertificateInventory
 from netadmin.services.radius_certificates import SigningKey, certificate_info
 
 ROOT_WRAP_FILE = "root.password"
 ROOT_PRIVATE_FILE = "root.key"
 AUTHORITY_CERT_FILE = "ca.crt"
 AUTHORITY_KEY_FILE = "ca.key"
+AUTHORITY_WRAP_FILE = "password"
 METADATA_FILE = "metadata.json"
 
 
@@ -105,12 +107,29 @@ class AuthorityStore:
             elif not (root / ROOT_PRIVATE_FILE).exists() or not (root / ROOT_WRAP_FILE).exists():
                 raise CAInputError("Missing root material; recovery required")
             if not self.manifest.get("root_archived"):
-                key = self.key(self.manifest["root_id"], {})
-                public = key.public_key().public_bytes(
-                    serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+                self._verify_root()
+        self.inventory = CertificateInventory(root)
+
+    def _verify_root(self) -> None:
+        """Check both the recorded key identity and any initialized root certificate."""
+        key = self.key(self.manifest["root_id"], {})
+        public = key.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        if hashlib.sha256(public).hexdigest() != self.manifest["public_key_sha256"]:
+            raise CAInputError("Root key does not match manifest fingerprint")
+        root_certificate = self.directory(self.manifest["root_id"]) / AUTHORITY_CERT_FILE
+        if root_certificate.exists():
+            certificate_public = (
+                self.certificate(self.manifest["root_id"])
+                .public_key()
+                .public_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PublicFormat.SubjectPublicKeyInfo,
                 )
-                if hashlib.sha256(public).hexdigest() != self.manifest["public_key_sha256"]:
-                    raise CAInputError("Root key does not match manifest fingerprint")
+            )
+            if certificate_public != public:
+                raise CAInputError("Root certificate does not match root key")
 
     @contextlib.contextmanager
     def lock(self) -> Iterator[None]:
@@ -150,7 +169,8 @@ class AuthorityStore:
             return key
         directory = self.directory(authority_id)
         return load_key(
-            (directory / AUTHORITY_KEY_FILE).read_bytes(), (directory / "password").read_bytes()
+            (directory / AUTHORITY_KEY_FILE).read_bytes(),
+            (directory / AUTHORITY_WRAP_FILE).read_bytes(),
         )
 
     def metadata(self, authority_id: str) -> dict[str, Any]:
@@ -252,11 +272,11 @@ class AuthorityStore:
         """Sign a fixed CA template using a managed or externally held child key."""
         parent_id = identifier(str(body.get("parent_id", "")))
         parent = self.certificate(parent_id)
-        if (
-            parent_id != self.manifest["root_id"]
-            and not (self.directory(parent_id) / AUTHORITY_KEY_FILE).is_file()
+        if parent_id != self.manifest["root_id"] and not all(
+            (self.directory(parent_id) / name).is_file()
+            for name in (AUTHORITY_KEY_FILE, AUTHORITY_WRAP_FILE)
         ):
-            raise CAInputError("Parent signing key is externally held")
+            raise CAInputError("Parent signing material is unavailable or externally held")
         values = options(body)
         key = new_key()
         csr_pem = body.get("csr", "")
@@ -288,7 +308,7 @@ class AuthorityStore:
         durable(directory / "chain.pem", certificate.public_bytes(PEM) + self.chain(parent_id))
         if not csr_pem:
             password = secrets.token_urlsafe(48).encode()
-            durable(directory / "password", password)
+            durable(directory / AUTHORITY_WRAP_FILE, password)
             durable(directory / AUTHORITY_KEY_FILE, key_bytes(key, password))
         metadata = {
             "parent_id": parent_id,

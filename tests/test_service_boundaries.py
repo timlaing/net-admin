@@ -155,15 +155,17 @@ def test_paired_dns_creation_compensates_failed_reverse_update(monkeypatch):
         if arguments[2] == "PTR":
             raise OSError("reverse zone unavailable")
 
-    monkeypatch.setattr(bind, "records", lambda _zone: [])
+    monkeypatch.setattr(bind, "addresses", lambda *_args: [])
     monkeypatch.setattr(bind, "upsert", upsert)
-    monkeypatch.setattr(bind, "delete", lambda *args: calls.append(("delete", args)))
+    monkeypatch.setattr(
+        bind, "restore_addresses", lambda *args, **kw: calls.append(("restore", args, kw))
+    )
     with pytest.raises(OSError):
         bind.add_host("node", "192.0.2.9", "example.test", "2.0.192.in-addr.arpa", 600)
     assert calls == [
         ("upsert", ("example.test", "node", "A", 600, "192.0.2.9")),
         ("upsert", ("2.0.192.in-addr.arpa", "9", "PTR", 600, "node.example.test.")),
-        ("delete", ("example.test", "node", "A", "192.0.2.9")),
+        ("restore", ("example.test", "node", []), {"expected": "192.0.2.9"}),
     ]
 
 
@@ -241,7 +243,7 @@ def test_paired_dns_failure_restores_complete_previous_rrset_and_ttl(monkeypatch
 
     bind = BindService("192.0.2.53", "", "")
     original = [DnsRecord("node", 3600, "A", value) for value in ("192.0.2.10", "192.0.2.11")]
-    monkeypatch.setattr(bind, "records", lambda _zone: original)
+    monkeypatch.setattr(bind, "addresses", lambda *_args: original)
     calls = []
 
     def upsert(*args):

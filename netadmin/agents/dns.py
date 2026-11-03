@@ -55,6 +55,16 @@ def _records() -> Any:
         return jsonify({"error": "zone_transfer_refused"}), 502
 
 
+def _addresses() -> Any:
+    zone = request.args.get("zone", "")
+    return jsonify(
+        [
+            asdict(item)
+            for item in _record_backend(zone).addresses(zone, request.args.get("name", ""))
+        ]
+    )
+
+
 def _file_records(zone: str) -> Any:
     """Read a configured zone and its journal without changing Bind or its policy."""
     canonical = _canonical()
@@ -134,23 +144,36 @@ def _save_record(
     if (
         isinstance(ttl, bool)
         or not isinstance(ttl, int)
-        or not 1 <= ttl <= 2_147_483_647
+        or not (0 if "values" in body else 1) <= ttl <= 2_147_483_647
         or (not value and "values" not in body)
     ):
         raise ValueError("Record requires a positive TTL and value")
     if "values" in body:
-        values = body["values"]
-        if (
-            record_type != "A"
-            or not isinstance(values, list)
-            or not 1 <= len(values) <= 100
-            or not all(isinstance(item, str) for item in values)
-        ):
-            raise ValueError("Invalid address RRset")
-        addresses = [DnsRecord(name, ttl, "A", str(ipaddress.IPv4Address(item))) for item in values]
-        backend.restore_addresses(zone, name, addresses)
+        _restore_record(backend, zone, name, record_type, body)
     else:
         backend.upsert(zone, name, record_type, ttl, value)
+
+
+def _restore_record(
+    backend: BindService, zone: str, name: str, record_type: str, body: dict[str, Any]
+) -> None:
+    """Apply a validated snapshot and its optional value-dependent prerequisite."""
+    ttl = body.get("ttl", 300)
+    values = body["values"]
+    if (
+        record_type != "A"
+        or not isinstance(values, list)
+        or (not values and "expected" not in body)
+        or not all(isinstance(item, str) for item in values)
+    ):
+        raise ValueError("Invalid address RRset")
+    addresses = [DnsRecord(name, ttl, "A", str(ipaddress.IPv4Address(item))) for item in values]
+    kwargs = {}
+    if "expected" in body:
+        if not isinstance(body["expected"], str):
+            raise ValueError("Invalid expected address")
+        kwargs["expected"] = str(ipaddress.IPv4Address(body["expected"]))
+    backend.restore_addresses(zone, name, addresses, **kwargs)
 
 
 def _delete_record() -> Any:
@@ -323,6 +346,7 @@ def create_dns_agent() -> Flask:
     app.add_url_rule("/zones", view_func=_create, methods=["POST"])
     app.add_url_rule("/zones/delete", view_func=_delete, methods=["POST"])
     app.add_url_rule("/records", view_func=_records, methods=["GET"])
+    app.add_url_rule("/records/addresses", view_func=_addresses, methods=["GET"])
     app.add_url_rule("/records", view_func=_record_change, methods=["POST"])
     app.add_url_rule("/records/delete", view_func=_delete_record, methods=["POST"])
     return app
