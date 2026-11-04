@@ -37,7 +37,7 @@ def dhcp_state(tmp_path, monkeypatch):
 def test_dhcp_invalid_reservations_conflicts_and_external_move(dhcp_state):
     state = dhcp_state
     before = state.main.read_bytes()
-    assert state.client.get("/health", headers=DHCP_AUTH).json == {"status": "ok"}
+    assert state.client.get("/health", headers=DHCP_AUTH).json == {"status": "ok", "backend": "isc"}
     for invalid in ({"name": "bad/name"}, {"mac": "not-a-mac"}, {"address": "not-an-ip"}):
         payload = {"name": "other", "mac": "aa:bb:cc:dd:ee:02", "address": "192.0.2.6", **invalid}
         assert (

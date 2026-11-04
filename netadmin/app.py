@@ -129,7 +129,9 @@ def dashboard() -> Any:
     runtime = _settings()
     return render_template(
         "dashboard.html",
-        enabled_count=sum((runtime.dns_enabled, runtime.dhcp_enabled, runtime.radius_enabled)),
+        enabled_count=sum(
+            (runtime.dns_enabled, runtime.dhcp_enabled, runtime.radius_enabled, runtime.ca_enabled)
+        ),
         checks=extension("netadmin_connection_results"),
         agent_checks=extension("netadmin_agent_results"),
         events=_store().recent_audit(5) if current_identity().role == "admin" else [],
@@ -268,6 +270,17 @@ def dns_add_rpi() -> Any:
     return redirect(url_for(DNS_INDEX, zone=form.forward_zone.data))
 
 
+def _dhcp_backend(client: AgentClient) -> str:
+    """Prefer the agent's actual backend, retaining compatibility with older agents."""
+    try:
+        health = client.get("health")
+    except httpx.HTTPError:
+        return _settings().dhcp_backend
+    if isinstance(health, dict) and health.get("backend") in {"isc", "kea"}:
+        return str(health["backend"])
+    return _settings().dhcp_backend
+
+
 @web.route("/dhcp", methods=["GET", "POST"])
 @admin_required
 def dhcp_index() -> Any:
@@ -289,7 +302,7 @@ def dhcp_index() -> Any:
         reservations=client.get("reservations"),
         leases=client.get("leases"),
         subnets=client.get("configuration"),
-        backend=_settings().dhcp_backend,
+        backend=_dhcp_backend(client),
         read_only=client.read_only(),
     )
 
@@ -343,7 +356,7 @@ def dhcp_subnet_edit(network: str) -> Any:
         form=form,
         read_only=read_only,
         error=error,
-        backend=_settings().dhcp_backend,
+        backend=_dhcp_backend(client),
     ), 422 if error or form.errors else 200
 
 

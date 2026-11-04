@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 import tempfile
 import uuid
 from collections.abc import Callable, Iterator
@@ -72,6 +73,7 @@ class AuthorityStore:
         for directory in ("authorities", "operations"):
             (root / directory).mkdir(exist_ok=True, mode=0o700)
         with self.lock():
+            self._finish_reset()
             manifest = root / "manifest.json"
             if not manifest.exists():
                 if (root / "config/ca.json").exists() or (root / "certs/root_ca.crt").exists():
@@ -109,6 +111,77 @@ class AuthorityStore:
             if not self.manifest.get("root_archived"):
                 self._verify_root()
         self.inventory = CertificateInventory(root)
+
+    def _finish_reset(self) -> None:
+        """Finish an explicitly requested root replacement after interruption."""
+        marker = self.root / "root-reset.json"
+        if not marker.exists():
+            return
+        reset = json.loads(marker.read_text())
+        directory = self.directory(reset["old_id"])
+        if directory.exists():
+            shutil.rmtree(directory)
+        durable(self.root / ROOT_PRIVATE_FILE, reset["key"].encode())
+        durable(self.root / ROOT_WRAP_FILE, reset["password"].encode())
+        durable(self.root / "manifest.json", json.dumps(reset["manifest"]).encode())
+        marker.unlink()
+
+    def delete_authority(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Remove a childless authority and rotate the root on explicit reset."""
+        authority_id = identifier(str(body.get("authority_id", "")))
+        if body.get("confirmation") != "DELETE CA":
+            raise CAInputError("Type DELETE CA to confirm")
+        directory = self.directory(authority_id)
+        if not (directory / METADATA_FILE).exists():
+            raise CAInputError("Unknown authority")
+        if any(item["parent_id"] == authority_id for item in self.status()["authorities"]):
+            raise CAInputError("Delete child authorities first")
+        self.inventory.close()
+        with self.inventory.connection() as connection:
+            for statement in (
+                "DELETE FROM certificates WHERE authority=?",
+                "DELETE FROM imported WHERE authority=?",
+                "DELETE FROM processed WHERE authority=?",
+            ):
+                connection.execute(statement, (authority_id,))
+            connection.commit()
+        if authority_id == self.manifest["root_id"]:
+            password = secrets.token_urlsafe(48)
+            key = new_key()
+            public = key.public_key().public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            manifest = {
+                "version": 1,
+                "root_id": uuid.uuid4().hex,
+                "public_key_sha256": hashlib.sha256(public).hexdigest(),
+            }
+            durable(
+                self.root / "root-reset.json",
+                json.dumps(
+                    {
+                        "old_id": authority_id,
+                        "manifest": manifest,
+                        "key": key_bytes(key, password.encode()).decode(),
+                        "password": password,
+                    }
+                ).encode(),
+            )
+            self._finish_reset()
+            self.manifest = manifest
+        else:
+            # Native issuers create private directories under their own UID.
+            # Reclaim directory ownership after process shutdown so the controller
+            # can remove them without adding DAC override capabilities.
+            for parent, directories, _files in os.walk(directory, followlinks=False):
+                for name in directories:
+                    path = Path(parent) / name
+                    if not path.is_symlink():
+                        if path.stat().st_uid != os.geteuid():
+                            os.chown(path, os.geteuid(), -1)
+                        path.chmod(0o700)
+            shutil.rmtree(directory)
+        return {"deleted": authority_id}
 
     def _verify_root(self) -> None:
         """Check both the recorded key identity and any initialized root certificate."""

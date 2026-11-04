@@ -327,7 +327,7 @@ def test_renewal_worker_checks_mode_readonly_due_and_activation(material, monkey
 def test_ca_ui_admin_csrf_and_public_download(tmp_path, monkeypatch):
     app, client = admin_client(tmp_path)
     app.extensions["netadmin_settings"] = replace(
-        app.extensions["netadmin_settings"], ca_agent_url="https://ca-agent:8084"
+        app.extensions["netadmin_settings"], ca_agent_url="https://ca-agent:8084", ca_enabled=True
     )
     calls = []
     remote = SimpleNamespace(
@@ -966,7 +966,7 @@ def test_certificate_navigation_stays_active_on_inspection(tmp_path, monkeypatch
 
     app, client = admin_client(tmp_path)
     app.extensions["netadmin_settings"] = replace(
-        app.extensions["netadmin_settings"], ca_agent_url="https://ca-agent:8084"
+        app.extensions["netadmin_settings"], ca_agent_url="https://ca-agent:8084", ca_enabled=True
     )
     monkeypatch.setattr(
         "netadmin.ca_web._client",
@@ -975,7 +975,8 @@ def test_certificate_navigation_stays_active_on_inspection(tmp_path, monkeypatch
     response = client.post("/certificates/inspect", data={"csr": csr()})
     assert response.status_code == 200
     assert re.search(
-        r'class="section-link active" href="/certificates"\s+aria-current="page"', response.text
+        r'class="section-link active" href="/certificates/authorities"\s+aria-current="page"',
+        response.text,
     )
 
 

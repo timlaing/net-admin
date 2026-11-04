@@ -349,7 +349,7 @@ def test_save_changes_backends_and_navigation_without_losing_session(runtime, mo
     assert response.status_code == 302
     assert client.application.extensions["netadmin_dhcp"].base_url == "https://new.example:8081"
     assert "Manage DHCP" in client.get("/").text
-    assert "Configure DNS" in client.get("/").text
+    assert "<h2>DNS</h2>" not in client.get("/").text
     monkeypatch.setattr("netadmin.services.agents.AgentClient.get", lambda *a: [])
     assert client.get("/dhcp").status_code == 200
     assert client.get("/settings").status_code == 200
@@ -488,3 +488,29 @@ def test_overview_status_disabled_direct_and_unavailable(runtime, agent_settings
     response = client.get("/connections/status/dhcp")
     assert response.json["state"] == "Unavailable"
     assert "private connection detail" not in response.text
+
+
+def test_ca_toggle_persists_and_controls_navigation(runtime, monkeypatch):
+    client = client_for(runtime, monkeypatch)
+    assert "Enable CA administration" in client.get("/settings").text
+    values = dict(
+        ca_enabled="true",
+        ca_agent_url="https://ca.example.test:8084",
+        agent_token="synthetic",  # noqa: S106 - synthetic test value
+        agent_cert="/config/client.pem",
+        agent_key="/config/client.key",
+    )
+    assert client.post("/settings", data=form_data(runtime, **values)).status_code == 302
+    assert read_env_file()["NETADMIN_CA_ENABLED"] == "true"
+    assert "<h2>CA</h2>" in client.get("/").text
+    assert "<span>CA</span>" in client.get("/").text
+    values["ca_enabled"] = "false"
+    assert client.post("/settings", data=form_data(runtime, **values)).status_code == 302
+    assert read_env_file()["NETADMIN_CA_ENABLED"] == "false"
+    assert client.application.extensions["netadmin_settings"].ca_agent_url == values["ca_agent_url"]
+    html = client.get("/").text
+    assert "<h2>CA</h2>" not in html
+    assert "<span>CA</span>" not in html
+    assert "/connections/status/ca" not in html
+    assert client.get("/connections/status/ca").json["state"] == "Disabled"
+    assert "Disabled" in client.post("/settings/test/ca").text

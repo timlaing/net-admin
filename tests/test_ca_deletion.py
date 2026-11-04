@@ -1,0 +1,97 @@
+"""Explicit authority removal, fresh root identities and service visibility."""
+
+from dataclasses import replace
+
+from netadmin.ca_runtime.store import AuthorityStore
+from tests.test_ca_runtime import body, runtime  # noqa: F401
+from tests.test_multi_service_ui import admin_client
+
+
+def test_root_delete_requires_confirmation_and_rotates_identity(runtime, tmp_path):  # noqa: F811
+    app, client, headers = runtime
+    store = app.extensions["ca_store"]
+    original = store.manifest.copy()
+    root_id = client.post("/authorities/root", json=body(), headers=headers).json["id"]
+    payload = body(authority_id=root_id, confirmation="wrong")
+    assert client.post("/authorities/delete", json=payload, headers=headers).status_code == 400
+    assert store.directory(root_id).exists()
+    payload = body(authority_id=root_id, confirmation="DELETE CA")
+    assert client.post("/authorities/delete", json=payload).status_code == 403
+    response = client.post("/authorities/delete", json=payload, headers=headers)
+    assert response.status_code == 200
+    assert client.post("/authorities/delete", json=payload, headers=headers).json == response.json
+    assert store.status()["authorities"] == []
+    assert store.manifest["root_id"] != original["root_id"]
+    assert store.manifest["public_key_sha256"] != original["public_key_sha256"]
+    assert AuthorityStore(tmp_path).manifest == store.manifest
+    assert client.post("/authorities/root", json=body(), headers=headers).status_code == 200
+
+
+def test_delete_children_before_parent(runtime):  # noqa: F811
+    app, client, headers = runtime
+    store = app.extensions["ca_store"]
+    root_id = client.post("/authorities/root", json=body(), headers=headers).json["id"]
+    child_id = store.create_subordinate(body(parent_id=root_id, days=365, path_length=0))["id"]
+    response = client.post(
+        "/authorities/delete",
+        headers=headers,
+        json=body(authority_id=root_id, confirmation="DELETE CA"),
+    )
+    assert response.status_code == 400
+    assert b"Delete child authorities first" in response.data
+    for authority_id in (child_id, root_id):
+        response = client.post(
+            "/authorities/delete",
+            headers=headers,
+            json=body(authority_id=authority_id, confirmation="DELETE CA"),
+        )
+        assert response.status_code == 200
+        assert not store.directory(authority_id).exists()
+
+
+def test_dashboard_and_navigation_only_show_enabled_services(tmp_path):
+    app, client = admin_client(tmp_path)
+    settings = app.extensions["netadmin_settings"]
+    app.extensions["netadmin_settings"] = replace(
+        settings,
+        dns_enabled=False,
+        dhcp_enabled=False,
+        radius_enabled=False,
+        ca_agent_url="https://ca.example.test:8084",
+        ca_enabled=True,
+    )
+    response = client.get("/")
+    assert response.status_code == 200
+    html = response.data.decode()
+    assert "<h2>CA</h2>" in html
+    assert "<span>CA</span>" in html
+    for service in ("DNS", "DHCP", "RADIUS"):
+        assert f"<h2>{service}</h2>" not in html
+        assert f"<span>{service}</span>" not in html
+    assert "/connections/status/ca" in html
+
+
+def test_root_reset_completes_after_interrupted_key_write(runtime, tmp_path, monkeypatch):  # noqa: F811
+    import pytest
+
+    from netadmin.ca_runtime import store as storage
+
+    app, client, headers = runtime
+    store = app.extensions["ca_store"]
+    root_id = client.post("/authorities/root", json=body(), headers=headers).json["id"]
+    original = store.manifest.copy()
+    write = storage.durable
+
+    def interrupted(path, data):
+        if path.name == "root.key":
+            raise OSError("simulated interruption")
+        write(path, data)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(storage, "durable", interrupted)
+        with pytest.raises(OSError), store.lock():
+            store.delete_authority(body(authority_id=root_id, confirmation="DELETE CA"))
+    recovered = AuthorityStore(tmp_path)
+    assert recovered.status()["authorities"] == []
+    assert recovered.manifest["public_key_sha256"] != original["public_key_sha256"]
+    assert not (tmp_path / "root-reset.json").exists()

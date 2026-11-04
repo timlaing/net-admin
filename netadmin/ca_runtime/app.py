@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess  # nosec B404
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -128,6 +129,26 @@ def _subordinate(store: AuthorityStore, body: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _delete_authority(store: AuthorityStore, body: dict[str, Any]) -> dict[str, Any]:
+    """Stop an issuing process before removing its private state under the store lock."""
+    authority_id = identifier(str(body.get("authority_id", "")))
+    if body.get("confirmation") != "DELETE CA":
+        raise CAInputError("Type DELETE CA to confirm")
+    if any(item["parent_id"] == authority_id for item in store.status()["authorities"]):
+        raise CAInputError("Delete child authorities first")
+    processes = current_app.extensions["ca_issuers"].processes
+    process = processes.get(authority_id)
+    if process and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+    processes.pop(authority_id, None)
+    return store.delete_authority(body)
+
+
 @controller.post("/authorities/<action>")
 def mutate(action: str) -> Any:
     """Dispatch an allowlisted lifecycle operation under its stable identity."""
@@ -136,10 +157,11 @@ def mutate(action: str) -> Any:
     if action == "export-root":
         with store.lock():
             return jsonify(store.export_root(body))
-    actions = {
+    actions: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
         "root": store.create_root,
         "subordinate": lambda payload: _subordinate(store, payload),
         "archive-root": store.archive_root,
+        "delete": lambda payload: _delete_authority(store, payload),
     }
     if action not in actions:
         return jsonify({"error": "Unknown operation"}), 404

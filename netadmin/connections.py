@@ -25,13 +25,13 @@ DIRECT_BIND = "Direct Bind"
 NOT_CONFIGURED = "Not configured"
 
 SECRET_FIELDS = ("dns_tsig_secret", "radius_secret", "agent_token", "ca_management_token")
-BOOLEAN_FIELDS = ("dns_enabled", "dhcp_enabled", "radius_enabled", "dns_use_agent")
+BOOLEAN_FIELDS = ("dns_enabled", "dhcp_enabled", "radius_enabled", "ca_enabled", "dns_use_agent")
 PATH_FIELDS = ("dns_config_path", "agent_ca", "agent_cert", "agent_key")
 SECTIONS = {
     "DNS": ("dns_enabled", "dns_use_agent", "dns_agent_url"),
-    "DHCP": ("dhcp_enabled", "dhcp_agent_url", "dhcp_backend"),
+    "DHCP": ("dhcp_enabled", "dhcp_agent_url"),
     "RADIUS": ("radius_enabled", "radius_agent_url", "radius_host", "radius_secret"),
-    "CA": ("ca_agent_url", "ca_management_token"),
+    "CA": ("ca_enabled", "ca_agent_url", "ca_management_token"),
     AGENT_SECURITY: ("agent_token", "agent_ca", "agent_cert", "agent_key"),
     DIRECT_BIND: (
         "dns_server",
@@ -160,11 +160,11 @@ class ConnectionForm(FlaskForm):  # type: ignore[misc]
     dns_config_path = text_field("Local Bind configuration path (optional)", 1024)
     dhcp_enabled = BooleanField("Enable DHCP administration")
     dhcp_agent_url = text_field("DHCP agent HTTPS URL")
-    dhcp_backend = SelectField("DHCP backend", choices=[("isc", "ISC DHCPD"), ("kea", "Kea")])
     radius_enabled = BooleanField("Enable RADIUS administration and login")
     radius_agent_url = text_field("RADIUS agent HTTPS URL")
     radius_host = text_field("RADIUS authentication server")
     radius_secret = PasswordField("RADIUS shared secret", validators=[Length(max=253)])
+    ca_enabled = BooleanField("Enable CA administration")
     ca_agent_url = text_field("CA agent HTTPS URL")
     ca_management_token = PasswordField(
         "CA lifecycle management token", validators=[Length(max=1024)]
@@ -201,8 +201,6 @@ def configuration_errors(values: dict[str, str]) -> dict[str, str]:
     for field in BOOLEAN_FIELDS:
         if values[field] not in {"true", "false"}:
             errors[field] = "Choose true or false."
-    if values["dhcp_backend"] not in {"isc", "kea"}:
-        errors["dhcp_backend"] = "Choose ISC DHCPD or Kea."
     for field in SECRET_FIELDS:
         if any(char in values[field] for char in "\r\n\x00"):
             errors[field] = "Use a single-line secret."
@@ -263,7 +261,7 @@ def _missing_fields(values: dict[str, str], names: tuple[str, ...], message: str
 def _agent_errors(values: dict[str, str]) -> dict[str, str]:
     """Validate agent transport and RADIUS authentication requirements."""
     errors: dict[str, str] = {}
-    for service in ("dns", "dhcp", "radius"):
+    for service in ("dns", "dhcp", "radius", "ca"):
         if service == "dns" and values["dns_use_agent"] != "true":
             continue
         if values[f"{service}_enabled"] != "true":
@@ -359,6 +357,8 @@ def agent_status(settings: Settings, service: str) -> ConnectionResult:
 
 def test_connection(settings: Settings, service: str) -> ConnectionResult:
     """Test active settings only; never mutate a remote service."""
+    if service == "ca":
+        return agent_status(settings, service)
     values = connection_values(settings)
     if values[f"{service}_enabled"] != "true":
         return ConnectionResult("Disabled", "Enable this service in Settings when you need it.")

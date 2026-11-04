@@ -264,3 +264,22 @@ def test_partial_inventory_import_is_visible_and_can_be_continued(web):
     assert response.status_code == 200
     assert b"Refresh to continue indexing" in response.data
     assert b"No leaf certificates have been issued" not in response.data
+
+
+def test_delete_forwards_confirmed_authority_and_renders_controls(web):
+    page = web.client.get("/certificates/authorities")
+    assert b"Delete intermediate CA" in page.data
+    assert b"Delete root CA" in page.data
+    payload = {
+        "authority_id": web.state.authority_id,
+        "confirmation": "DELETE CA",
+        "confirm": "yes",
+        "request_id": uuid.uuid4().hex,
+    }
+    response = web.client.post("/certificates/authorities/delete", data=payload)
+    assert response.status_code == 302
+    assert web.calls[-1][0:2] == ("POST", "authorities/delete")
+    assert web.calls[-1][2]["authority_id"] == web.state.authority_id
+    assert web.calls[-1][2]["confirmation"] == "DELETE CA"
+    payload.pop("confirm")
+    assert web.client.post("/certificates/authorities/delete", data=payload).status_code == 400

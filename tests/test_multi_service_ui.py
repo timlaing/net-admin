@@ -231,3 +231,15 @@ def test_read_only_radius_hides_all_write_controls(tmp_path):
         "data-edit-client",
     ):
         assert control not in page.text
+
+
+def test_dhcp_backend_is_reported_by_agent(tmp_path):
+    app, client = admin_client(tmp_path)
+    app.extensions["netadmin_dhcp"] = SimpleNamespace(
+        read_only=lambda: False,
+        get=lambda path: {"status": "ok", "backend": "kea"} if path == "health" else [],
+    )
+    page = client.get("/dhcp")
+    assert page.status_code == 200
+    assert '<span class="status">KEA</span>' in page.text
+    assert 'name="dhcp_backend"' not in client.get("/settings").text
