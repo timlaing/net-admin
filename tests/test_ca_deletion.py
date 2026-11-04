@@ -365,8 +365,9 @@ def test_incomplete_subordinate_cleanup_preserves_valid_authorities(
 
     with monkeypatch.context() as patch:
         patch.setattr(storage, "durable", interrupted)
+        payload = body(parent_id=root_id, days=365, path_length=0)
         with store.lock(), pytest.raises(OSError, match="simulated creation interruption"):
-            store.create_subordinate(body(parent_id=root_id, days=365, path_length=0))
+            store.create_subordinate(payload)
     incomplete = [path for path in (tmp_path / "authorities").iterdir() if path.name != root_id]
     assert len(incomplete) == 1
     assert (incomplete[0] / "ca.key").exists()
