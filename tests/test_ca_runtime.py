@@ -173,8 +173,10 @@ def test_authority_options_reject_invalid_inputs(values):
 def test_authority_ui_empty_state_and_sensitive_exports(tmp_path, monkeypatch):
     app, client = admin_client(tmp_path)
     assert client.get("/certificates").status_code == 302
+    assert client.get("/certificates/authorities").headers["Location"] == "/settings"
+    settings = replace(app.extensions["netadmin_settings"], ca_enabled=True)
+    app.extensions["netadmin_settings"] = settings
     assert b"Connect CA containers" in client.get("/certificates/authorities").data
-    settings = app.extensions["netadmin_settings"]
     app.extensions["netadmin_settings"] = replace(
         settings, ca_agent_url="https://ca.test:8084", ca_management_token=TOKEN
     )

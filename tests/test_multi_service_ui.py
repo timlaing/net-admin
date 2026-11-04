@@ -1,6 +1,9 @@
 """Multiple zones and DHCP pools remain independently addressable in the UI."""
 
+from dataclasses import replace
 from types import SimpleNamespace
+
+import pytest
 
 from netadmin.services.dns import DnsZone
 from tests.test_app import make_app
@@ -231,3 +234,67 @@ def test_read_only_radius_hides_all_write_controls(tmp_path):
         "data-edit-client",
     ):
         assert control not in page.text
+
+
+def test_dhcp_backend_is_reported_by_agent(tmp_path):
+    app, client = admin_client(tmp_path)
+    subnet = {
+        "network": "192.0.2.0",
+        "netmask": "255.255.255.0",
+        "ranges": [],
+        "options": {},
+    }
+    app.extensions["netadmin_dhcp"] = SimpleNamespace(
+        read_only=lambda: False,
+        get=lambda path: (
+            {"status": "ok", "backend": "kea"}
+            if path == "health"
+            else [subnet]
+            if path == "configuration"
+            else []
+        ),
+    )
+    page = client.get("/dhcp")
+    assert page.status_code == 200
+    assert '<span class="status">KEA</span>' in page.text
+    editor = client.get("/dhcp/subnets/192.0.2.0")
+    assert editor.status_code == 200
+    assert 'data-backend="kea"' in editor.text
+    assert 'name="dhcp_backend"' not in client.get("/settings").text
+
+
+@pytest.mark.parametrize("backend", ["isc", "kea"])
+@pytest.mark.parametrize(
+    "health",
+    ["invalid-json", "connection-error", {"backend": []}, {"backend": {}}, {"backend": None}],
+)
+def test_malformed_dhcp_health_uses_legacy_backend_for_both_pages(tmp_path, backend, health):
+    import json
+
+    import httpx
+
+    app, client = admin_client(tmp_path)
+    app.extensions["netadmin_settings"] = replace(
+        app.extensions["netadmin_settings"], dhcp_backend=backend
+    )
+    subnet = {
+        "network": "192.0.2.0",
+        "netmask": "255.255.255.0",
+        "ranges": [],
+        "options": {},
+    }
+
+    def get(path):
+        if path == "health":
+            if health == "connection-error":
+                raise httpx.ConnectError("agent unreachable")
+            return json.loads(health) if isinstance(health, str) else health
+        return [subnet] if path == "configuration" else []
+
+    app.extensions["netadmin_dhcp"] = SimpleNamespace(read_only=lambda: False, get=get)
+    page = client.get("/dhcp")
+    assert page.status_code == 200
+    assert f'<span class="status">{backend.upper()}</span>' in page.text
+    editor = client.get("/dhcp/subnets/192.0.2.0")
+    assert editor.status_code == 200
+    assert f'data-backend="{backend}"' in editor.text

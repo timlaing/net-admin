@@ -129,7 +129,9 @@ def dashboard() -> Any:
     runtime = _settings()
     return render_template(
         "dashboard.html",
-        enabled_count=sum((runtime.dns_enabled, runtime.dhcp_enabled, runtime.radius_enabled)),
+        enabled_count=sum(
+            (runtime.dns_enabled, runtime.dhcp_enabled, runtime.radius_enabled, runtime.ca_enabled)
+        ),
         checks=extension("netadmin_connection_results"),
         agent_checks=extension("netadmin_agent_results"),
         events=_store().recent_audit(5) if current_identity().role == "admin" else [],
@@ -268,6 +270,18 @@ def dns_add_rpi() -> Any:
     return redirect(url_for(DNS_INDEX, zone=form.forward_zone.data))
 
 
+def _dhcp_backend(client: AgentClient) -> str:
+    """Prefer the agent's actual backend, retaining compatibility with older agents."""
+    try:
+        health = client.get("health")
+    except (httpx.HTTPError, ValueError):
+        return _settings().dhcp_backend
+    backend = health.get("backend") if isinstance(health, dict) else None
+    if isinstance(backend, str) and backend in {"isc", "kea"}:
+        return backend
+    return _settings().dhcp_backend
+
+
 @web.route("/dhcp", methods=["GET", "POST"])
 @admin_required
 def dhcp_index() -> Any:
@@ -289,7 +303,7 @@ def dhcp_index() -> Any:
         reservations=client.get("reservations"),
         leases=client.get("leases"),
         subnets=client.get("configuration"),
-        backend=_settings().dhcp_backend,
+        backend=_dhcp_backend(client),
         read_only=client.read_only(),
     )
 
@@ -343,7 +357,7 @@ def dhcp_subnet_edit(network: str) -> Any:
         form=form,
         read_only=read_only,
         error=error,
-        backend=_settings().dhcp_backend,
+        backend=_dhcp_backend(client),
     ), 422 if error or form.errors else 200
 
 
@@ -530,6 +544,22 @@ def audit() -> Any:
     return render_template("audit.html", events=_store().recent_audit())
 
 
+def _disabled_service() -> Any:
+    """Avoid backend calls for services the administrator disabled."""
+    if g.identity is not None and g.identity.role == "admin":
+        endpoint = request.endpoint or ""
+        if endpoint.startswith(("ca.", "authorities.")) and not _settings().ca_enabled:
+            flash("CA is disabled. Enable it in Settings first.", "info")
+            return redirect(url_for("connections.settings_page"))
+        for service in ("dns", "dhcp", "radius"):
+            if endpoint.startswith(f"web.{service}_") and not getattr(
+                _settings(), f"{service}_enabled"
+            ):
+                flash(f"{service.upper()} is disabled. Enable it in Settings first.", "info")
+                return redirect(url_for("connections.settings_page"))
+    return None
+
+
 def create_app(settings: Settings | None = None) -> Flask:
     """Create and configure NetAdmin."""
     runtime = settings or Settings.from_env()
@@ -561,17 +591,7 @@ def create_app(settings: Settings | None = None) -> Flask:
     def connection_context() -> dict[str, Any]:
         return {"service_settings": _settings()}
 
-    @app.before_request
-    def disabled_service() -> Any:
-        """Avoid backend calls for services the administrator disabled."""
-        if g.identity is not None and g.identity.role == "admin":
-            for service in ("dns", "dhcp", "radius"):
-                if (request.endpoint or "").startswith(f"web.{service}_") and not getattr(
-                    _settings(), f"{service}_enabled"
-                ):
-                    flash(f"{service.upper()} is disabled. Enable it in Settings first.", "info")
-                    return redirect(url_for("connections.settings_page"))
-        return None
+    app.before_request(_disabled_service)
 
     @app.errorhandler(httpx.HTTPError)
     @app.errorhandler(RuntimeError)

@@ -46,6 +46,17 @@ class CertificateInventory:
         _close_scans(self.scans)
         self.failed.clear()
 
+    def remove_authority(self, authority_id: str) -> None:
+        """Remove derived inventory after authority deletion is committed to recovery."""
+        self.close()
+        with self.connection() as connection:
+            for statement in (
+                "DELETE FROM certificates WHERE authority=?",
+                "DELETE FROM imported WHERE authority=?",
+                "DELETE FROM processed WHERE authority=?",
+            ):
+                connection.execute(statement, (authority_id,))
+
     @contextlib.contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
         """Close rolls back an interrupted transaction; commit only on success."""

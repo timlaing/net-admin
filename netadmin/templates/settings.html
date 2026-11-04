@@ -11,7 +11,7 @@
 {% endif %}
 <section class="card settings-section"><div class="card-body">
   <h2 class="h4">Test active connections</h2><p class="text-secondary">Check access before making changes. Tests read service state; they do not test write or reload permissions. Allow up to 10 seconds per test, plus hostname resolution.</p>
-  <div class="d-flex flex-wrap gap-2">{% for service in ['dns','dhcp','radius'] %}<form method="post" action="{{ url_for('connections.connection_test', service=service) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-outline-primary">{{ icon(service) }}Test {{ service|upper }}</button></form>{% endfor %}</div>
+  <div class="d-flex flex-wrap gap-2">{% for service in ['dns','dhcp','radius','ca'] %}<form method="post" action="{{ url_for('connections.connection_test', service=service) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-outline-primary">{{ icon(service) }}Test {{ service|upper }}</button></form>{% endfor %}</div>
 </div></section>
 <form method="post" action="{{ url_for('connections.settings_page') }}">
   {{ form.hidden_tag() }}
@@ -22,7 +22,7 @@
   {% if advanced %}<details class="card advanced-group" {% if title == 'Direct Bind' %}data-direct-dns {% if form.dns_use_agent.data %}hidden{% else %}open{% endif %}{% elif form.errors %}open{% endif %}><summary>{{ icon('key' if title == 'Agent security' else 'dns') }}{{ title }}</summary><div class="card-body">
   {% else %}<section class="card settings-section"><div class="card-body"><span class="service-glyph">{{ icon(title|lower) }}</span><h2 class="h4">{{ title }}</h2>{% endif %}
   {% if title == 'DNS' %}<p>Choose one connection mode. The DNS agent manages zones and records using its local Bind credentials. Turn it off to configure direct Bind access below.</p>{% endif %}
-  {% if title == 'DHCP' %}<p>Manage reservations and leases through your existing DHCP agent.</p>{% endif %}
+  {% if title == 'DHCP' %}<p>Manage reservations and leases through your existing DHCP agent. The agent reports whether it manages ISC DHCPD or Kea; its backend is configured on the agent.</p>{% endif %}
   {% if title == 'RADIUS' %}<p>The authentication server and administration agent are separate connections. Root login remains available when RADIUS is disabled.</p>{% endif %}
   {% if title == 'Agent security' %}<p>Use the token already configured on your agents. Provision certificates inside NetAdmin separately; paths refer to this app's filesystem. All enabled agents must trust this client certificate and accept this token.</p>{% endif %}
   {% if title == 'Direct Bind' %}<p>Used only when Use DNS agent is off. Match the TSIG key configured on Bind and enter zone names or a readable local Bind configuration.</p>{% endif %}

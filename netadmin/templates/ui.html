@@ -6,7 +6,15 @@
 {% elif name == 'radius' %}<path d="m12 2 8 3v6c0 5-4 8-8 11-4-3-8-6-8-11V5l8-3Z"/><path d="m8 12 3 3 5-6"/>
 {% elif name == 'activity' %}<path d="M3 12h4l3-8 4 16 3-8h4"/>
 {% elif name == 'settings' %}<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2" fill="var(--surface)"/><circle cx="16" cy="12" r="2" fill="var(--surface)"/><circle cx="10" cy="18" r="2" fill="var(--surface)"/>
-{% elif name == 'key' %}<circle cx="8" cy="8" r="5"/><path d="m12 12 9 9m-3-3 3-3m-6 0 3-3"/>
+{% elif name in ['key', 'ca'] %}<circle cx="8" cy="8" r="5"/><path d="m12 12 9 9m-3-3 3-3m-6 0 3-3"/>
+{% elif name == 'download' %}<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>
+{% elif name == 'certificate' %}<rect x="4" y="2" width="16" height="16" rx="2"/><path d="M8 6h8M8 10h4"/><circle cx="15" cy="15" r="3"/><path d="m13 18-1 4 3-2 3 2-1-4"/>
+{% elif name == 'search' %}<circle cx="10" cy="10" r="7"/><path d="m15 15 6 6"/>
+{% elif name == 'plus' %}<path d="M12 4v16M4 12h16"/>
+{% elif name == 'trash' %}<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>
+{% elif name == 'revoke' %}<circle cx="12" cy="12" r="9"/><path d="m6 6 12 12"/>
+{% elif name == 'archive' %}<rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v13h14V8M10 12h4"/>
+{% elif name == 'back' %}<path d="M19 12H5m5-5-5 5 5 5"/>
 {% elif name == 'arrow' %}<path d="M5 12h14m-5-5 5 5-5 5"/>
 {% elif name == 'check' %}<path d="m5 12 4 4L19 6"/>
 {% elif name == 'menu' %}<path d="M4 6h16M4 12h16M4 18h16"/>
@@ -23,11 +31,11 @@
 {%- endmacro %}
 
 {% macro nav_links() -%}
-{% set links = [('Overview','web.dashboard','overview'), ('DNS','web.dns_index','dns'), ('DHCP','web.dhcp_index','dhcp'), ('RADIUS','web.radius_index','radius'), ('Activity','web.audit','activity'), ('Service logs','service_logs.index','activity'), ('Settings','connections.settings_page','settings')] %}
-{% if service_settings %}{% set links = links + [('Certificates', 'ca.index', 'key')] %}{% endif %}
+{% set links = [('Overview','web.dashboard','overview'), ('DNS','web.dns_index','dns'), ('DHCP','web.dhcp_index','dhcp'), ('RADIUS','web.radius_index','radius'), ('CA','authorities.index','ca'), ('Activity','web.audit','activity'), ('Service logs','service_logs.index','activity'), ('Settings','connections.settings_page','settings')] %}
+
 {% for label, endpoint, glyph in links %}
-{% if g.identity.role == 'admin' or endpoint == 'web.dashboard' %}
-{% set active = request.endpoint == endpoint or (endpoint == 'ca.index' and (request.endpoint.startswith('ca.') or request.endpoint.startswith('authorities.'))) or (glyph == 'radius' and (request.endpoint.startswith('web.radius_') or request.endpoint.startswith('radius_modes.') or request.endpoint.startswith('radius_certificates.'))) or (glyph == 'dhcp' and request.endpoint.startswith('web.dhcp_')) or (glyph == 'settings' and request.endpoint.startswith('connections.')) %}
+{% if (g.identity.role == 'admin' or endpoint == 'web.dashboard') and (glyph not in ['dns', 'dhcp', 'radius', 'ca'] or service_settings|attr(glyph ~ '_enabled')) %}
+{% set active = request.endpoint == endpoint or (endpoint == 'authorities.index' and (request.endpoint.startswith('ca.') or request.endpoint.startswith('authorities.'))) or (glyph == 'radius' and (request.endpoint.startswith('web.radius_') or request.endpoint.startswith('radius_modes.') or request.endpoint.startswith('radius_certificates.'))) or (glyph == 'dhcp' and request.endpoint.startswith('web.dhcp_')) or (glyph == 'settings' and request.endpoint.startswith('connections.')) %}
 <a class="section-link {{ 'active' if active }}" href="{{ (url_for(endpoint, page='radius-logins') if endpoint == 'service_logs.index' else url_for(endpoint)) }}" {% if active %}aria-current="page"{% endif %}>{{ icon(glyph) }}<span>{{ label }}</span></a>
 {% endif %}
 {% endfor %}

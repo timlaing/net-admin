@@ -42,7 +42,7 @@
 <main id="main-content" class="main-content {{ 'public-content' if not g.identity }}" tabindex="-1">
   {% for category, message in get_flashed_messages(with_categories=true) %}<output class="alert alert-{{ category }} d-block">{{ message }}</output>{% endfor %}
   {% block content %}{% endblock %}
-  <footer class="app-footer"><span>NetAdmin</span><span>DNS · DHCP · RADIUS</span></footer>
+  <footer class="app-footer"><span>NetAdmin</span><span>DNS · DHCP · RADIUS · CA</span></footer>
 </main>
 </div>
 </div>

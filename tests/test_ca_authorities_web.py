@@ -20,7 +20,7 @@ def web(configured, tmp_path, monkeypatch):  # noqa: F811 - imported shared pyte
     app, client = admin_client(tmp_path / "web")
     settings = app.extensions["netadmin_settings"]
     app.extensions["netadmin_settings"] = replace(
-        settings, ca_agent_url="https://ca.test:8084", ca_management_token=TOKEN
+        settings, ca_agent_url="https://ca.test:8084", ca_management_token=TOKEN, ca_enabled=True
     )
     calls = []
     public = state.store.chain(state.authority_id).decode()
@@ -224,7 +224,10 @@ def test_known_rejection_shows_bounded_message_and_fails_audit(web):
 
 
 def test_download_requires_a_configured_management_connection(tmp_path):
-    _app, client = admin_client(tmp_path)
+    app, client = admin_client(tmp_path)
+    app.extensions["netadmin_settings"] = replace(
+        app.extensions["netadmin_settings"], ca_enabled=True
+    )
     response = client.get("/certificates/authorities/" + uuid.uuid4().hex + "/chain")
     assert response.status_code == 409
     assert b"Configure the CA endpoint" in response.data
@@ -264,3 +267,50 @@ def test_partial_inventory_import_is_visible_and_can_be_continued(web):
     assert response.status_code == 200
     assert b"Refresh to continue indexing" in response.data
     assert b"No leaf certificates have been issued" not in response.data
+
+
+def test_delete_forwards_confirmed_authority_and_renders_controls(web):
+    page = web.client.get("/certificates/authorities")
+    assert b"Delete intermediate CA" in page.data
+    assert b"Delete root CA" in page.data
+    payload = {
+        "authority_id": web.state.authority_id,
+        "confirmation": "DELETE CA",
+        "confirm": "yes",
+        "request_id": uuid.uuid4().hex,
+    }
+    response = web.client.post("/certificates/authorities/delete", data=payload)
+    assert response.status_code == 302
+    assert web.calls[-1][0:2] == ("POST", "authorities/delete")
+    assert web.calls[-1][2]["authority_id"] == web.state.authority_id
+    assert web.calls[-1][2]["confirmation"] == "DELETE CA"
+    payload.pop("confirm")
+    assert web.client.post("/certificates/authorities/delete", data=payload).status_code == 400
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/certificates/authorities"),
+        ("POST", "/certificates/authorities/root"),
+        ("POST", "/certificates/authorities/delete"),
+        ("POST", "/certificates/authorities/issue"),
+        ("GET", "/certificates"),
+        ("POST", "/certificates"),
+        ("POST", "/certificates/revoke-serial"),
+    ],
+)
+def test_disabled_ca_blocks_direct_routes_before_agent_access(web, monkeypatch, method, path):
+    settings = web.app.extensions["netadmin_settings"]
+    web.app.extensions["netadmin_settings"] = replace(settings, ca_enabled=False)
+
+    def forbidden():
+        pytest.fail("Disabled CA must not create an agent client")
+
+    monkeypatch.setattr("netadmin.ca_authorities_web.client", forbidden)
+    monkeypatch.setattr("netadmin.ca_web._client", forbidden)
+    response = web.client.open(path, method=method)
+    assert response.status_code == 302
+    assert response.headers["Location"] == "/settings"
+    assert web.calls == []
+    assert web.client.get("/settings").status_code == 200
