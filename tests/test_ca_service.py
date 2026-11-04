@@ -23,9 +23,18 @@ from netadmin.services.radius_certificates import (
     load_signing_key,
 )
 from netadmin.services.step_ca import validate_csr, validate_server_chain
-from tests.test_multi_service_ui import admin_client
+from tests.test_multi_service_ui import admin_client as create_admin_client
 from tests.test_radius_certificates import AUTH, PASSWORD, agent
 from tests.test_radius_certificates import material as material
+
+
+def admin_client(tmp_path):
+    """Enable CA explicitly for tests of its administration routes."""
+    app, client = create_admin_client(tmp_path)
+    app.extensions["netadmin_settings"] = replace(
+        app.extensions["netadmin_settings"], ca_enabled=True
+    )
+    return app, client
 
 
 @pytest.fixture(autouse=True)

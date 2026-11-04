@@ -121,3 +121,39 @@ def test_root_reset_inventory_follows_durable_intent(runtime, tmp_path, monkeypa
         assert recovered.status()["authorities"] == []
         assert recovered.manifest["public_key_sha256"] != original["public_key_sha256"]
         assert _inventory_counts(recovered, root_id) == [0, 0, 0]
+
+
+def test_failed_intermediate_directory_removal_preserves_inventory(runtime, monkeypatch):  # noqa: F811
+    from netadmin.ca_runtime import store as storage
+
+    app, client, headers = runtime
+    store = app.extensions["ca_store"]
+    root_id = client.post("/authorities/root", json=body(), headers=headers).json["id"]
+    child_id = store.create_subordinate(body(parent_id=root_id, days=365, path_length=0))["id"]
+    directory = store.directory(child_id)
+    leaf = directory / "leaf.pem"
+    leaf.write_bytes(store.chain(child_id))
+    with store.inventory.connection() as connection:
+        connection.execute(
+            "INSERT INTO certificates VALUES (?, ?, ?)", (child_id, "leaf", "public")
+        )
+        connection.execute("INSERT INTO imported VALUES (?)", (child_id,))
+        connection.execute("INSERT INTO processed VALUES (?, ?)", (child_id, "leaf"))
+    before = _inventory_counts(store, child_id)
+
+    def interrupted(path):
+        (path / "leaf.pem").unlink()
+        raise OSError("partial directory removal")
+
+    payload = body(authority_id=child_id, confirmation="DELETE CA")
+    with monkeypatch.context() as patch:
+        patch.setattr(storage, "_remove_authority_directory", interrupted)
+        with store.lock(), pytest.raises(OSError, match="partial directory removal"):
+            store.delete_authority(payload)
+    assert not leaf.exists()
+    assert store.metadata(child_id)["parent_id"] == root_id
+    assert _inventory_counts(store, child_id) == before == [1, 1, 1]
+    with store.lock():
+        assert store.delete_authority(payload) == {"deleted": child_id}
+    assert not directory.exists()
+    assert _inventory_counts(store, child_id) == [0, 0, 0]

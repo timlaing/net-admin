@@ -276,8 +276,9 @@ def _dhcp_backend(client: AgentClient) -> str:
         health = client.get("health")
     except (httpx.HTTPError, ValueError):
         return _settings().dhcp_backend
-    if isinstance(health, dict) and health.get("backend") in {"isc", "kea"}:
-        return str(health["backend"])
+    backend = health.get("backend") if isinstance(health, dict) else None
+    if isinstance(backend, str) and backend in {"isc", "kea"}:
+        return backend
     return _settings().dhcp_backend
 
 
@@ -578,8 +579,12 @@ def create_app(settings: Settings | None = None) -> Flask:
     def disabled_service() -> Any:
         """Avoid backend calls for services the administrator disabled."""
         if g.identity is not None and g.identity.role == "admin":
+            endpoint = request.endpoint or ""
+            if endpoint.startswith(("ca.", "authorities.")) and not _settings().ca_enabled:
+                flash("CA is disabled. Enable it in Settings first.", "info")
+                return redirect(url_for("connections.settings_page"))
             for service in ("dns", "dhcp", "radius"):
-                if (request.endpoint or "").startswith(f"web.{service}_") and not getattr(
+                if endpoint.startswith(f"web.{service}_") and not getattr(
                     _settings(), f"{service}_enabled"
                 ):
                     flash(f"{service.upper()} is disabled. Enable it in Settings first.", "info")

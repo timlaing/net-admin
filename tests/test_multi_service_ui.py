@@ -1,6 +1,9 @@
 """Multiple zones and DHCP pools remain independently addressable in the UI."""
 
+from dataclasses import replace
 from types import SimpleNamespace
+
+import pytest
 
 from netadmin.services.dns import DnsZone
 from tests.test_app import make_app
@@ -260,10 +263,17 @@ def test_dhcp_backend_is_reported_by_agent(tmp_path):
     assert 'name="dhcp_backend"' not in client.get("/settings").text
 
 
-def test_malformed_dhcp_health_uses_legacy_backend_for_both_pages(tmp_path):
+@pytest.mark.parametrize("backend", ["isc", "kea"])
+@pytest.mark.parametrize(
+    "health", ["invalid-json", {"backend": []}, {"backend": {}}, {"backend": None}]
+)
+def test_malformed_dhcp_health_uses_legacy_backend_for_both_pages(tmp_path, backend, health):
     import json
 
     app, client = admin_client(tmp_path)
+    app.extensions["netadmin_settings"] = replace(
+        app.extensions["netadmin_settings"], dhcp_backend=backend
+    )
     subnet = {
         "network": "192.0.2.0",
         "netmask": "255.255.255.0",
@@ -273,13 +283,13 @@ def test_malformed_dhcp_health_uses_legacy_backend_for_both_pages(tmp_path):
 
     def get(path):
         if path == "health":
-            return json.loads("invalid-json")
+            return json.loads(health) if isinstance(health, str) else health
         return [subnet] if path == "configuration" else []
 
     app.extensions["netadmin_dhcp"] = SimpleNamespace(read_only=lambda: False, get=get)
     page = client.get("/dhcp")
     assert page.status_code == 200
-    assert '<span class="status">ISC</span>' in page.text
+    assert f'<span class="status">{backend.upper()}</span>' in page.text
     editor = client.get("/dhcp/subnets/192.0.2.0")
     assert editor.status_code == 200
-    assert 'data-backend="isc"' in editor.text
+    assert f'data-backend="{backend}"' in editor.text

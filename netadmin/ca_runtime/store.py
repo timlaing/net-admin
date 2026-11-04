@@ -176,8 +176,9 @@ class AuthorityStore:
             self._finish_reset()
             self.manifest = manifest
         else:
-            self.inventory.remove_authority(authority_id)
+            self.inventory.close()
             _remove_authority_directory(directory)
+            self.inventory.remove_authority(authority_id)
         return {"deleted": authority_id}
 
     def _verify_root(self) -> None:
