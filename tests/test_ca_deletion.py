@@ -2,6 +2,8 @@
 
 from dataclasses import replace
 
+import pytest
+
 from netadmin.ca_runtime.store import AuthorityStore
 from tests.test_ca_runtime import body, runtime  # noqa: F401
 from tests.test_multi_service_ui import admin_client
@@ -71,19 +73,36 @@ def test_dashboard_and_navigation_only_show_enabled_services(tmp_path):
     assert "/connections/status/ca" in html
 
 
-def test_root_reset_completes_after_interrupted_key_write(runtime, tmp_path, monkeypatch):  # noqa: F811
-    import pytest
+def _inventory_counts(store, authority_id):
+    with store.inventory.connection() as connection:
+        return [
+            connection.execute(statement, (authority_id,)).fetchone()[0]
+            for statement in (
+                "SELECT count(*) FROM certificates WHERE authority=?",
+                "SELECT count(*) FROM imported WHERE authority=?",
+                "SELECT count(*) FROM processed WHERE authority=?",
+            )
+        ]
 
+
+@pytest.mark.parametrize("failure_file", ["root-reset.json", "root.key"])
+def test_root_reset_inventory_follows_durable_intent(runtime, tmp_path, monkeypatch, failure_file):  # noqa: F811
     from netadmin.ca_runtime import store as storage
 
     app, client, headers = runtime
     store = app.extensions["ca_store"]
     root_id = client.post("/authorities/root", json=body(), headers=headers).json["id"]
     original = store.manifest.copy()
+    with store.inventory.connection() as connection:
+        connection.execute("INSERT INTO certificates VALUES (?, ?, ?)", (root_id, "leaf", "public"))
+        connection.execute("INSERT INTO imported VALUES (?)", (root_id,))
+        connection.execute("INSERT INTO processed VALUES (?, ?)", (root_id, "leaf"))
+    before = _inventory_counts(store, root_id)
+    assert before == [1, 1, 1]
     write = storage.durable
 
     def interrupted(path, data):
-        if path.name == "root.key":
+        if path.name == failure_file:
             raise OSError("simulated interruption")
         write(path, data)
 
@@ -93,6 +112,12 @@ def test_root_reset_completes_after_interrupted_key_write(runtime, tmp_path, mon
         with store.lock(), pytest.raises(OSError, match="simulated interruption"):
             store.delete_authority(payload)
     recovered = AuthorityStore(tmp_path)
-    assert recovered.status()["authorities"] == []
-    assert recovered.manifest["public_key_sha256"] != original["public_key_sha256"]
     assert not (tmp_path / "root-reset.json").exists()
+    if failure_file == "root-reset.json":
+        assert recovered.manifest == original
+        assert [authority["id"] for authority in recovered.status()["authorities"]] == [root_id]
+        assert _inventory_counts(recovered, root_id) == before
+    else:
+        assert recovered.status()["authorities"] == []
+        assert recovered.manifest["public_key_sha256"] != original["public_key_sha256"]
+        assert _inventory_counts(recovered, root_id) == [0, 0, 0]

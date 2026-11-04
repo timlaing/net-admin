@@ -219,7 +219,7 @@ def configuration_errors(values: dict[str, str]) -> dict[str, str]:
 def _ca_errors(values: dict[str, str]) -> dict[str, str]:
     """Validate CA transport and separate lifecycle scope."""
     errors: dict[str, str] = {}
-    if values["ca_agent_url"]:
+    if values["ca_enabled"] == "true" and values["ca_agent_url"]:
         if not _valid_agent_url(values["ca_agent_url"]):
             errors["ca_agent_url"] = "Enter an HTTPS CA agent URL."
         errors.update(

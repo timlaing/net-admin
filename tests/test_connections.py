@@ -504,6 +504,13 @@ def test_ca_toggle_persists_and_controls_navigation(runtime, monkeypatch):
     assert read_env_file()["NETADMIN_CA_ENABLED"] == "true"
     assert "<h2>CA</h2>" in client.get("/").text
     assert "<span>CA</span>" in client.get("/").text
+    monkeypatch.setattr(
+        "netadmin.connections.AgentClient.get",
+        lambda _self, path, **_kwargs: (
+            {"status": "ok"} if path == "health" else {"read_only": False}
+        ),
+    )
+    assert client.get("/connections/status/ca").json["state"] == "Connected"
     values["ca_enabled"] = "false"
     assert client.post("/settings", data=form_data(runtime, **values)).status_code == 302
     assert read_env_file()["NETADMIN_CA_ENABLED"] == "false"
@@ -514,3 +521,18 @@ def test_ca_toggle_persists_and_controls_navigation(runtime, monkeypatch):
     assert "/connections/status/ca" not in html
     assert client.get("/connections/status/ca").json["state"] == "Disabled"
     assert "Disabled" in client.post("/settings/test/ca").text
+
+
+def test_disable_ca_preserves_invalid_endpoint_without_requiring_credentials(runtime, monkeypatch):
+    runtime = replace(runtime, ca_enabled=True, ca_agent_url="http://invalid.example.test")
+    client = client_for(runtime, monkeypatch)
+    values = form_data(runtime, ca_enabled="false")
+    response = client.post("/settings", data=values)
+    assert response.status_code == 302
+    saved = read_env_file()
+    assert saved["NETADMIN_CA_ENABLED"] == "false"
+    assert saved["NETADMIN_CA_AGENT_URL"] == runtime.ca_agent_url
+    assert not client.application.extensions["netadmin_settings"].ca_enabled
+    values["ca_enabled"] = "true"
+    assert client.post("/settings", data=values).status_code == 200
+    assert not client.application.extensions["netadmin_settings"].ca_enabled

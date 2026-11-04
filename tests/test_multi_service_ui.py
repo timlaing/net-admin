@@ -235,11 +235,51 @@ def test_read_only_radius_hides_all_write_controls(tmp_path):
 
 def test_dhcp_backend_is_reported_by_agent(tmp_path):
     app, client = admin_client(tmp_path)
+    subnet = {
+        "network": "192.0.2.0",
+        "netmask": "255.255.255.0",
+        "ranges": [],
+        "options": {},
+    }
     app.extensions["netadmin_dhcp"] = SimpleNamespace(
         read_only=lambda: False,
-        get=lambda path: {"status": "ok", "backend": "kea"} if path == "health" else [],
+        get=lambda path: (
+            {"status": "ok", "backend": "kea"}
+            if path == "health"
+            else [subnet]
+            if path == "configuration"
+            else []
+        ),
     )
     page = client.get("/dhcp")
     assert page.status_code == 200
     assert '<span class="status">KEA</span>' in page.text
+    editor = client.get("/dhcp/subnets/192.0.2.0")
+    assert editor.status_code == 200
+    assert 'data-backend="kea"' in editor.text
     assert 'name="dhcp_backend"' not in client.get("/settings").text
+
+
+def test_malformed_dhcp_health_uses_legacy_backend_for_both_pages(tmp_path):
+    import json
+
+    app, client = admin_client(tmp_path)
+    subnet = {
+        "network": "192.0.2.0",
+        "netmask": "255.255.255.0",
+        "ranges": [],
+        "options": {},
+    }
+
+    def get(path):
+        if path == "health":
+            return json.loads("invalid-json")
+        return [subnet] if path == "configuration" else []
+
+    app.extensions["netadmin_dhcp"] = SimpleNamespace(read_only=lambda: False, get=get)
+    page = client.get("/dhcp")
+    assert page.status_code == 200
+    assert '<span class="status">ISC</span>' in page.text
+    editor = client.get("/dhcp/subnets/192.0.2.0")
+    assert editor.status_code == 200
+    assert 'data-backend="isc"' in editor.text

@@ -265,7 +265,9 @@ selected authority. Type `DELETE CA` and approve the operation. The agent must
 permit writes. Delete child authorities before their parents.
 
 Deletion stops the managed issuer and permanently removes its local keys,
-certificates, issuance inventory and revocation data. It does not revoke
+certificates, active issuance inventory and revocation data. Historical operation
+records are retained for audit and replay protection, including public certificate
+results retrievable through operation status. Deletion does not revoke
 certificates already held by clients or remove external recovery backups.
 Deleting the root generates a fresh signing key and identity, including when the
 old root key was archived. Create a new root certificate and subordinate CAs,

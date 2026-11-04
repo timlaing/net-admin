@@ -86,6 +86,7 @@ class AuthorityStore:
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         for directory in ("authorities", "operations"):
             (root / directory).mkdir(exist_ok=True, mode=0o700)
+        self.inventory = CertificateInventory(root)
         with self.lock():
             self._finish_reset()
             manifest = root / MANIFEST_FILE
@@ -124,7 +125,6 @@ class AuthorityStore:
                 raise CAInputError("Missing root material; recovery required")
             if not self.manifest.get("root_archived"):
                 self._verify_root()
-        self.inventory = CertificateInventory(root)
 
     def _finish_reset(self) -> None:
         """Finish an explicitly requested root replacement after interruption."""
@@ -132,6 +132,7 @@ class AuthorityStore:
         if not marker.exists():
             return
         reset = json.loads(marker.read_text())
+        self.inventory.remove_authority(identifier(reset["old_id"]))
         directory = self.directory(reset["old_id"])
         if directory.exists():
             shutil.rmtree(directory)
@@ -150,15 +151,6 @@ class AuthorityStore:
             raise CAInputError("Unknown authority")
         if any(item["parent_id"] == authority_id for item in self.status()["authorities"]):
             raise CAInputError("Delete child authorities first")
-        self.inventory.close()
-        with self.inventory.connection() as connection:
-            for statement in (
-                "DELETE FROM certificates WHERE authority=?",
-                "DELETE FROM imported WHERE authority=?",
-                "DELETE FROM processed WHERE authority=?",
-            ):
-                connection.execute(statement, (authority_id,))
-            connection.commit()
         if authority_id == self.manifest["root_id"]:
             password = secrets.token_urlsafe(48)
             key = new_key()
@@ -184,6 +176,7 @@ class AuthorityStore:
             self._finish_reset()
             self.manifest = manifest
         else:
+            self.inventory.remove_authority(authority_id)
             _remove_authority_directory(directory)
         return {"deleted": authority_id}
 

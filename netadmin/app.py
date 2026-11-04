@@ -274,7 +274,7 @@ def _dhcp_backend(client: AgentClient) -> str:
     """Prefer the agent's actual backend, retaining compatibility with older agents."""
     try:
         health = client.get("health")
-    except httpx.HTTPError:
+    except (httpx.HTTPError, ValueError):
         return _settings().dhcp_backend
     if isinstance(health, dict) and health.get("backend") in {"isc", "kea"}:
         return str(health["backend"])
