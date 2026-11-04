@@ -4,6 +4,7 @@ import importlib.util
 import itertools
 import os
 import shutil
+import socket
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,6 +39,74 @@ def options(tmp_path, dns="yes", dhcp="kea", radius="yes", ca="yes"):
         version="0.0.0-test",
         source_directory=ROOT,
     )
+
+
+@pytest.fixture
+def port_probe(installer, monkeypatch):
+    """Record scoped probes and simulate busy ports without reserving host ports."""
+    state = SimpleNamespace(bindings=[], closed=0, occupied=set())
+
+    class Probe:
+        def __init__(self, family, kind):
+            assert family == socket.AF_INET
+            self.kind = kind
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            state.closed += 1
+
+        def bind(self, target):
+            binding = (*target, self.kind)
+            state.bindings.append(binding)
+            if binding in state.occupied:
+                raise OSError("synthetic occupied port")
+
+    monkeypatch.setattr(
+        installer,
+        "socket",
+        SimpleNamespace(
+            AF_INET=socket.AF_INET,
+            SOCK_STREAM=socket.SOCK_STREAM,
+            SOCK_DGRAM=socket.SOCK_DGRAM,
+            socket=Probe,
+        ),
+    )
+    return state
+
+
+def test_port_probes_use_service_addresses_and_close_every_socket(installer, tmp_path, port_probe):
+    args = options(tmp_path)
+    installer.check_ports(args)
+    bindings = set(port_probe.bindings)
+    assert {host for host, _port, _kind in bindings} == {args.address, "127.0.0.1"}
+    assert {port for host, port, _kind in bindings if host == "127.0.0.1"} == {53, 953}
+    assert (args.address, 67, socket.SOCK_DGRAM) in bindings
+    assert (args.address, 8081, socket.SOCK_STREAM) in bindings
+    for host in (args.address, "127.0.0.1"):
+        for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+            assert (host, 53, kind) in bindings
+    assert port_probe.closed == len(port_probe.bindings)
+
+
+@pytest.mark.parametrize(
+    "host,port,kind", [("127.0.0.1", 53, socket.SOCK_STREAM), ("192.0.2.10", 67, socket.SOCK_DGRAM)]
+)
+def test_busy_scoped_ports_still_abort_preflight(installer, tmp_path, port_probe, host, port, kind):
+    port_probe.occupied.add((host, port, kind))
+    with pytest.raises(ValueError, match=f"Required port {port} is already in use"):
+        installer.check_ports(options(tmp_path))
+    assert port_probe.closed == len(port_probe.bindings)
+
+
+def test_ca_only_does_not_probe_other_services(installer, tmp_path, port_probe):
+    args = options(tmp_path, dns="no", dhcp="none", radius="no", ca="yes")
+    installer.check_ports(args)
+    assert set(port_probe.bindings) == {
+        (args.address, port, socket.SOCK_STREAM) for port in (8084, *range(9100, 9116))
+    }
+    assert port_probe.closed == len(port_probe.bindings)
 
 
 CHOICES = [

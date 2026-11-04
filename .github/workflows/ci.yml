@@ -105,7 +105,7 @@ jobs:
             docker build -f "docker/Dockerfile.${spec#*:}" -t "netadmin-${spec%:*}:installer-smoke" .
           done
       - name: Test fresh service selections and first UI changes
-        run: .venv/bin/python Tools/smoke_services_installer.py
+        run: sudo -- .venv/bin/python Tools/smoke_services_installer.py
 
   container:
     name: ${{ matrix.flavour }} ${{ matrix.arch }} smoke

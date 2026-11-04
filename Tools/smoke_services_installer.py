@@ -1,6 +1,7 @@
 """Exercise fresh service selections in isolated bridge networks, without host ports.
 
 Requires the development environment and images named netadmin-*:installer-smoke.
+On native Linux, run with sudo to match the installer's service-file ownership.
 Every deployment, volume and credential created here is disposable and synthetic.
 """
 
@@ -8,6 +9,7 @@ import importlib.util
 import ipaddress
 import json
 import os
+import sys
 import tempfile
 import time
 import uuid
@@ -261,6 +263,10 @@ cat /calls
 
 def main():
     """No host networking, host ports or production state is used by these tests."""
+    if sys.platform == "linux" and os.geteuid() != 0:
+        raise SystemExit(
+            "Run this smoke test with sudo on Linux, matching the production installer."
+        )
     installer.check_agents = authenticated
     for dns, dhcp, radius, ca in (
         ("yes", "isc", "yes", "yes"),

@@ -150,15 +150,18 @@ def check_ports(args):
         ports += [(8084, socket.SOCK_STREAM)]
         ports += [(port, socket.SOCK_STREAM) for port in range(9100, 9116)]
     for port, kind in ports:
-        with socket.socket(socket.AF_INET, kind) as listener:
-            try:
-                # Probe listeners without accepting traffic.
-                host = "0.0.0.0" if port in {53, 67} else args.address  # noqa: S104
-                listener.bind((host, port))
-            except OSError as error:
-                raise ValueError(
-                    f"Required port {port} is already in use or unavailable"
-                ) from error
+        hosts = [args.address]
+        if port == 53:
+            hosts.append("127.0.0.1")
+        for host in hosts:
+            # Probe only the intended service addresses, without listening.
+            with socket.socket(socket.AF_INET, kind) as listener:
+                try:
+                    listener.bind((host, port))
+                except OSError as error:
+                    raise ValueError(
+                        f"Required port {port} is already in use or unavailable"
+                    ) from error
 
 
 def certificates(directory, address, names):
