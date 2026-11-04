@@ -187,6 +187,7 @@ if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; t
     if [[ ! -e /etc/apt/sources.list.d/docker.sources && ! -e /etc/apt/sources.list.d/docker.list ]]; then
       install -d -m 0755 /etc/apt/keyrings
       curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+        --connect-timeout 10 --max-time 120 \
         "https://download.docker.com/linux/$distro/gpg" -o /etc/apt/keyrings/docker.asc
       chmod 0644 /etc/apt/keyrings/docker.asc
       cat > /etc/apt/sources.list.d/docker.sources <<EOF
@@ -220,13 +221,41 @@ if [[ "$resume" == true ]]; then
   [[ -f "$directory/bootstrap/install_services.py" ]] || fail 'No installer deployment found to resume.'
   exec "$python_command" "$directory/bootstrap/install_services.py" --directory "$directory" --resume
 fi
-# Resolve latest once, then fetch every deployment asset from that exact release.
+# Ignore newer releases whose images/assets have not finished publication.
 if [[ "$version" == latest ]]; then
   version="$("$python_command" - <<'PY'
-import json, urllib.request
-with urllib.request.urlopen('https://api.github.com/repos/timlaing/net-admin/releases/latest', timeout=30) as response:
-    tag = json.load(response)['tag_name']
-print(tag.removeprefix('v'))
+import json
+import re
+import urllib.request
+
+def latest_installer_release():
+    required = {'install.sh', 'install.sh.sha256', 'compose.yml', 'installer-ready.json'}
+    for page in range(1, 11):
+        request = urllib.request.Request(
+            'https://api.github.com/repos/timlaing/net-admin/releases'
+            f'?per_page=100&page={page}',
+            headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'NetAdmin-installer'},
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            releases = json.load(response)
+        if not isinstance(releases, list):
+            raise SystemExit('Invalid GitHub releases response')
+        for release in releases:
+            if not isinstance(release, dict) or release.get('draft') or release.get('prerelease'):
+                continue
+            tag = release.get('tag_name', '')
+            if not isinstance(tag, str) or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag):
+                continue
+            uploaded = {asset.get('name') for asset in release.get('assets', [])
+                        if asset.get('state') == 'uploaded' and asset.get('size', 0) > 0}
+            if required <= uploaded:
+                return tag[1:]
+        if len(releases) < 100:
+            break
+    raise SystemExit('No verified stable NetAdmin installer release is available yet')
+
+if __name__ == '__main__':
+    print(latest_installer_release())
 PY
 )"
 fi
@@ -237,6 +266,7 @@ if [[ -n "$source_directory" ]]; then
   cp "$source_directory/scripts/install_services.py" "$temporary/install_services.py"
 else
   curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+    --connect-timeout 10 --max-time 120 \
     "https://raw.githubusercontent.com/timlaing/net-admin/v$version/scripts/install_services.py" \
     -o "$temporary/install_services.py"
 fi

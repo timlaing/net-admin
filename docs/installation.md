@@ -32,15 +32,18 @@ All images can equally be built locally from this repository's Dockerfiles.
 
 ## Fresh-host installer
 
-The fresh-host installer is published as `install.sh` alongside a release after
-its images have passed validation and publication. Until a release contains these
-files, the public command below is not available; use a checkout for development.
+The bootstrap is served from the repository's main branch. It selects the latest
+stable release with uploaded installer assets and an `installer-ready.json`
+completion marker, written only after image and asset publication succeeds. A
+newer release that is still publishing or has failed does not displace the last
+verified installer. Before the first verified release, it exits with a clear error.
 
 ```sh
-curl -fsSL https://github.com/timlaing/net-admin/releases/latest/download/install.sh | bash
+curl -fsSL --connect-timeout 10 --max-time 120 https://raw.githubusercontent.com/timlaing/net-admin/main/scripts/install.sh -o install.sh && bash install.sh
 ```
 
-The script reads prompts from the terminal even when piped to Bash, and requests
+The download must succeed before Bash runs, so a failed download cannot report a
+successful installation. The script reads prompts from the terminal and requests
 sudo when needed. It offers these independent choices:
 
 - Bind DNS, or no DNS.
@@ -66,16 +69,20 @@ Desktop are not supported by this installer; DHCP needs native Linux LAN access.
 Download the script first to inspect it or pass options:
 
 ```sh
-curl -fsSL https://github.com/timlaing/net-admin/releases/latest/download/install.sh -o install.sh
-bash install.sh --help
+curl -fsSL --connect-timeout 10 --max-time 120 https://raw.githubusercontent.com/timlaing/net-admin/main/scripts/install.sh -o install.sh && bash install.sh --help
+```
+
+After a successful download, preview a selection:
+
+```sh
 bash install.sh --yes --dry-run --address 192.0.2.10 --interface eth0 \
   --dns yes --dhcp kea --radius yes --ca yes
 ```
 
 Replace the documentation address/interface with your host's fixed LAN address
 and interface. Remove `--dry-run` to install. `--yes` accepts defaults and package
-installation without further prompts. To pass flags while piping, use
-`curl ... | bash -s -- --yes ...` with the full download URL above.
+installation without further prompts. Pass options to the downloaded `install.sh`;
+the bootstrap and repository-key transfers have connection and total time limits.
 
 For example, a **CA-only** deployment:
 
@@ -93,8 +100,8 @@ bash install.sh --yes --address 192.0.2.10 \
 
 The default directory is `/opt/netadmin`; override it with `--directory`.
 `--version X.Y.Z` selects an explicit release. By default the installer resolves
-the latest stable GitHub release once and downloads the Compose template and
-bootstrap scripts from that exact tag. Every selected image uses the same
+the latest verified stable GitHub release once and downloads the Compose
+template and bootstrap scripts from that exact tag. Every selected image uses the same
 release version; containers are started with `--no-build`.
 
 The installer checks the selected address/interface, conflicting Compose project
@@ -124,8 +131,9 @@ without displaying secrets. Securely copy `transport/client/ca.crt`, `client.crt
 and `client.key` into `/config/pki/` in Home Assistant. Enter their new paths and
 the token from `agents.env` under **Settings → Agent security**. Enable only the
 installed services and enter their agent URLs. For DNS choose **Use DNS agent**;
-for DHCP choose the installed backend. For CA, enter the separate token from
-`secrets/management-token`. Use **Test active connections**.
+for DHCP enter the agent URL and check its reported ISC/Kea backend. The backend
+is configured on the agent, not selected in the app. For CA, enter the separate
+token from `secrets/management-token`. Use **Test active connections**.
 
 QR/one-time enrollment is not implemented yet; the generated credentials work
 with the existing Settings flow. Keep the deployment directory and Docker volumes

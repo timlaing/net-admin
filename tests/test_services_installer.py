@@ -8,6 +8,7 @@ import shlex
 import shutil
 import socket
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,6 +28,13 @@ def installer():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture
+def compose_available(installer, monkeypatch):
+    """Keep preparation tests independent of an optional Docker CLI."""
+    if not shutil.which("docker"):
+        monkeypatch.setattr(installer, "compose", lambda *_args, **_kwargs: None)
 
 
 def options(tmp_path, dns="yes", dhcp="kea", radius="yes", ca="yes"):
@@ -123,13 +131,10 @@ CHOICES = [
 
 @pytest.mark.parametrize("dns,dhcp,radius,ca", CHOICES)
 def test_selected_services_have_no_unselected_dependencies(
-    installer, tmp_path, monkeypatch, dns, dhcp, radius, ca
+    installer, tmp_path, compose_available, dns, dhcp, radius, ca
 ):
     args = options(tmp_path, dns, dhcp, radius, ca)
     installer.validate(args, host=False)
-    # Use actual Compose config when available; this operation needs no daemon.
-    if not shutil.which("docker"):
-        monkeypatch.setattr(installer, "compose", lambda *_args, **_kwargs: None)
     installer.prepare(args)
     env = dict(line.split("=", 1) for line in (args.directory / ".env").read_text().splitlines())
     profiles = set(env["COMPOSE_PROFILES"].split(","))
@@ -165,7 +170,9 @@ def test_selected_services_have_no_unselected_dependencies(
         assert (args.directory / "transport" / name).exists() == enabled
 
 
-def test_transport_credentials_are_valid_private_and_distinct(installer, tmp_path):
+def test_transport_credentials_are_valid_private_and_distinct(
+    installer, tmp_path, compose_available
+):
     args = options(tmp_path)
     installer.prepare(args)
     directory = args.directory
@@ -229,7 +236,7 @@ def test_preparation_failure_does_not_leave_or_replace_keys(installer, tmp_path,
 
 @pytest.mark.parametrize("failure", ["pull", "validation", "authentication", "daemon"])
 def test_startup_failure_preserves_credentials_and_never_reports_success(
-    installer, tmp_path, monkeypatch, capsys, failure
+    installer, tmp_path, monkeypatch, capsys, failure, compose_available
 ):
     args = options(tmp_path, dns="no", dhcp="none", radius="no", ca="yes")
     installer.prepare(args)
@@ -267,7 +274,7 @@ def test_startup_failure_preserves_credentials_and_never_reports_success(
 
 
 def test_resume_starts_only_saved_services_without_rotating_credentials(
-    installer, tmp_path, monkeypatch
+    installer, tmp_path, monkeypatch, compose_available
 ):
     args = options(tmp_path, dns="no", dhcp="none", radius="no", ca="yes")
     installer.prepare(args)
@@ -339,7 +346,9 @@ def test_ca_only_readiness_reads_compose_status_formats(installer, tmp_path, mon
     assert calls == [("ps", "--all", "--format", "json")]
 
 
-def test_printed_python_resume_command_is_accepted(installer, tmp_path, monkeypatch, capsys):
+def test_printed_python_resume_command_is_accepted(
+    installer, tmp_path, monkeypatch, capsys, compose_available
+):
     directory = tmp_path / "prepared installation"
     monkeypatch.setattr(installer, "validate", lambda _args: None)
     installer.main(
@@ -582,3 +591,91 @@ def test_kea_publication_has_both_architectures_and_existing_smoke():
     for entry in kea:
         assert (ROOT / entry["smoke"]).is_file()
     assert "'-dhcp-kea'" in workflow["jobs"]["manifests"]["steps"][1]["run"]
+
+
+def installer_release(tag, *, ready=True):
+    names = ["install.sh", "install.sh.sha256", "compose.yml"]
+    if ready:
+        names.append("installer-ready.json")
+    return {
+        "tag_name": tag,
+        "assets": [{"name": name, "state": "uploaded", "size": 10} for name in names],
+    }
+
+
+@pytest.mark.parametrize("incomplete", ["marker", "upload", "empty", "draft", "prerelease"])
+def test_latest_installer_skips_unavailable_release(incomplete):
+    newest = installer_release("v99.0.0", ready=incomplete != "marker")
+    if incomplete == "upload":
+        newest["assets"][0]["state"] = "uploading"
+    elif incomplete == "empty":
+        newest["assets"][0]["size"] = 0
+    elif incomplete in {"draft", "prerelease"}:
+        newest[incomplete] = True
+    result = run_release_selector([[newest, installer_release("v1.2.3")]])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "1.2.3"
+
+
+def run_release_selector(pages):
+    source = (ROOT / "scripts/install.sh").read_text().split("<<'PY'\n", 1)[1].split("\nPY", 1)[0]
+    harness = (
+        "import io, json, urllib.request\n"
+        f"pages = iter({pages!r})\n"
+        "def response(request, timeout):\n"
+        "    assert timeout == 30\n"
+        "    assert request.full_url.startswith("
+        '"https://api.github.com/repos/timlaing/net-admin/releases?per_page=100&page=")\n'
+        "    return io.StringIO(json.dumps(next(pages)))\n"
+        "urllib.request.urlopen = response\n"
+    )
+    return subprocess.run(  # noqa: S603
+        [sys.executable, "-c", harness + source], capture_output=True, text=True, check=False
+    )
+
+
+def test_latest_installer_requires_completed_release():
+    result = run_release_selector([[installer_release("v2.0.0", ready=False)]])
+    assert result.returncode != 0
+    assert "No verified stable NetAdmin installer release" in result.stderr
+
+
+def test_latest_installer_checks_older_release_pages():
+    result = run_release_selector(
+        [[installer_release("v2.0.0", ready=False)] * 100, [installer_release("v1.0.0")]]
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "1.0.0"
+
+
+def test_release_ready_marker_is_published_last():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/publish.yml").read_text())
+    job = workflow["jobs"]["publish-installer"]
+    assert "verify-public-images" in job["needs"]
+    assert "gh release upload" in job["steps"][-1]["run"]
+    assert "installer-ready.json" in job["steps"][-1]["run"]
+    assert "install.sh.sha256" in job["steps"][-2]["run"]
+
+
+@pytest.mark.parametrize("document", ["README.md", "docs/installation.md"])
+def test_documented_install_command_stops_when_download_fails(tmp_path, document):
+    command = next(
+        line
+        for line in (ROOT / document).read_text().splitlines()
+        if line.startswith("curl ") and "&& bash install.sh" in line
+    )
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    marker = tmp_path / "executed"
+    (tools / "curl").write_text("#!/bin/sh\nexit 22\n")
+    (tools / "bash").write_text(f"#!/bin/sh\ntouch {shlex.quote(str(marker))}\n")
+    for tool in tools.iterdir():
+        tool.chmod(0o700)
+    result = subprocess.run(  # noqa: S603
+        ["/bin/bash", "-c", command],
+        cwd=tmp_path,
+        env={**os.environ, "PATH": str(tools)},
+        check=False,
+    )
+    assert result.returncode == 22
+    assert not marker.exists()

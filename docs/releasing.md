@@ -16,8 +16,13 @@
    visibility prevents this job from passing, make the affected package public
    and rerun the failed job. The installer upload depends on this verification.
 4. Confirm installer assets were uploaded only after anonymous access passed:
-   `install.sh`, its SHA-256 checksum and `compose.yml`. A successful authenticated
-   registry push alone is insufficient to release an anonymously usable installer.
+   `install.sh`, its SHA-256 checksum and `compose.yml`. The publication job uploads
+   `installer-ready.json` last as its completion marker. The bootstrap ignores
+   releases without the marker or with missing/incomplete installer assets, so a
+   failed newer publication preserves the last verified installer. Never upload
+   this marker manually to bypass the image or asset checks. A successful
+   authenticated registry push alone is insufficient to release an anonymously
+   usable installer.
 5. Verify a fresh host can use the release-pinned installer without a GitHub or
    registry login. Check selected-service readiness before network traffic, then
    verify representative DNS, DHCP, RADIUS and CA operations for installed services.

@@ -282,6 +282,22 @@ jobs:
           (cd scripts && sha256sum install.sh) > install.sh.sha256
           gh release upload "$GITHUB_REF_NAME" scripts/install.sh deployment/compose.yml \
             install.sh.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Mark the installer release ready
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path('installer-ready.json').write_text(json.dumps({
+              'schema': 1, 'version': os.environ['PUBLISH_VERSION'],
+              'commit': os.environ['GITHUB_SHA'],
+          }) + '\n')
+          PY
+          gh release upload "$GITHUB_REF_NAME" installer-ready.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
 
   manifests:
     name: Combine manifests

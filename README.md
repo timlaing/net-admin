@@ -38,14 +38,13 @@ file-backed changes.
 
 ## Configure and run
 
-For a **new service host**, use the interactive installer (available once the
-release containing it is published):
+For a **new service host**, download and run the interactive installer:
 
 ```sh
-curl -fsSL https://github.com/timlaing/net-admin/releases/latest/download/install.sh | bash
+curl -fsSL --connect-timeout 10 --max-time 120 https://raw.githubusercontent.com/timlaing/net-admin/main/scripts/install.sh -o install.sh && bash install.sh
 ```
 
-It installs missing Docker components, downloads the latest stable release's
+It installs missing Docker components, downloads the latest verified stable release's
 Compose deployment, and offers independent DNS, ISC/Kea/no DHCP, RADIUS and CA
 choices. CA-only and RADIUS-only installations are supported. No user zones or
 DHCP pools are required up front. Install the Home Assistant app separately;
@@ -125,9 +124,10 @@ docker compose -f docker-compose.kea.yml up -d --no-build
 The DHCP agent selects its backend with `DHCP_SERVER=isc|kea` (default `isc`) and
 validates candidate files with the matching daemon parser (`dhcpd -t` /
 `kea-dhcp4 -t`); in Kea mode it reloads the daemon over `/run/kea/kea4-ctrl.sock`.
-In the Home Assistant add-on, choose the matching DHCP backend in NetAdmin
-**Settings → DHCP**. All service connections are managed there; Home Assistant
-Configuration contains only the ingress login policy.
+In the Home Assistant add-on, enter the DHCP agent URL in NetAdmin
+**Settings → DHCP** and check the backend reported by the agent. All service
+connections are managed there; Home Assistant Configuration contains only the
+ingress login policy.
 
 #### Migrating an existing ISC configuration
 
