@@ -38,6 +38,23 @@ file-backed changes.
 
 ## Configure and run
 
+For a **new service host**, use the interactive installer (available once the
+release containing it is published):
+
+```sh
+curl -fsSL https://github.com/timlaing/net-admin/releases/latest/download/install.sh | bash
+```
+
+It installs missing Docker components, downloads the latest stable release's
+Compose deployment, and offers independent DNS, ISC/Kea/no DHCP, RADIUS and CA
+choices. CA-only and RADIUS-only installations are supported. No user zones or
+DHCP pools are required up front. Install the Home Assistant app separately;
+the installer generates transport credentials for its existing Settings page.
+QR enrollment is a separate, unimplemented workflow. See the
+[fresh-host installation guide](docs/installation.md#fresh-host-installer).
+
+For an **existing service configuration** using the original Compose layouts:
+
 1. Copy `.env.example` to `.env` and replace every placeholder.
 2. Add a matching RADIUS client and restricted TSIG update permission.
 3. Create a private CA plus separate server certificates for both agents and a NetAdmin
@@ -45,7 +62,9 @@ file-backed changes.
    `radius-agent`.
 4. Restrict private keys to the container user (`0600`) and configuration files containing
    hashes/secrets to `0640`.
-5. Run `docker compose up --build -d`.
+5. Pull and start the published images: `docker compose pull`, then
+   `docker compose up -d --no-build`. Set `NETADMIN_VERSION` in `.env` to pin
+   a release; it defaults to `latest`.
 6. Put the application behind HTTPS and open port 8099 through the reverse proxy.
 
 Direct-access cookies are always `Secure`, so direct HTTP is unsuitable for login.
@@ -99,7 +118,8 @@ when using agent mode.
 `docker-compose.yml` (ISC dhcpd) is unchanged:
 
 ```sh
-docker compose -f docker-compose.kea.yml up -d --build
+docker compose -f docker-compose.kea.yml pull
+docker compose -f docker-compose.kea.yml up -d --no-build
 ```
 
 The DHCP agent selects its backend with `DHCP_SERVER=isc|kea` (default `isc`) and
