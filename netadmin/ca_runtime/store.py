@@ -37,6 +37,7 @@ AUTHORITY_CERT_FILE = "ca.crt"
 AUTHORITY_KEY_FILE = "ca.key"
 AUTHORITY_WRAP_FILE = "password"
 METADATA_FILE = "metadata.json"
+MANIFEST_FILE = "manifest.json"
 
 
 def durable(path: Path, data: bytes) -> None:
@@ -64,6 +65,19 @@ def identifier(value: str) -> str:
     return value
 
 
+def _remove_authority_directory(directory: Path) -> None:
+    """Reclaim stopped issuer directories without granting DAC override capabilities."""
+    # Native issuers create private directories under their own UID.
+    for parent, directories, _files in os.walk(directory, followlinks=False):
+        for name in directories:
+            path = Path(parent) / name
+            if not path.is_symlink():
+                if path.stat().st_uid != os.geteuid():
+                    os.chown(path, os.geteuid(), -1)
+                path.chmod(0o700)
+    shutil.rmtree(directory)
+
+
 class AuthorityStore:
     """Persist private CA state exclusively inside the runtime container."""
 
@@ -74,7 +88,7 @@ class AuthorityStore:
             (root / directory).mkdir(exist_ok=True, mode=0o700)
         with self.lock():
             self._finish_reset()
-            manifest = root / "manifest.json"
+            manifest = root / MANIFEST_FILE
             if not manifest.exists():
                 if (root / "config/ca.json").exists() or (root / "certs/root_ca.crt").exists():
                     raise CAInputError(
@@ -123,7 +137,7 @@ class AuthorityStore:
             shutil.rmtree(directory)
         durable(self.root / ROOT_PRIVATE_FILE, reset["key"].encode())
         durable(self.root / ROOT_WRAP_FILE, reset["password"].encode())
-        durable(self.root / "manifest.json", json.dumps(reset["manifest"]).encode())
+        durable(self.root / MANIFEST_FILE, json.dumps(reset["manifest"]).encode())
         marker.unlink()
 
     def delete_authority(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -170,17 +184,7 @@ class AuthorityStore:
             self._finish_reset()
             self.manifest = manifest
         else:
-            # Native issuers create private directories under their own UID.
-            # Reclaim directory ownership after process shutdown so the controller
-            # can remove them without adding DAC override capabilities.
-            for parent, directories, _files in os.walk(directory, followlinks=False):
-                for name in directories:
-                    path = Path(parent) / name
-                    if not path.is_symlink():
-                        if path.stat().st_uid != os.geteuid():
-                            os.chown(path, os.geteuid(), -1)
-                        path.chmod(0o700)
-            shutil.rmtree(directory)
+            _remove_authority_directory(directory)
         return {"deleted": authority_id}
 
     def _verify_root(self) -> None:
@@ -439,7 +443,7 @@ class AuthorityStore:
         ):
             raise CAInputError("Recovery key does not match the root")
         self.manifest["root_archived"] = True
-        durable(self.root / "manifest.json", json.dumps(self.manifest).encode())
+        durable(self.root / MANIFEST_FILE, json.dumps(self.manifest).encode())
         (self.root / ROOT_PRIVATE_FILE).unlink(missing_ok=True)
         (self.root / ROOT_WRAP_FILE).unlink(missing_ok=True)
         return {"archived": True}

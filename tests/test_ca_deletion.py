@@ -89,8 +89,9 @@ def test_root_reset_completes_after_interrupted_key_write(runtime, tmp_path, mon
 
     with monkeypatch.context() as patch:
         patch.setattr(storage, "durable", interrupted)
-        with pytest.raises(OSError), store.lock():
-            store.delete_authority(body(authority_id=root_id, confirmation="DELETE CA"))
+        payload = body(authority_id=root_id, confirmation="DELETE CA")
+        with store.lock(), pytest.raises(OSError, match="simulated interruption"):
+            store.delete_authority(payload)
     recovered = AuthorityStore(tmp_path)
     assert recovered.status()["authorities"] == []
     assert recovered.manifest["public_key_sha256"] != original["public_key_sha256"]
