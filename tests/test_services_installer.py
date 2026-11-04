@@ -32,14 +32,13 @@ def installer():
     return module
 
 
-@pytest.fixture
-def compose_available(installer, monkeypatch):
-    """Keep preparation tests independent of an optional Docker CLI."""
-    available = False
+@pytest.fixture(scope="session")
+def compose_probe():
+    """Probe the optional Compose plugin once, with a bounded wait."""
     docker = shutil.which("docker")
     if docker:
         with contextlib.suppress(OSError, subprocess.TimeoutExpired):
-            available = (
+            return (
                 subprocess.run(  # noqa: S603
                     [docker, "compose", "version"],
                     stdout=subprocess.DEVNULL,
@@ -49,7 +48,13 @@ def compose_available(installer, monkeypatch):
                 ).returncode
                 == 0
             )
-    if not available:
+    return False
+
+
+@pytest.fixture
+def compose_available(installer, monkeypatch, compose_probe):
+    """Keep each preparation test independent of an optional Compose plugin."""
+    if not compose_probe:
         monkeypatch.setattr(installer, "compose", lambda *_args, **_kwargs: None)
 
 
@@ -75,16 +80,20 @@ def port_probe(installer, monkeypatch):
 
     class Probe:
         def __init__(self, family, kind):
+            """Record the socket kind without opening a host socket."""
             assert family == socket.AF_INET
             self.kind = kind
 
         def __enter__(self):
+            """Return this synthetic socket for a preflight probe."""
             return self
 
         def __exit__(self, *_args):
+            """Count cleanup even when binding fails."""
             state.closed += 1
 
         def bind(self, target):
+            """Record requested bindings and simulate occupied service ports."""
             binding = (*target, self.kind)
             state.bindings.append(binding)
             if binding in state.occupied:
@@ -243,6 +252,7 @@ def test_preparation_failure_does_not_leave_or_replace_keys(installer, tmp_path,
     args = options(tmp_path, dns="no", dhcp="none", radius="no", ca="yes")
 
     def fail(*_args, **_kwargs):
+        """Simulate preparation validation failing before deployment is retained."""
         raise RuntimeError("synthetic validation failure")
 
     monkeypatch.setattr(installer, "compose", fail)
@@ -268,19 +278,23 @@ def test_startup_failure_preserves_credentials_and_never_reports_success(
     calls = []
 
     def call(_directory, *command, **_kwargs):
+        """Record Compose operations and inject a pull failure when selected."""
         calls.append(command)
         if command == ("pull",) and failure == "pull":
             raise RuntimeError("pull failed")
 
     def validation(*_args):
+        """Simulate native configuration validation failure when selected."""
         if failure == "validation":
             raise RuntimeError("daemon validation failed")
 
     def authentication(*_args):
+        """Simulate agent authentication failure when selected."""
         if failure == "authentication":
             raise RuntimeError("authentication failed")
 
     def daemons(*_args):
+        """Simulate native daemon readiness failure when selected."""
         if failure == "daemon":
             raise RuntimeError("native daemon is not ready")
 
@@ -340,6 +354,7 @@ def test_agent_readiness_cannot_hide_failed_daemons(
     calls = []
 
     def command(_directory, *args, **_kwargs):
+        """Supply synthetic Compose status or reject native daemon commands."""
         calls.append(args)
         if args[:1] == ("ps",):
             return SimpleNamespace(stdout=json.dumps(records))
@@ -365,6 +380,7 @@ def test_ca_only_readiness_reads_compose_status_formats(installer, tmp_path, mon
     calls = []
 
     def command(_directory, *args, **_kwargs):
+        """Supply synthetic Compose status or reject native daemon commands."""
         calls.append(args)
         return SimpleNamespace(stdout=output)
 

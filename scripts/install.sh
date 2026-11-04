@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Download a release-pinned, service-only NetAdmin stack and prepare a fresh host.
 set -euo pipefail
+# Parse options, prepare host dependencies and launch a pinned installer.
 install_main() {
 original_arguments=("$@")
+# Print supported options without changing the host.
 usage() {
   cat <<'EOF'
 Usage: install.sh [options]
@@ -46,7 +48,9 @@ while (($#)); do
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+# Report an unrecoverable installer error and stop.
 fail() { echo "$*" >&2; exit 1; }
+# Read a terminal answer or return the noninteractive default.
 ask() {
   local answer
   if [[ "$yes" == true ]]; then

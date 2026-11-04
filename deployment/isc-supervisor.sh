@@ -7,6 +7,7 @@ child=''
 reload=false
 recover=false
 failed_configuration=''
+# Poll child liveness for a finite number of seconds.
 wait_for_exit() {
   remaining="$1"
   while kill -0 "$child" 2>/dev/null; do
@@ -15,6 +16,7 @@ wait_for_exit() {
     remaining=$((remaining - 1))
   done
 }
+# Terminate the current DHCP child with bounded TERM and KILL waits.
 stop() {
   if [ -n "$child" ]; then
     kill -TERM "$child" 2>/dev/null || true
@@ -32,6 +34,7 @@ stop() {
 trap 'stop; exit 0' TERM INT
 trap 'reload=true' HUP
 /usr/local/bin/entrypoint-dhcp.sh -t -cf /etc/dhcp/dhcpd.conf
+# Validate configuration and start DHCP only when subnets exist.
 start() {
   # Installer-owned configuration starts empty. Agent-created subnets are in
   # this file; the managed include contains only host reservations.
@@ -46,6 +49,7 @@ start() {
   fi
 }
 start
+# Track configuration changes so reloads restart only when necessary.
 signature() { cksum /etc/dhcp/dhcpd.conf /etc/dhcp/netadmin-reservations.conf; }
 while true; do
   if [ "$reload" = true ]; then
