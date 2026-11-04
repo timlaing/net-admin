@@ -544,6 +544,22 @@ def audit() -> Any:
     return render_template("audit.html", events=_store().recent_audit())
 
 
+def _disabled_service() -> Any:
+    """Avoid backend calls for services the administrator disabled."""
+    if g.identity is not None and g.identity.role == "admin":
+        endpoint = request.endpoint or ""
+        if endpoint.startswith(("ca.", "authorities.")) and not _settings().ca_enabled:
+            flash("CA is disabled. Enable it in Settings first.", "info")
+            return redirect(url_for("connections.settings_page"))
+        for service in ("dns", "dhcp", "radius"):
+            if endpoint.startswith(f"web.{service}_") and not getattr(
+                _settings(), f"{service}_enabled"
+            ):
+                flash(f"{service.upper()} is disabled. Enable it in Settings first.", "info")
+                return redirect(url_for("connections.settings_page"))
+    return None
+
+
 def create_app(settings: Settings | None = None) -> Flask:
     """Create and configure NetAdmin."""
     runtime = settings or Settings.from_env()
@@ -575,21 +591,7 @@ def create_app(settings: Settings | None = None) -> Flask:
     def connection_context() -> dict[str, Any]:
         return {"service_settings": _settings()}
 
-    @app.before_request
-    def disabled_service() -> Any:
-        """Avoid backend calls for services the administrator disabled."""
-        if g.identity is not None and g.identity.role == "admin":
-            endpoint = request.endpoint or ""
-            if endpoint.startswith(("ca.", "authorities.")) and not _settings().ca_enabled:
-                flash("CA is disabled. Enable it in Settings first.", "info")
-                return redirect(url_for("connections.settings_page"))
-            for service in ("dns", "dhcp", "radius"):
-                if endpoint.startswith(f"web.{service}_") and not getattr(
-                    _settings(), f"{service}_enabled"
-                ):
-                    flash(f"{service.upper()} is disabled. Enable it in Settings first.", "info")
-                    return redirect(url_for("connections.settings_page"))
-        return None
+    app.before_request(_disabled_service)
 
     @app.errorhandler(httpx.HTTPError)
     @app.errorhandler(RuntimeError)
