@@ -229,6 +229,7 @@ import re
 import urllib.request
 
 def latest_installer_release():
+    """Find the newest stable release with completed image and asset publication."""
     required = {'install.sh', 'install.sh.sha256', 'compose.yml', 'installer-ready.json'}
     for page in range(1, 11):
         request = urllib.request.Request(

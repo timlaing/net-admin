@@ -171,6 +171,7 @@ def certificates(directory, address, names):
     ca.mkdir(parents=True)
 
     def openssl(*args):
+        """Run certificate generation without exposing command output."""
         run(["openssl", *map(str, args)], capture_output=True)
 
     openssl(

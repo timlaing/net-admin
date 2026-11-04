@@ -38,7 +38,9 @@ file-backed changes.
 
 ## Configure and run
 
-For a **new service host**, download and run the interactive installer:
+For a **new service host**, ensure `curl` and system CA certificates are installed
+([bootstrap prerequisites](docs/installation.md#fresh-host-installer)), then download
+and run the interactive installer:
 
 ```sh
 curl -fsSL --connect-timeout 10 --max-time 120 https://raw.githubusercontent.com/timlaing/net-admin/main/scripts/install.sh -o install.sh && bash install.sh

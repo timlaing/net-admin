@@ -1,5 +1,6 @@
 """Fresh installations select independent services and preserve failed state."""
 
+import contextlib
 import importlib.util
 import itertools
 import json
@@ -22,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def installer():
+    """Load the standalone installer without invoking its command-line entry point."""
     spec = importlib.util.spec_from_file_location(
         "services_installer", ROOT / "scripts/install_services.py"
     )
@@ -33,11 +35,26 @@ def installer():
 @pytest.fixture
 def compose_available(installer, monkeypatch):
     """Keep preparation tests independent of an optional Docker CLI."""
-    if not shutil.which("docker"):
+    available = False
+    docker = shutil.which("docker")
+    if docker:
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            available = (
+                subprocess.run(  # noqa: S603
+                    [docker, "compose", "version"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                ).returncode
+                == 0
+            )
+    if not available:
         monkeypatch.setattr(installer, "compose", lambda *_args, **_kwargs: None)
 
 
 def options(tmp_path, dns="yes", dhcp="kea", radius="yes", ca="yes"):
+    """Build a fresh service selection rooted in the temporary test directory."""
     return SimpleNamespace(
         directory=tmp_path / "installation",
         address="192.0.2.10",
@@ -87,6 +104,7 @@ def port_probe(installer, monkeypatch):
 
 
 def test_port_probes_use_service_addresses_and_close_every_socket(installer, tmp_path, port_probe):
+    """Reserve only intended service addresses and release every preflight socket."""
     args = options(tmp_path)
     installer.check_ports(args)
     bindings = set(port_probe.bindings)
@@ -104,6 +122,7 @@ def test_port_probes_use_service_addresses_and_close_every_socket(installer, tmp
     "host,port,kind", [("127.0.0.1", 53, socket.SOCK_STREAM), ("192.0.2.10", 67, socket.SOCK_DGRAM)]
 )
 def test_busy_scoped_ports_still_abort_preflight(installer, tmp_path, port_probe, host, port, kind):
+    """Reject occupied service ports while closing all attempted probes."""
     args = options(tmp_path)
     port_probe.occupied.add((host, port, kind))
     with pytest.raises(ValueError, match=f"Required port {port} is already in use"):
@@ -112,6 +131,7 @@ def test_busy_scoped_ports_still_abort_preflight(installer, tmp_path, port_probe
 
 
 def test_ca_only_does_not_probe_other_services(installer, tmp_path, port_probe):
+    """Check only CA ports when all other services are deselected."""
     args = options(tmp_path, dns="no", dhcp="none", radius="no", ca="yes")
     installer.check_ports(args)
     assert set(port_probe.bindings) == {
@@ -133,6 +153,7 @@ CHOICES = [
 def test_selected_services_have_no_unselected_dependencies(
     installer, tmp_path, compose_available, dns, dhcp, radius, ca
 ):
+    """Prepare each supported selection without pulling in deselected services."""
     args = options(tmp_path, dns, dhcp, radius, ca)
     installer.validate(args, host=False)
     installer.prepare(args)
@@ -173,6 +194,7 @@ def test_selected_services_have_no_unselected_dependencies(
 def test_transport_credentials_are_valid_private_and_distinct(
     installer, tmp_path, compose_available
 ):
+    """Validate transport trust, credential separation and private file permissions."""
     args = options(tmp_path)
     installer.prepare(args)
     directory = args.directory
@@ -217,6 +239,7 @@ def test_transport_credentials_are_valid_private_and_distinct(
 
 
 def test_preparation_failure_does_not_leave_or_replace_keys(installer, tmp_path, monkeypatch):
+    """Keep failed preparation from leaving credentials or overwriting existing state."""
     args = options(tmp_path, dns="no", dhcp="none", radius="no", ca="yes")
 
     def fail(*_args, **_kwargs):
@@ -238,6 +261,7 @@ def test_preparation_failure_does_not_leave_or_replace_keys(installer, tmp_path,
 def test_startup_failure_preserves_credentials_and_never_reports_success(
     installer, tmp_path, monkeypatch, capsys, failure, compose_available
 ):
+    """Retain recoverable state and withhold success when any startup phase fails."""
     args = options(tmp_path, dns="no", dhcp="none", radius="no", ca="yes")
     installer.prepare(args)
     key = (args.directory / "transport/client/client.key").read_bytes()
@@ -276,6 +300,7 @@ def test_startup_failure_preserves_credentials_and_never_reports_success(
 def test_resume_starts_only_saved_services_without_rotating_credentials(
     installer, tmp_path, monkeypatch, compose_available
 ):
+    """Resume the saved selection and retain its existing credentials."""
     args = options(tmp_path, dns="no", dhcp="none", radius="no", ca="yes")
     installer.prepare(args)
     before = {p: p.read_bytes() for p in args.directory.rglob("*") if p.is_file()}
@@ -301,6 +326,7 @@ def test_resume_starts_only_saved_services_without_rotating_credentials(
 def test_agent_readiness_cannot_hide_failed_daemons(
     installer, tmp_path, monkeypatch, backend, server, agent, stopped
 ):
+    """Reject missing or stopped daemons even when agent readiness succeeds."""
     state = {
         "dns": "yes" if backend == "dns" else "no",
         "dhcp": "kea" if backend == "kea" else "none",
@@ -332,6 +358,7 @@ def test_agent_readiness_cannot_hide_failed_daemons(
 
 @pytest.mark.parametrize("ndjson", [False, True])
 def test_ca_only_readiness_reads_compose_status_formats(installer, tmp_path, monkeypatch, ndjson):
+    """Accept supported Compose JSON formats for a CA-only deployment."""
     state = {"dns": "no", "dhcp": "none", "radius": "no", "ca": "yes"}
     records = [{"Service": name, "State": "running"} for name in ("ca-agent", "ca-runtime")]
     output = "\n".join(map(json.dumps, records)) if ndjson else json.dumps(records)
@@ -349,6 +376,7 @@ def test_ca_only_readiness_reads_compose_status_formats(installer, tmp_path, mon
 def test_printed_python_resume_command_is_accepted(
     installer, tmp_path, monkeypatch, capsys, compose_available
 ):
+    """Execute the printed recovery command using the actual argument parser."""
     directory = tmp_path / "prepared installation"
     monkeypatch.setattr(installer, "validate", lambda _args: None)
     installer.main(
@@ -382,6 +410,7 @@ def test_printed_python_resume_command_is_accepted(
 
 
 def test_resume_dry_run_reuses_saved_credentials_and_versions(tmp_path):
+    """Describe recovery without regenerating or downloading deployment state."""
     directory = tmp_path / "existing deployment"
     directory.mkdir()
     marker = directory / "installation.json"
@@ -412,6 +441,7 @@ def test_resume_dry_run_reuses_saved_credentials_and_versions(tmp_path):
 
 @pytest.mark.parametrize("private_kea", [False, True])
 def test_release_publication_checks_anonymous_kea_access(tmp_path, private_kea):
+    """Block installer publication when a release image cannot be pulled anonymously."""
     tools = tmp_path / "tools"
     tools.mkdir()
     calls = tmp_path / "calls"
@@ -450,6 +480,7 @@ fi
 
 
 def test_inherited_compose_selectors_cannot_change_installation(installer, tmp_path, monkeypatch):
+    """Prevent inherited Compose variables from overriding saved service choices."""
     monkeypatch.setenv("COMPOSE_PROFILES", "isc,kea,radius,ca,dns")
     monkeypatch.setenv("INSTALL_ADDRESS", "198.51.100.99")
     monkeypatch.setenv("NETADMIN_VERSION", "wrong")
@@ -470,6 +501,7 @@ def test_inherited_compose_selectors_cannot_change_installation(installer, tmp_p
     ],
 )
 def test_launcher_dry_run_is_non_mutating(tmp_path, flags):
+    """Preview independent service choices without creating deployment files."""
     target = tmp_path / "new deployment"
     result = subprocess.run(  # noqa: S603
         [
@@ -492,12 +524,14 @@ def test_launcher_dry_run_is_non_mutating(tmp_path, flags):
 
 
 def test_no_services_is_rejected_before_preparation(installer, tmp_path):
+    """Reject an empty selection before writing deployment state."""
     args = options(tmp_path, "no", "none", "no", "no")
     with pytest.raises(ValueError, match="at least one"):
         installer.validate(args, host=False)
 
 
 def test_launcher_accepts_script_from_pipeline(tmp_path):
+    """Keep terminal input separate from a script supplied on standard input."""
     target = tmp_path / "piped installation"
     response = subprocess.run(  # noqa: S603
         [
@@ -530,6 +564,7 @@ def test_launcher_accepts_script_from_pipeline(tmp_path):
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="Exercises the unprivileged sudo handoff")
 def test_piped_sudo_handoff_preserves_selection_without_running_host_commands(tmp_path):
+    """Preserve arguments through elevation without evaluating their shell characters."""
     tools = tmp_path / "tools"
     tools.mkdir()
     (tools / "uname").write_text(
@@ -584,6 +619,7 @@ def test_piped_sudo_handoff_preserves_selection_without_running_host_commands(tm
 
 
 def test_kea_publication_has_both_architectures_and_existing_smoke():
+    """Publish and smoke-test Kea images for both supported architectures."""
     workflow = yaml.safe_load((ROOT / ".github/workflows/publish.yml").read_text())
     entries = workflow["jobs"]["publish"]["strategy"]["matrix"]["include"]
     kea = [entry for entry in entries if entry["flavour"] == "dhcp-kea"]
@@ -594,6 +630,7 @@ def test_kea_publication_has_both_architectures_and_existing_smoke():
 
 
 def installer_release(tag, *, ready=True):
+    """Build release metadata with controllable publication readiness."""
     names = ["install.sh", "install.sh.sha256", "compose.yml"]
     if ready:
         names.append("installer-ready.json")
@@ -605,6 +642,7 @@ def installer_release(tag, *, ready=True):
 
 @pytest.mark.parametrize("incomplete", ["marker", "upload", "empty", "draft", "prerelease"])
 def test_latest_installer_skips_unavailable_release(incomplete):
+    """Keep the previous verified release available during incomplete publication."""
     newest = installer_release("v99.0.0", ready=incomplete != "marker")
     if incomplete == "upload":
         newest["assets"][0]["state"] = "uploading"
@@ -618,6 +656,7 @@ def test_latest_installer_skips_unavailable_release(incomplete):
 
 
 def run_release_selector(pages):
+    """Execute the shipped resolver with synthetic paginated GitHub responses."""
     source = (ROOT / "scripts/install.sh").read_text().split("<<'PY'\n", 1)[1].split("\nPY", 1)[0]
     harness = (
         "import io, json, urllib.request\n"
@@ -635,12 +674,14 @@ def run_release_selector(pages):
 
 
 def test_latest_installer_requires_completed_release():
+    """Fail clearly before any verified installer release exists."""
     result = run_release_selector([[installer_release("v2.0.0", ready=False)]])
     assert result.returncode != 0
     assert "No verified stable NetAdmin installer release" in result.stderr
 
 
 def test_latest_installer_checks_older_release_pages():
+    """Find a completed release beyond the first page of incomplete releases."""
     result = run_release_selector(
         [[installer_release("v2.0.0", ready=False)] * 100, [installer_release("v1.0.0")]]
     )
@@ -649,6 +690,7 @@ def test_latest_installer_checks_older_release_pages():
 
 
 def test_release_ready_marker_is_published_last():
+    """Publish readiness only after verified images and installer assets."""
     workflow = yaml.safe_load((ROOT / ".github/workflows/publish.yml").read_text())
     job = workflow["jobs"]["publish-installer"]
     assert "verify-public-images" in job["needs"]
@@ -659,6 +701,7 @@ def test_release_ready_marker_is_published_last():
 
 @pytest.mark.parametrize("document", ["README.md", "docs/installation.md"])
 def test_documented_install_command_stops_when_download_fails(tmp_path, document):
+    """Preserve download failures without executing a partial installer."""
     command = next(
         line
         for line in (ROOT / document).read_text().splitlines()

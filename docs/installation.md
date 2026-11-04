@@ -38,6 +38,20 @@ completion marker, written only after image and asset publication succeeds. A
 newer release that is still publishing or has failed does not displace the last
 verified installer. Before the first verified release, it exits with a clear error.
 
+The first download needs `curl` and a working system CA trust store. If these
+are missing, install them first using the command for your distribution (omit
+`sudo` when already running as root):
+
+```sh
+# Debian, Ubuntu and 64-bit Raspberry Pi OS
+sudo apt-get update && sudo apt-get install -y curl ca-certificates
+
+# Fedora and RHEL
+sudo dnf install -y curl ca-certificates
+```
+
+Then download and run the installer:
+
 ```sh
 curl -fsSL --connect-timeout 10 --max-time 120 https://raw.githubusercontent.com/timlaing/net-admin/main/scripts/install.sh -o install.sh && bash install.sh
 ```
