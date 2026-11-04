@@ -6,6 +6,7 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import secrets
 import shutil
@@ -40,6 +41,7 @@ METADATA_FILE = "metadata.json"
 MANIFEST_FILE = "manifest.json"
 DELETIONS_DIRECTORY = "deletions"
 JSON_SUFFIX = ".json"
+ROOT_RESET_FILE = "root-reset.json"
 
 
 def durable(path: Path, data: bytes) -> None:
@@ -127,8 +129,33 @@ class AuthorityStore:
                 raise CAInputError("Missing root material; recovery required")
             if not self.manifest.get("root_archived"):
                 self._verify_root()
-            for marker in (root / DELETIONS_DIRECTORY).glob("*.json"):
+            self._recover_authorities()
+
+    def _recover_authorities(self) -> None:
+        """Keep individual cleanup failures recoverable without blocking management."""
+        for marker in (self.root / DELETIONS_DIRECTORY).glob("*.json"):
+            try:
                 self._finish_deletion(identifier(marker.stem))
+            except OSError:
+                logging.getLogger(__name__).warning("CA deletion remains pending: %s", marker.stem)
+        try:
+            self._clean_incomplete_authorities()
+        except OSError:
+            logging.getLogger(__name__).warning("Incomplete CA cleanup remains pending")
+
+    def _clean_incomplete_authorities(self) -> None:
+        """Remove unpublished children under lock, preserving root and deletion intents."""
+        for directory in (self.root / "authorities").iterdir():
+            if (
+                directory.name == self.manifest["root_id"]
+                or directory.is_symlink()
+                or not directory.is_dir()
+                or (directory / METADATA_FILE).exists()
+            ):
+                continue
+            identifier(directory.name)
+            if not self.deletion_pending(directory.name):
+                _remove_authority_directory(directory)
 
     def _deletion_marker(self, authority_id: str) -> Path:
         """Resolve only canonical authority IDs in the controller-owned intent directory."""
@@ -139,7 +166,8 @@ class AuthorityStore:
         return self._deletion_marker(authority_id).is_file()
 
     def has_children(self, authority_id: str) -> bool:
-        """Include partially removed children whose deletion is still pending."""
+        """Under the store lock, clean unpublished children and count pending deletions."""
+        self._clean_incomplete_authorities()
         paths = [
             *(self.root / "authorities").glob("*/metadata.json"),
             *(self.root / DELETIONS_DIRECTORY).glob("*.json"),
@@ -181,7 +209,7 @@ class AuthorityStore:
 
     def _finish_reset(self) -> None:
         """Finish an explicitly requested root replacement after interruption."""
-        marker = self.root / "root-reset.json"
+        marker = self.root / ROOT_RESET_FILE
         if not marker.exists():
             return
         reset = json.loads(marker.read_text())
@@ -192,6 +220,9 @@ class AuthorityStore:
         durable(self.root / ROOT_PRIVATE_FILE, reset["key"].encode())
         durable(self.root / ROOT_WRAP_FILE, reset["password"].encode())
         durable(self.root / MANIFEST_FILE, json.dumps(reset["manifest"]).encode())
+        if "request_id" in reset:
+            self._complete_deletion_operation(reset, reset["old_id"], {"deleted": reset["old_id"]})
+        self.manifest = reset["manifest"]
         marker.unlink()
 
     def delete_authority(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -218,10 +249,11 @@ class AuthorityStore:
                 "public_key_sha256": hashlib.sha256(public).hexdigest(),
             }
             durable(
-                self.root / "root-reset.json",
+                self.root / ROOT_RESET_FILE,
                 json.dumps(
                     {
                         "old_id": authority_id,
+                        "request_id": identifier(str(body.get("request_id", ""))),
                         "manifest": manifest,
                         "key": key_bytes(key, password.encode()).decode(),
                         "password": password,
@@ -391,6 +423,15 @@ class AuthorityStore:
             authority_id = identifier(str(body.get("authority_id", "")))
             if self.deletion_pending(authority_id):
                 return self._finish_deletion(authority_id)
+            marker = self.root / ROOT_RESET_FILE
+            if marker.exists():
+                reset = json.loads(marker.read_text())
+                if (
+                    reset.get("request_id") == body["request_id"]
+                    and reset["old_id"] == authority_id
+                ):
+                    self._finish_reset()
+                    return {"deleted": authority_id}
         raise CAInputError("Operation needs reconciliation; inspect authority state before retry")
 
     def create_root(self, body: dict[str, Any]) -> dict[str, Any]:

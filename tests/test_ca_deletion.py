@@ -230,6 +230,9 @@ def test_nonroot_deletion_resumes_without_metadata(
         app = create_runtime(tmp_path, TOKEN)
         store = app.extensions["ca_store"]
         client = app.test_client()
+        assert not store.deletion_pending(child_id)
+        assert not directory.exists()
+        assert _inventory_counts(store, child_id) == [0, 0, 0]
     response = client.post("/authorities/delete", json=payload, headers=headers)
     assert response.status_code == 200
     assert response.json == {"deleted": child_id}
@@ -242,3 +245,145 @@ def test_nonroot_deletion_resumes_without_metadata(
     assert _inventory_counts(store, child_id) == [0, 0, 0]
     assert not store.has_children(root_id)
     assert store.manifest["root_id"] == root_id
+
+
+@pytest.mark.parametrize("recovery", ["startup", "retry"])
+@pytest.mark.parametrize("failure", ["root.key", "record", "final-record"])
+def test_root_reset_replays_after_interruption(runtime, tmp_path, monkeypatch, recovery, failure):  # noqa: F811
+    import json
+
+    from netadmin.ca_runtime import store as storage
+    from netadmin.ca_runtime.app import create_runtime
+    from tests.test_ca_runtime import TOKEN
+
+    app, client, headers = runtime
+    store = app.extensions["ca_store"]
+    root_id = client.post("/authorities/root", json=body(), headers=headers).json["id"]
+    payload = body(authority_id=root_id, confirmation="DELETE CA")
+    record = tmp_path / "operations" / (payload["request_id"] + ".json")
+    write = storage.durable
+    completed_writes = 0
+
+    def interrupted(path, data):
+        nonlocal completed_writes
+        if path == record and json.loads(data).get("state") == "complete":
+            completed_writes += 1
+            if completed_writes == (2 if failure == "final-record" else 1):
+                raise OSError("simulated interruption")
+        if failure == "root.key" and path.name == failure:
+            raise OSError("simulated interruption")
+        write(path, data)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(storage, "durable", interrupted)
+        assert client.post("/authorities/delete", json=payload, headers=headers).status_code == 409
+    if recovery == "startup":
+        app = create_runtime(tmp_path, TOKEN)
+        store = app.extensions["ca_store"]
+        client = app.test_client()
+        assert json.loads(record.read_text())["state"] == "complete"
+        assert not (tmp_path / "root-reset.json").exists()
+    response = client.post("/authorities/delete", json=payload, headers=headers)
+    assert response.status_code == 200
+    assert response.json == {"deleted": root_id}
+    identity = store.manifest.copy()
+    assert identity["root_id"] != root_id
+    assert AuthorityStore(tmp_path).manifest == identity
+    assert client.post("/authorities/delete", json=payload, headers=headers).json == response.json
+    assert store.manifest == identity
+    changed = {**payload, "authority_id": identity["root_id"]}
+    assert client.post("/authorities/delete", json=changed, headers=headers).status_code == 400
+
+
+def test_startup_deletion_failure_keeps_management_available(
+    runtime,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    from netadmin.ca_runtime import store as storage
+    from netadmin.ca_runtime.app import create_runtime
+    from tests.test_ca_runtime import TOKEN
+
+    app, client, headers = runtime
+    store = app.extensions["ca_store"]
+    root_id = client.post("/authorities/root", json=body(), headers=headers).json["id"]
+    children = [
+        store.create_subordinate(body(parent_id=root_id, days=365, path_length=0))["id"]
+        for _ in range(2)
+    ]
+    remove = storage._remove_authority_directory
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            storage, "_remove_authority_directory", lambda _: (_ for _ in ()).throw(OSError())
+        )
+        for child_id in children:
+            payload = body(authority_id=child_id, confirmation="DELETE CA")
+            assert (
+                client.post("/authorities/delete", json=payload, headers=headers).status_code == 409
+            )
+
+    def fail_one(directory):
+        if directory.name == children[0]:
+            raise OSError("private filesystem detail")
+        remove(directory)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(storage, "_remove_authority_directory", fail_one)
+        app = create_runtime(tmp_path, TOKEN)
+    recovered = app.extensions["ca_store"]
+    assert app.test_client().get("/authorities", headers=headers).status_code == 200
+    assert recovered.deletion_pending(children[0])
+    assert not recovered.deletion_pending(children[1])
+    assert not recovered.directory(children[1]).exists()
+    assert children[0] in caplog.text
+    assert "private filesystem detail" not in caplog.text
+    app.extensions["ca_issuers"].reconcile()
+    assert children[0] not in app.extensions["ca_issuers"].processes
+    assert not AuthorityStore(tmp_path).deletion_pending(children[0])
+
+
+@pytest.mark.parametrize("recovery", ["startup", "parent-delete"])
+def test_incomplete_subordinate_cleanup_preserves_valid_authorities(
+    runtime,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    recovery,
+):
+    from netadmin.ca_runtime import store as storage
+
+    app, client, headers = runtime
+    store = app.extensions["ca_store"]
+    root_id = client.post("/authorities/root", json=body(), headers=headers).json["id"]
+    original = store.manifest.copy()
+    write = storage.durable
+
+    def interrupted(path, data):
+        if path.name == "metadata.json":
+            raise OSError("simulated creation interruption")
+        write(path, data)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(storage, "durable", interrupted)
+        with store.lock(), pytest.raises(OSError, match="simulated creation interruption"):
+            store.create_subordinate(body(parent_id=root_id, days=365, path_length=0))
+    incomplete = [path for path in (tmp_path / "authorities").iterdir() if path.name != root_id]
+    assert len(incomplete) == 1
+    assert (incomplete[0] / "ca.key").exists()
+    if recovery == "startup":
+        store = AuthorityStore(tmp_path)
+        assert store.manifest == original
+        assert store.directory(root_id).exists()
+    else:
+        payload = body(authority_id=root_id, confirmation="DELETE CA")
+        assert client.post("/authorities/delete", json=payload, headers=headers).status_code == 200
+    assert not incomplete[0].exists()
+
+
+def test_incomplete_root_is_not_cleaned(tmp_path):
+    store = AuthorityStore(tmp_path)
+    root_directory = store.directory(store.manifest["root_id"])
+    root_directory.mkdir()
+    (root_directory / "partial").write_text("interrupted root initialization")
+    assert AuthorityStore(tmp_path).manifest == store.manifest
+    assert root_directory.exists()
