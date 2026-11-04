@@ -265,10 +265,13 @@ def test_dhcp_backend_is_reported_by_agent(tmp_path):
 
 @pytest.mark.parametrize("backend", ["isc", "kea"])
 @pytest.mark.parametrize(
-    "health", ["invalid-json", {"backend": []}, {"backend": {}}, {"backend": None}]
+    "health",
+    ["invalid-json", "connection-error", {"backend": []}, {"backend": {}}, {"backend": None}],
 )
 def test_malformed_dhcp_health_uses_legacy_backend_for_both_pages(tmp_path, backend, health):
     import json
+
+    import httpx
 
     app, client = admin_client(tmp_path)
     app.extensions["netadmin_settings"] = replace(
@@ -283,6 +286,8 @@ def test_malformed_dhcp_health_uses_legacy_backend_for_both_pages(tmp_path, back
 
     def get(path):
         if path == "health":
+            if health == "connection-error":
+                raise httpx.ConnectError("agent unreachable")
             return json.loads(health) if isinstance(health, str) else health
         return [subnet] if path == "configuration" else []
 

@@ -235,6 +235,9 @@ class Issuers:
     def _reconcile_one(self, path: Path) -> None:
         authority_id = path.parent.name
         process = self.processes.get(authority_id)
+        if self.store.deletion_pending(authority_id):
+            self._stop_ineligible(authority_id, process)
+            return
         try:
             cert = self.store.certificate(authority_id)
             eligible = cert.not_valid_after_utc > datetime.now(UTC)
@@ -297,6 +300,8 @@ def sign(store: AuthorityStore, authority_id: str, body: dict[str, Any]) -> dict
     """Issue a leaf with a scoped provisioner, preserving replay identity."""
     from netadmin.services.step_ca import issued_matches_csr, validate_csr  # pylint: disable=import-outside-toplevel
 
+    if store.deletion_pending(authority_id):
+        raise CAInputError("Authority is pending deletion")
     directory = store.directory(authority_id)
     metadata = store.metadata(authority_id)
     if not metadata.get("managed") or not isinstance(metadata.get("policy"), dict):

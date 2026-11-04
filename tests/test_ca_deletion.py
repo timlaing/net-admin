@@ -157,3 +157,88 @@ def test_failed_intermediate_directory_removal_preserves_inventory(runtime, monk
         assert store.delete_authority(payload) == {"deleted": child_id}
     assert not directory.exists()
     assert _inventory_counts(store, child_id) == [0, 0, 0]
+
+
+@pytest.mark.parametrize("failure_mode", ["metadata", "inventory"])
+@pytest.mark.parametrize("recovery", ["request", "startup"])
+def test_nonroot_deletion_resumes_without_metadata(
+    runtime,  # noqa: F811 - imported shared fixture
+    tmp_path,
+    monkeypatch,
+    failure_mode,
+    recovery,
+):
+    from netadmin.ca_runtime import store as storage
+    from netadmin.ca_runtime.app import create_runtime
+    from tests.test_ca_runtime import TOKEN
+
+    app, client, headers = runtime
+    store = app.extensions["ca_store"]
+    root_id = client.post("/authorities/root", json=body(), headers=headers).json["id"]
+    child_id = store.create_subordinate(body(parent_id=root_id, days=365, path_length=0))["id"]
+    directory = store.directory(child_id)
+    (directory / "config.json").write_text("{}")
+    with store.inventory.connection() as connection:
+        connection.execute(
+            "INSERT INTO certificates VALUES (?, ?, ?)", (child_id, "leaf", "public")
+        )
+        connection.execute("INSERT INTO imported VALUES (?)", (child_id,))
+        connection.execute("INSERT INTO processed VALUES (?, ?)", (child_id, "leaf"))
+    payload = body(authority_id=child_id, confirmation="DELETE CA")
+
+    def fail_directory(path):
+        (path / "metadata.json").unlink()
+        raise OSError("metadata removed before interruption")
+
+    def fail_inventory(_authority_id):
+        raise OSError("inventory cleanup interrupted")
+
+    with monkeypatch.context() as patch:
+        if failure_mode == "metadata":
+            patch.setattr(storage, "_remove_authority_directory", fail_directory)
+        else:
+            patch.setattr(store.inventory, "remove_authority", fail_inventory)
+        response = client.post("/authorities/delete", json=payload, headers=headers)
+        assert response.status_code == 409
+    assert not (directory / "metadata.json").exists()
+    assert store.deletion_pending(child_id)
+    assert _inventory_counts(store, child_id) == [1, 1, 1]
+    original_operation = "/operations/" + payload["request_id"]
+    assert client.get(original_operation, headers=headers).json["state"] == "attempted"
+    wrong_payload = {**payload, "authority_id": root_id}
+    assert (
+        client.post("/authorities/delete", json=wrong_payload, headers=headers).status_code == 400
+    )
+    parent_delete = client.post(
+        "/authorities/delete",
+        headers=headers,
+        json=body(authority_id=root_id, confirmation="DELETE CA"),
+    )
+    assert parent_delete.status_code == 400
+    assert b"Delete child authorities first" in parent_delete.data
+    app.extensions["ca_issuers"].reconcile()
+    assert child_id not in app.extensions["ca_issuers"].processes
+    pending_parent = client.post(
+        "/authorities/subordinate", headers=headers, json=body(parent_id=child_id, days=30)
+    )
+    assert pending_parent.status_code == 400
+    assert b"pending deletion" in pending_parent.data
+    pending_issue = client.post(f"/authorities/{child_id}/issue", headers=headers, json=body())
+    assert pending_issue.status_code == 400
+    assert b"pending deletion" in pending_issue.data
+    if recovery == "startup":
+        app = create_runtime(tmp_path, TOKEN)
+        store = app.extensions["ca_store"]
+        client = app.test_client()
+    response = client.post("/authorities/delete", json=payload, headers=headers)
+    assert response.status_code == 200
+    assert response.json == {"deleted": child_id}
+    assert client.get(original_operation, headers=headers).json == {
+        "state": "complete",
+        "result": {"deleted": child_id},
+    }
+    assert not directory.exists()
+    assert not store.deletion_pending(child_id)
+    assert _inventory_counts(store, child_id) == [0, 0, 0]
+    assert not store.has_children(root_id)
+    assert store.manifest["root_id"] == root_id

@@ -38,6 +38,8 @@ AUTHORITY_KEY_FILE = "ca.key"
 AUTHORITY_WRAP_FILE = "password"
 METADATA_FILE = "metadata.json"
 MANIFEST_FILE = "manifest.json"
+DELETIONS_DIRECTORY = "deletions"
+JSON_SUFFIX = ".json"
 
 
 def durable(path: Path, data: bytes) -> None:
@@ -84,7 +86,7 @@ class AuthorityStore:
     def __init__(self, root: Path):
         self.root = root
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        for directory in ("authorities", "operations"):
+        for directory in ("authorities", "operations", DELETIONS_DIRECTORY):
             (root / directory).mkdir(exist_ok=True, mode=0o700)
         self.inventory = CertificateInventory(root)
         with self.lock():
@@ -125,6 +127,57 @@ class AuthorityStore:
                 raise CAInputError("Missing root material; recovery required")
             if not self.manifest.get("root_archived"):
                 self._verify_root()
+            for marker in (root / DELETIONS_DIRECTORY).glob("*.json"):
+                self._finish_deletion(identifier(marker.stem))
+
+    def _deletion_marker(self, authority_id: str) -> Path:
+        """Resolve only canonical authority IDs in the controller-owned intent directory."""
+        return self.root / DELETIONS_DIRECTORY / (identifier(authority_id) + JSON_SUFFIX)
+
+    def deletion_pending(self, authority_id: str) -> bool:
+        """Keep a committed deletion recoverable without authority metadata."""
+        return self._deletion_marker(authority_id).is_file()
+
+    def has_children(self, authority_id: str) -> bool:
+        """Include partially removed children whose deletion is still pending."""
+        paths = [
+            *(self.root / "authorities").glob("*/metadata.json"),
+            *(self.root / DELETIONS_DIRECTORY).glob("*.json"),
+        ]
+        return any(json.loads(path.read_text()).get("parent_id") == authority_id for path in paths)
+
+    def _finish_deletion(self, authority_id: str) -> dict[str, Any]:
+        """Resume committed non-root deletion and acknowledge its original operation."""
+        if authority_id == self.manifest["root_id"]:
+            raise CAInputError("Root deletion requires the root reset operation")
+        marker = self._deletion_marker(authority_id)
+        intent = json.loads(marker.read_text())
+        self.inventory.close()
+        directory = self.directory(authority_id)
+        if directory.exists():
+            _remove_authority_directory(directory)
+        self.inventory.remove_authority(authority_id)
+        result = {"deleted": authority_id}
+        self._complete_deletion_operation(intent, authority_id, result)
+        marker.unlink()
+        return result
+
+    def _complete_deletion_operation(
+        self, intent: dict[str, Any], authority_id: str, result: dict[str, Any]
+    ) -> None:
+        """Preserve the payload digest so recovered requests retain replay protection."""
+        record = self.root / "operations" / (identifier(intent["request_id"]) + JSON_SUFFIX)
+        if not record.exists():
+            return
+        previous = json.loads(record.read_text())
+        if (
+            previous.get("state") == "attempted"
+            and previous.get("action") == "delete"
+            and previous.get("authority_id") == authority_id
+        ):
+            durable(
+                record, json.dumps({**previous, "state": "complete", "result": result}).encode()
+            )
 
     def _finish_reset(self) -> None:
         """Finish an explicitly requested root replacement after interruption."""
@@ -146,10 +199,12 @@ class AuthorityStore:
         authority_id = identifier(str(body.get("authority_id", "")))
         if body.get("confirmation") != "DELETE CA":
             raise CAInputError("Type DELETE CA to confirm")
+        if self.deletion_pending(authority_id):
+            return self._finish_deletion(authority_id)
         directory = self.directory(authority_id)
         if not (directory / METADATA_FILE).exists():
             raise CAInputError("Unknown authority")
-        if any(item["parent_id"] == authority_id for item in self.status()["authorities"]):
+        if self.has_children(authority_id):
             raise CAInputError("Delete child authorities first")
         if authority_id == self.manifest["root_id"]:
             password = secrets.token_urlsafe(48)
@@ -176,9 +231,12 @@ class AuthorityStore:
             self._finish_reset()
             self.manifest = manifest
         else:
-            self.inventory.close()
-            _remove_authority_directory(directory)
-            self.inventory.remove_authority(authority_id)
+            intent = {
+                "request_id": identifier(str(body.get("request_id", ""))),
+                "parent_id": self.metadata(authority_id)["parent_id"],
+            }
+            durable(self._deletion_marker(authority_id), json.dumps(intent).encode())
+            return self._finish_deletion(authority_id)
         return {"deleted": authority_id}
 
     def _verify_root(self) -> None:
@@ -285,26 +343,19 @@ class AuthorityStore:
             if name not in {"password", "recovery_password", "recovery_key"}
         }
         digest = hashlib.sha256(json.dumps(public_payload, sort_keys=True).encode()).hexdigest()
-        record = self.root / "operations" / (operation_id + ".json")
+        record = self.root / "operations" / (operation_id + JSON_SUFFIX)
         with self.lock():
             if record.exists():
-                previous = json.loads(record.read_text())
-                if previous["digest"] != digest:
-                    raise CAInputError("Request ID already used with different inputs")
-                if previous["state"] == "rejected":
-                    raise CAInputError(previous["error"])
-                if previous["state"] != "complete":
-                    raise CAInputError(
-                        "Operation needs reconciliation; inspect authority state before retry"
-                    )
-                return cast(dict[str, Any], previous["result"])
+                return self._existing_operation(record, body, digest)
             durable(
                 record,
                 json.dumps(
                     {
                         "digest": digest,
                         "state": "attempted",
-                        "authority_id": body.get("issuer_id"),
+                        "authority_id": body.get("authority_id")
+                        if body.get("action") == "delete"
+                        else body.get("issuer_id"),
                         "action": body.get("action"),
                     }
                 ).encode(),
@@ -324,6 +375,23 @@ class AuthorityStore:
                 json.dumps({"digest": digest, "state": "complete", "result": result}).encode(),
             )
             return result
+
+    def _existing_operation(
+        self, record: Path, body: dict[str, Any], digest: str
+    ) -> dict[str, Any]:
+        """Allow only a matching committed deletion to resume an attempted request."""
+        previous = json.loads(record.read_text())
+        if previous["digest"] != digest:
+            raise CAInputError("Request ID already used with different inputs")
+        if previous["state"] == "rejected":
+            raise CAInputError(previous["error"])
+        if previous["state"] == "complete":
+            return cast(dict[str, Any], previous["result"])
+        if previous["state"] == "attempted" and body.get("action") == "delete":
+            authority_id = identifier(str(body.get("authority_id", "")))
+            if self.deletion_pending(authority_id):
+                return self._finish_deletion(authority_id)
+        raise CAInputError("Operation needs reconciliation; inspect authority state before retry")
 
     def create_root(self, body: dict[str, Any]) -> dict[str, Any]:
         """Self-sign the first-boot root key, without replacing an existing root."""

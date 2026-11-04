@@ -272,3 +272,8 @@ certificates already held by clients or remove external recovery backups.
 Deleting the root generates a fresh signing key and identity, including when the
 old root key was archived. Create a new root certificate and subordinate CAs,
 and distribute the replacement root trust to clients before using them.
+
+Intermediate deletions also record a durable intent before removing files. If
+cleanup is interrupted, retry the same request or restart the CA runtime to
+finish removing the authority and its inventory. Pending issuers stay stopped,
+and their parents cannot be deleted until that cleanup completes.

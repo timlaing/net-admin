@@ -100,6 +100,8 @@ def operation_status(operation_id: str) -> Any:
 def _known_parent(store: AuthorityStore, value: str) -> str:
     parent_id = identifier(value)
     directory = store.directory(parent_id)
+    if store.deletion_pending(parent_id):
+        raise CAInputError("Parent authority is pending deletion")
     if not all((directory / name).is_file() for name in ("metadata.json", "ca.crt")):
         raise CAInputError("Unknown parent authority")
     return parent_id
@@ -134,7 +136,7 @@ def _delete_authority(store: AuthorityStore, body: dict[str, Any]) -> dict[str, 
     authority_id = identifier(str(body.get("authority_id", "")))
     if body.get("confirmation") != "DELETE CA":
         raise CAInputError("Type DELETE CA to confirm")
-    if any(item["parent_id"] == authority_id for item in store.status()["authorities"]):
+    if not store.deletion_pending(authority_id) and store.has_children(authority_id):
         raise CAInputError("Delete child authorities first")
     processes = current_app.extensions["ca_issuers"].processes
     process = processes.get(authority_id)
