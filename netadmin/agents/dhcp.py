@@ -192,7 +192,7 @@ def _install_changes(changes: dict[Path, str], main_config: Path) -> None:
 
 
 def _health() -> Any:
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "backend": current_app.config["DHCP_BACKEND"]})
 
 
 def _reservations() -> Any:
@@ -354,6 +354,7 @@ def create_dhcp_agent() -> Flask:
     app = create_agent(__name__)
     register_logs(app, "dhcp")
     app.config.update(
+        DHCP_BACKEND=backend,
         DHCP_MANAGED=configured_path("DHCP_MANAGED_FILE", "/etc/dhcp/netadmin-reservations.conf"),
         DHCP_MAIN=configured_path("DHCP_MAIN_CONFIG", "/etc/dhcp/dhcpd.conf"),
         DHCP_LEASES=configured_path("DHCP_LEASES_FILE", "/var/lib/dhcp/dhcpd.leases"),

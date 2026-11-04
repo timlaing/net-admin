@@ -9,14 +9,15 @@
 </section>
 {% if g.identity.role == 'admin' %}
 <div class="metric-strip" aria-label="Configuration summary">
-  <div class="metric"><strong>{{ enabled_count }}<span class="visually-hidden"> of 3</span></strong><span>Services enabled</span></div>
+  <div class="metric"><strong>{{ enabled_count }}<span class="visually-hidden"> of 4</span></strong><span>Services enabled</span></div>
   <div class="metric"><strong>{{ 'Agent discovery' if service_settings.dns_use_agent else service_settings.dns_zones|length if not service_settings.dns_config_path else 'Local file' }}</strong><span>Configured DNS zones</span></div>
-  <div class="metric"><strong>{{ service_settings.dhcp_backend|upper }}</strong><span>DHCP backend</span></div>
+  <div class="metric"><strong>Agent</strong><span>DHCP connection</span></div>
 </div>
 <div class="section-heading"><h2>Network services</h2><span class="form-text">Agent connections refresh automatically every 30 seconds</span></div>
 <div class="service-grid">
-{% for title, text, endpoint, address in [('DNS','Names & records','web.dns_index', service_settings.dns_agent_url if service_settings.dns_use_agent else service_settings.dns_server),('DHCP','Addresses & reservations','web.dhcp_index', service_settings.dhcp_agent_url),('RADIUS','Users & access','web.radius_index', service_settings.radius_agent_url)] %}
+{% for title, text, endpoint, address in [('DNS','Names & records','web.dns_index', service_settings.dns_agent_url if service_settings.dns_use_agent else service_settings.dns_server),('DHCP','Addresses & reservations','web.dhcp_index', service_settings.dhcp_agent_url),('RADIUS','Users & access','web.radius_index', service_settings.radius_agent_url),('CA','Authorities & certificates','authorities.index', service_settings.ca_agent_url)] %}
 {% set key = title|lower %}{% set enabled = service_settings|attr(key ~ '_enabled') %}{% set check = checks.get(key) %}{% set agent_check = agent_checks.get(key) %}
+{% if enabled %}
 <article class="service-card" {% if enabled %}data-connection-status-url="{{ url_for('connections.connection_status', service=key) }}"{% endif %}>
   <div class="service-card-top"><span class="service-glyph">{{ icon(key) }}</span><div class="d-flex flex-wrap justify-content-end gap-2"><span data-connection-state aria-live="polite" class="status {{ 'status-success' if agent_check and agent_check.state == 'Connected' else 'status-warning' if agent_check else '' }}">{{ agent_check.state if enabled and agent_check else 'Checking…' if enabled else 'Disabled' }}</span>{% if enabled %}<span class="status" data-connection-access aria-live="polite">{{ agent_check.access_mode if agent_check and agent_check.access_mode else 'Unknown' }}</span>{% endif %}</div></div>
   <h2>{{ title }}</h2><p>{{ text }}</p>
@@ -27,6 +28,7 @@
   <noscript><p>Enable JavaScript for automatic status, or run a connection test in Settings.</p></noscript>
   <a class="btn btn-outline-primary" href="{{ url_for(endpoint) if enabled else url_for('connections.settings_page') }}">{{ 'Manage ' if enabled else 'Configure ' }}{{ title }} {{ icon('arrow') }}</a>
 </article>
+{% endif %}
 {% endfor %}
 </div>
 <div class="section-heading"><h2>Recent activity</h2><a href="{{ url_for('web.audit') }}">View all activity {{ icon('arrow') }}</a></div>

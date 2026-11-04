@@ -29,7 +29,9 @@ def issuer_state(request):
 def legacy_web(tmp_path, monkeypatch):
     app, client = admin_client(tmp_path)
     state = app.extensions["netadmin_settings"]
-    app.extensions["netadmin_settings"] = replace(state, ca_agent_url="https://legacy-ca.test:8084")
+    app.extensions["netadmin_settings"] = replace(
+        state, ca_agent_url="https://legacy-ca.test:8084", ca_enabled=True
+    )
     calls = []
     remote = SimpleNamespace(
         read_only=lambda: False,

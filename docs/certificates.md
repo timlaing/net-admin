@@ -143,7 +143,7 @@ The CA agent is not published to the host. Pin root trust with
 `step-ca/certs/root_ca.crt`, mounted read-only into the agents. Never replace it
 with a certificate supplied in an issuance response.
 
-The **Certificates** navigation item appears when `NETADMIN_CA_AGENT_URL` is set.
+Enable **CA administration** in Settings to show CA alongside the other services in the dashboard and menus. Standalone deployments use `NETADMIN_CA_ENABLED=true` and `NETADMIN_CA_AGENT_URL`. Disabling CA hides its navigation, stops dashboard polling and blocks direct CA page and operation requests while preserving the configured endpoint. Existing deployments with a CA URL remain enabled unless explicitly disabled.
 It supports CSR issuance, public chain/root downloads, an issuance inventory
 paged in groups of 100 (use Next page to continue), and
 revocation with reason codes. Use **Inspect CSR** to decode the requested subject,
@@ -256,3 +256,24 @@ step-ca renewals reject CN/SAN/lifetime overrides; use explicit enrolment to
 change the identity. Enrolment warns when DNS/IP-only inputs replace other SAN types.
 
 Newly activated step-ca server certificates must permit digital signatures when a KeyUsage extension is present. This supports signed TLS handshakes, including TLS 1.3. Existing identities remain inspectable and usable as renewal credentials; configure the CA template to issue a signing-capable replacement.
+
+
+### Delete authorities and start again
+
+Open **CA** and expand **Delete intermediate CA** or **Delete root CA** on the
+selected authority. Type `DELETE CA` and approve the operation. The agent must
+permit writes. Delete child authorities before their parents.
+
+Deletion stops the managed issuer and permanently removes its local keys,
+certificates, active issuance inventory and revocation data. Historical operation
+records are retained for audit and replay protection, including public certificate
+results retrievable through operation status. Deletion does not revoke
+certificates already held by clients or remove external recovery backups.
+Deleting the root generates a fresh signing key and identity, including when the
+old root key was archived. Create a new root certificate and subordinate CAs,
+and distribute the replacement root trust to clients before using them.
+
+Intermediate deletions also record a durable intent before removing files. If
+cleanup is interrupted, retry the same request or restart the CA runtime to
+finish removing the authority and its inventory. Pending issuers stay stopped,
+and their parents cannot be deleted until that cleanup completes.

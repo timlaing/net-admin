@@ -34,6 +34,7 @@ include "{managed}";
     monkeypatch.setattr("netadmin.agents.dhcp.subprocess.run", lambda *args, **kwargs: None)
     client = create_dhcp_agent().test_client()
     assert client.get("/health").status_code == 401
+    assert client.get("/health", headers=AUTH).json == {"status": "ok", "backend": "isc"}
     assert client.get("/leases", headers=AUTH).get_json()[0]["state"] == "active"
     response = client.post(
         "/reservations",
@@ -86,6 +87,7 @@ def test_dhcp_agent_kea_workflow(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     monkeypatch.setenv("DHCP_LEASES_FILE", str(leases))
     monkeypatch.setattr("netadmin.agents.dhcp.subprocess.run", lambda *args, **kwargs: None)
     client = create_dhcp_agent().test_client()
+    assert client.get("/health", headers=AUTH).json == {"status": "ok", "backend": "kea"}
     assert client.get("/leases", headers=AUTH).get_json()[0]["state"] == "active"
     response = client.post(
         "/reservations",

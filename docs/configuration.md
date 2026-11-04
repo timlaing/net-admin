@@ -93,7 +93,8 @@ The Kea stack (`docker-compose.kea.yml`) sets `DHCP_SERVER: kea` for you.
 | `ingress_require_login` | `bool` | Require NetAdmin login through ingress (default `true`) |
 
 All service connection details are managed in **NetAdmin → Settings**, including
-DHCP backend, DNS server/zones and agent URLs. Changes saved there apply without a
+DNS server/zones and agent URLs. DHCP agents report their own ISC/Kea backend;
+there is no separate backend selector for agent connections. Changes saved there apply without a
 restart. Retired Home Assistant connection options are imported on upgrade only
 when their assignments are missing from `/config/netadmin.env`; existing values
 and saved blanks are preserved. After a successful import, the retired options

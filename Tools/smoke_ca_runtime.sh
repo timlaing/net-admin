@@ -203,3 +203,41 @@ PY
 else
   CA_SMOKE_ISOLATE=0 bash "$0" "$image"
 fi
+# Destroy only this disposable hierarchy, checking active issuer shutdown and reset.
+docker exec -i "$name" python - <<'PY'
+import uuid
+from pathlib import Path
+import httpx
+client = httpx.Client(
+    transport=httpx.HTTPTransport(uds='/control/ca.sock'),
+    base_url='http://controller',
+    headers={'X-CA-Management-Token': Path('/state/token').read_text()},
+    timeout=30,
+)
+state = client.get('/authorities').json()
+root = next(ca for ca in state['authorities'] if not ca['parent_id'])
+def delete(authority):
+    return client.post('/authorities/delete', json={
+        'request_id': uuid.uuid4().hex, 'authority_id': authority['id'],
+        'confirmation': 'DELETE CA',
+    })
+assert delete(root).status_code == 400
+remaining = state['authorities']
+while remaining:
+    parents = {ca['parent_id'] for ca in remaining}
+    leaf = next(ca for ca in remaining if ca['id'] not in parents)
+    response = delete(leaf)
+    assert response.status_code == 200, response.text
+    assert not (Path('/state/authorities') / leaf['id']).exists()
+    remaining = client.get('/authorities').json()['authorities']
+fresh = client.get('/authorities').json()
+assert fresh['public_key_sha256'] != state['public_key_sha256']
+assert fresh['root_id'] != state['root_id']
+assert fresh['root_online']
+response = client.post('/authorities/root', json={
+    'request_id': uuid.uuid4().hex, 'common_name': 'Replacement Root',
+    'days': 3650, 'path_length': 1,
+})
+assert response.status_code == 200, response.text
+print('Active issuers deleted, archived root replaced and fresh root initialized')
+PY

@@ -63,6 +63,7 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     radius_enabled: bool = True
     ingress_require_login: bool = True
     ca_management_token: str = ""
+    ca_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -98,6 +99,12 @@ class Settings:  # pylint: disable=too-many-instance-attributes
             dhcp_backend=_choice("NETADMIN_DHCP_BACKEND", "isc", {"isc", "kea"}),
             radius_agent_url=os.getenv("NETADMIN_RADIUS_AGENT_URL", "https://radius-agent:8082"),
             ca_agent_url=os.getenv("NETADMIN_CA_AGENT_URL", ""),
+            ca_enabled=_choice(
+                "NETADMIN_CA_ENABLED",
+                "true" if os.getenv("NETADMIN_CA_AGENT_URL") else "false",
+                {"true", "false"},
+            )
+            == "true",
             ca_management_token=os.getenv("NETADMIN_CA_MANAGEMENT_TOKEN", ""),
             agent_token=os.getenv("NETADMIN_AGENT_TOKEN", ""),
             agent_ca=_path_env("NETADMIN_AGENT_CA"),

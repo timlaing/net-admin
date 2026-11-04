@@ -23,9 +23,18 @@ from netadmin.services.radius_certificates import (
     load_signing_key,
 )
 from netadmin.services.step_ca import validate_csr, validate_server_chain
-from tests.test_multi_service_ui import admin_client
+from tests.test_multi_service_ui import admin_client as create_admin_client
 from tests.test_radius_certificates import AUTH, PASSWORD, agent
 from tests.test_radius_certificates import material as material
+
+
+def admin_client(tmp_path):
+    """Enable CA explicitly for tests of its administration routes."""
+    app, client = create_admin_client(tmp_path)
+    app.extensions["netadmin_settings"] = replace(
+        app.extensions["netadmin_settings"], ca_enabled=True
+    )
+    return app, client
 
 
 @pytest.fixture(autouse=True)
@@ -327,7 +336,7 @@ def test_renewal_worker_checks_mode_readonly_due_and_activation(material, monkey
 def test_ca_ui_admin_csrf_and_public_download(tmp_path, monkeypatch):
     app, client = admin_client(tmp_path)
     app.extensions["netadmin_settings"] = replace(
-        app.extensions["netadmin_settings"], ca_agent_url="https://ca-agent:8084"
+        app.extensions["netadmin_settings"], ca_agent_url="https://ca-agent:8084", ca_enabled=True
     )
     calls = []
     remote = SimpleNamespace(
@@ -966,7 +975,7 @@ def test_certificate_navigation_stays_active_on_inspection(tmp_path, monkeypatch
 
     app, client = admin_client(tmp_path)
     app.extensions["netadmin_settings"] = replace(
-        app.extensions["netadmin_settings"], ca_agent_url="https://ca-agent:8084"
+        app.extensions["netadmin_settings"], ca_agent_url="https://ca-agent:8084", ca_enabled=True
     )
     monkeypatch.setattr(
         "netadmin.ca_web._client",
@@ -975,7 +984,8 @@ def test_certificate_navigation_stays_active_on_inspection(tmp_path, monkeypatch
     response = client.post("/certificates/inspect", data={"csr": csr()})
     assert response.status_code == 200
     assert re.search(
-        r'class="section-link active" href="/certificates"\s+aria-current="page"', response.text
+        r'class="section-link active" href="/certificates/authorities"\s+aria-current="page"',
+        response.text,
     )
 
 

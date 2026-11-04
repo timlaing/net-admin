@@ -110,7 +110,15 @@ def _operation_failure(action: str, operation_id: str, error: httpx.HTTPError) -
 @admin_required
 def mutate(action: str) -> Any:
     """Forward a bounded form; no web-app signing keys or service configuration writes."""
-    if action not in {"root", "subordinate", "export-root", "archive-root", "issue", "revoke"}:
+    if action not in {
+        "root",
+        "subordinate",
+        "export-root",
+        "archive-root",
+        "issue",
+        "revoke",
+        "delete",
+    }:
         abort(404)
     try:
         operation_id = identifier(request.form.get("request_id", ""))
@@ -136,6 +144,7 @@ def mutate(action: str) -> Any:
         "confirmation",
         "recovery_password",
         "recovery_key",
+        "authority_id",
         "serial",
         "reason",
     )

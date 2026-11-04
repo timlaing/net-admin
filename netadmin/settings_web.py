@@ -103,7 +103,7 @@ def settings_page() -> Any:
     )
 
 
-@connection_web.route("/settings/test/<any(dns,dhcp,radius):service>", methods=["POST"])
+@connection_web.route("/settings/test/<any(dns,dhcp,radius,ca):service>", methods=["POST"])
 @admin_required
 def connection_test(service: str) -> Any:
     """Run a user-requested read-only test against the active configuration."""
@@ -116,7 +116,7 @@ def connection_test(service: str) -> Any:
     return render_template("connection_test.html", service=service.upper(), result=result)
 
 
-@connection_web.get("/connections/status/<any(dns,dhcp,radius):service>")
+@connection_web.get("/connections/status/<any(dns,dhcp,radius,ca):service>")
 @admin_required
 def connection_status(service: str) -> Any:
     """Read-only, short-lived status cache shared by overview polling clients."""
