@@ -81,9 +81,19 @@ if [[ "$resume" == false && -e "$directory" ]]; then
 fi
 if [[ "$dry_run" == true ]]; then
   echo "Would reuse Docker Engine/Compose, or install missing components from Docker's official repository."
-  echo "Would download release $version to $directory; DNS=${dns:-saved}, DHCP=${dhcp:-saved}, RADIUS=${radius:-saved}, CA=${ca:-saved}."
-  echo "Host address: ${address:-saved}; interface: ${interface:-none}. Transport credentials generated locally."
-  echo 'Would validate native configurations, pull selected images and start only selected services.'
+  if [[ "$resume" == true ]]; then
+    echo "Would resume the saved deployment in $directory."
+    echo 'Would reuse saved configuration, service selection, image versions and credentials.'
+    echo 'Would validate native configurations, pull saved images and start saved services.'
+  else
+    echo "Would download release $version to $directory; DNS=$dns, DHCP=$dhcp, RADIUS=$radius, CA=$ca."
+    echo "Host address: $address; interface: ${interface:-none}. Transport credentials generated locally."
+    if [[ "$prepare_only" == true ]]; then
+      echo 'Would prepare files and validate Compose without pulling images or starting containers.'
+    else
+      echo 'Would validate native configurations, pull selected images and start only selected services.'
+    fi
+  fi
   echo 'No packages, downloads, files or containers changed.'
   exit 0
 fi
@@ -125,6 +135,12 @@ missing=false
 for dependency in curl python3 openssl ip; do
   command -v "$dependency" >/dev/null || missing=true
 done
+if [[ "$family" == apt ]]; then
+  trust_store=/etc/ssl/certs/ca-certificates.crt
+else
+  trust_store=/etc/pki/tls/certs/ca-bundle.crt
+fi
+[[ -s "$trust_store" ]] || missing=true
 if [[ "$missing" == true ]]; then
   if [[ "$family" == apt ]]; then
     apt-get update
@@ -132,6 +148,10 @@ if [[ "$missing" == true ]]; then
   else
     dnf install -y ca-certificates curl python3 openssl iproute
   fi
+fi
+if [[ ! -s "$trust_store" ]]; then
+  if [[ "$family" == apt ]]; then update-ca-certificates; else update-ca-trust extract; fi
+  [[ -s "$trust_store" ]] || fail 'System CA trust store is missing or empty after certificate setup.'
 fi
 python_command=python3
 if ! python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 9))'; then
@@ -170,12 +190,12 @@ if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; t
         "https://download.docker.com/linux/$distro/gpg" -o /etc/apt/keyrings/docker.asc
       chmod 0644 /etc/apt/keyrings/docker.asc
       cat > /etc/apt/sources.list.d/docker.sources <<EOF
-  Types: deb
-  URIs: https://download.docker.com/linux/$distro
-  Suites: $codename
-  Components: stable
-  Architectures: $(dpkg --print-architecture)
-  Signed-By: /etc/apt/keyrings/docker.asc
+Types: deb
+URIs: https://download.docker.com/linux/$distro
+Suites: $codename
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
 EOF
     fi
     apt-get update

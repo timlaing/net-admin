@@ -74,6 +74,17 @@ try:
     raise AssertionError('Missing bearer token was accepted')
 except urllib.error.HTTPError as error:
     assert error.code == 401
+server_only = ssl.create_default_context(cafile='/test-client/ca.crt')
+try:
+    with urllib.request.urlopen(request, context=server_only, timeout=3):
+        raise AssertionError('HTTP response received without a client certificate')
+except urllib.error.HTTPError as error:
+    raise AssertionError('HTTP response received without a client certificate') from error
+except urllib.error.URLError as error:
+    if not isinstance(error.reason, ssl.SSLError):
+        raise
+except ssl.SSLError:
+    pass
 """
         for attempt in range(30):
             try:
@@ -136,6 +147,51 @@ response=client.post('/subnets/delete', headers=auth, json={{'network':{subnet.s
 assert response.status_code == 200, response.json
 """,
         )
+        if backend == "isc":
+            # A TERM-resistant child must not wedge this reload or later reloads.
+            installer.compose(
+                directory,
+                "exec",
+                "-T",
+                "dhcp-isc",
+                "sh",
+                "-c",
+                """
+mv /usr/sbin/dhcpd /usr/sbin/dhcpd.real
+printf '#!/bin/sh\ntrap "" TERM\nwhile :; do sleep 1; done\n' > /usr/sbin/dhcpd
+chmod 0755 /usr/sbin/dhcpd
+""",
+                capture_output=True,
+            )
+            try:
+                execute(
+                    directory,
+                    "dhcp-agent-isc",
+                    f"""
+import os, time
+from netadmin.agents.dhcp import create_dhcp_agent
+client=create_dhcp_agent().test_client()
+auth={{'Authorization': 'Bearer '+os.environ['NETADMIN_AGENT_TOKEN']}}
+for attempt in range(2):
+    response=client.post('/subnets',headers=auth,json={{'cidr':{subnet!r}}})
+    assert response.status_code == 201, response.json
+    started=time.monotonic()
+    response=client.post('/subnets/delete',headers=auth,json={{'network':{subnet.split("/")[0]!r}}})
+    assert response.status_code == 200, response.json
+    assert time.monotonic()-started < 14
+""",
+                )
+            finally:
+                installer.compose(
+                    directory,
+                    "exec",
+                    "-T",
+                    "dhcp-isc",
+                    "sh",
+                    "-c",
+                    "mv /usr/sbin/dhcpd.real /usr/sbin/dhcpd",
+                    capture_output=True,
+                )
     if state["radius"] == "yes":
         execute(
             directory,
@@ -181,17 +237,37 @@ response.raise_for_status()
         )
 
 
-def host_bootstrap(distro):
+def host_bootstrap(distro, *, missing_trust=False):
     """Exercise host branches with mocked package managers in an isolated container."""
     script = r"""
 set -eu
 mkdir -p /mock /etc/yum.repos.d
 printf 'ID=__DISTRO__\nVERSION_CODENAME=bookworm\n' > /etc/os-release
+case __DISTRO__ in
+  ubuntu|debian|raspbian) TRUST_STORE=/etc/ssl/certs/ca-certificates.crt ;;
+  *) TRUST_STORE=/etc/pki/tls/certs/ca-bundle.crt ;;
+esac
+export TRUST_STORE
+mkdir -p "$(dirname "$TRUST_STORE")"
+if [ '__MISSING_TRUST__' = yes ]; then
+  rm -f "$TRUST_STORE"
+else
+  printf 'synthetic trust store' > "$TRUST_STORE"
+fi
 rm -f /etc/apt/sources.list.d/docker.list /etc/apt/sources.list.d/docker.sources
 rm -f /etc/yum.repos.d/docker-ce.repo
 cat > /mock/packages <<'PACKAGES'
 #!/bin/sh
 printf '%s %s\n' "$(basename "$0")" "$*" >> /calls
+if [ "$(basename "$0")" = apt-get ] && [ "$1" = update ] \
+  && [ -f /etc/apt/sources.list.d/docker.sources ]; then
+  /usr/bin/apt-cache -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/docker.sources \
+    -o Dir::Etc::sourceparts=- policy >/dev/null || exit 1
+  echo 'APT source parsed successfully' >> /calls
+fi
+case " $* " in
+  *' ca-certificates '*) printf 'synthetic installed trust store' > "$TRUST_STORE" ;;
+esac
 case " $* " in
   *' docker-ce '*)
     cat > /mock/docker <<'DOCKER'
@@ -212,19 +288,28 @@ done
 exit 1
 CURL
 printf '#!/bin/sh\nexit 1\n' > /mock/rpm
+printf '#!/bin/sh\nexit 0\n' > /mock/ip
 printf '#!/bin/sh\nprintf "systemctl %%s\\n" "$*" >> /calls\n' > /mock/systemctl
 chmod +x /mock/*
 ln -s packages /mock/apt-get
 ln -s packages /mock/dnf
 export PATH=/mock:$PATH
-if bash /installer --yes --address 192.0.2.10 --dns no --dhcp none \
+# Exercise the function serialization used by the piped sudo handoff too.
+sed '$d' /installer > /definition
+. /definition
+{
+  printf 'set -euo pipefail\n'
+  declare -f install_main
+  printf '\ninstall_main "$@"\n'
+} > /serialized
+if bash /serialized --yes --address 192.0.2.10 --dns no --dhcp none \
   --radius no --ca yes > /out 2>&1; then
   echo 'Bootstrap unexpectedly succeeded past the mock Docker daemon' >&2
   exit 1
 fi
 grep -q 'Docker is installed but unavailable' /out || { cat /out; exit 1; }
 cat /calls
-""".replace("__DISTRO__", distro)
+""".replace("__DISTRO__", distro).replace("__MISSING_TRUST__", "yes" if missing_trust else "no")
     response = run(
         [
             "docker",
@@ -252,6 +337,7 @@ cat /calls
     if distro in {"ubuntu", "debian", "raspbian"}:
         expected = "ubuntu" if distro == "ubuntu" else "debian"
         assert f"https://download.docker.com/linux/{expected}/gpg" in commands
+        assert "APT source parsed successfully" in commands
     elif distro == "fedora":
         assert (
             "config-manager addrepo --from-repofile https://download.docker.com/linux/fedora/docker-ce.repo"
@@ -262,7 +348,9 @@ cat /calls
             "config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo"
             in commands
         )
-    print(f"PASS: {distro} package/repository setup with mocked host tools", flush=True)
+    if missing_trust:
+        assert "install -y ca-certificates" in commands
+    print(f"PASS: {distro} package/repository setup (missing trust={missing_trust})", flush=True)
 
 
 def main():
@@ -328,7 +416,20 @@ def main():
                 installer.native_validation(directory, state)
                 installer.compose(directory, "up", "-d", "--no-build", capture_output=True)
                 authenticated(directory, state)
+                installer.check_daemons(directory, state)
                 mutations(directory, state)
+                stopped = "dns" if dns == "yes" else "dhcp-kea" if dhcp == "kea" else None
+                if stopped:
+                    installer.compose(directory, "stop", stopped, capture_output=True)
+                    # Agents must still be reachable while a stopped daemon
+                    # prevents the installer from reporting success.
+                    authenticated(directory, state)
+                    try:
+                        installer.check_daemons(directory, state, attempts=1)
+                    except RuntimeError as error:
+                        assert stopped in str(error)
+                    else:
+                        raise AssertionError("Stopped daemon was accepted as ready")
                 print(f"PASS: DNS={dns}, DHCP={dhcp}, RADIUS={radius}, CA={ca}", flush=True)
             except Exception as error:
                 # Report daemon errors but do not dump logs containing TSIG keys.
@@ -361,6 +462,8 @@ def main():
                     )
     for distro in ("ubuntu", "debian", "raspbian", "fedora", "rhel"):
         host_bootstrap(distro)
+    for distro in ("ubuntu", "rhel"):
+        host_bootstrap(distro, missing_trust=True)
 
 
 if __name__ == "__main__":

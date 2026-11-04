@@ -245,9 +245,27 @@ jobs:
           docker push "$image:sha-$GITHUB_SHA"
           echo "Published $image:$PUBLISH_VERSION and $image:sha-$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
 
+  verify-public-images:
+    name: Verify anonymous image access
+    needs: [prepare, manifests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check release manifests without registry credentials
+        env:
+          IMAGE_OWNER: ${{ github.repository_owner }}
+          PUBLISH_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          IMAGE_OWNER="${IMAGE_OWNER,,}" bash Tools/check_public_images.sh "$PUBLISH_VERSION"
+
   publish-installer:
     name: Publish fresh-host installer
-    needs: [prepare, manifests]
+    needs: [prepare, verify-public-images]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

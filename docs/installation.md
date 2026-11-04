@@ -100,8 +100,11 @@ release version; containers are started with `--no-build`.
 The installer checks the selected address/interface, conflicting Compose project
 and listener ports, creates private transport credentials, pulls selected images,
 and validates initial files with the native daemon parsers before startup. It
-then checks each agent using a real mTLS connection and bearer token. Failed
-pulls/startups retain state and never report success. To retry unchanged:
+then checks each agent using a real mTLS connection and bearer token. It also
+requires the selected containers to be running and verifies native Bind/Kea
+control responses, the RADIUS process, and ISC's serving or intentional waiting
+state. Failed pulls/startups retain state and never report success. To retry
+unchanged:
 
 ```sh
 bash install.sh --directory /opt/netadmin --resume --yes

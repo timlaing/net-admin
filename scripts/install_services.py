@@ -31,7 +31,8 @@ ASSETS = {
 
 def run(args, **kwargs):
     """Do not pass operator data through a shell or print command credentials."""
-    return subprocess.run(args, check=True, timeout=900, **kwargs)  # noqa: S603
+    kwargs.setdefault("timeout", 900)
+    return subprocess.run(args, check=True, **kwargs)  # noqa: S603
 
 
 def compose(directory, *args, **kwargs):
@@ -530,6 +531,63 @@ def check_agents(directory, state, *, attempts=30):
     raise RuntimeError("Authenticated agent checks failed: " + ", ".join(pending))
 
 
+def check_daemons(directory, state, *, attempts=30):
+    """Require selected containers and native daemons, including ISC's idle state."""
+    selected = set()
+    probes = {}
+    if state["dns"] == "yes":
+        selected.update(("dns", "dns-agent"))
+        probes["dns"] = ["rndc", "-t", "3", "status"]
+    if state["dhcp"] != "none":
+        backend = state["dhcp"]
+        selected.update((f"dhcp-{backend}", f"dhcp-agent-{backend}"))
+        if backend == "kea":
+            probes["dhcp-agent-kea"] = ["python3", "-m", "netadmin.agents.kea_ctrl", "status-get"]
+        else:
+            probes["dhcp-isc"] = [
+                "sh",
+                "-c",
+                "if grep -Eq '^[[:space:]]*subnet[[:space:]]+[0-9]' /etc/dhcp/dhcpd.conf; "
+                "then pidof dhcpd >/dev/null; fi",
+            ]
+    if state["radius"] == "yes":
+        selected.update(("radius", "radius-agent"))
+        probes["radius"] = ["pidof", "radiusd"]
+    if state["ca"] == "yes":
+        selected.update(("ca-runtime", "ca-agent"))
+    pending = "container status"
+    for attempt in range(attempts):
+        try:
+            pending = "container status"
+            output = compose(
+                directory, "ps", "--all", "--format", "json", capture_output=True, timeout=5
+            ).stdout
+            try:
+                records = json.loads(output)
+            except json.JSONDecodeError:
+                records = [json.loads(line) for line in output.splitlines() if line.strip()]
+            if isinstance(records, dict):
+                records = [records]
+            ready = {
+                record["Service"]
+                for record in records
+                if record.get("State") == "running"
+                and record.get("Health") in (None, "", "healthy")
+            }
+            missing = sorted(selected - ready)
+            if missing:
+                pending = ", ".join(missing)
+                raise RuntimeError("Selected containers are not running")
+            for service, command in probes.items():
+                pending = service
+                compose(directory, "exec", "-T", service, *command, capture_output=True, timeout=12)
+            return
+        except (subprocess.SubprocessError, OSError, ValueError, RuntimeError):
+            if attempt + 1 < attempts:
+                time.sleep(1)
+    raise RuntimeError("Native service readiness checks failed: " + pending)
+
+
 def start(directory):
     """Retain state for explicit resume if pulling or startup fails."""
     state = json.loads((directory / "installation.json").read_text())
@@ -542,7 +600,8 @@ def start(directory):
     native_validation(directory, state)
     compose(directory, "up", "-d", "--no-build")
     check_agents(directory, state)
-    print("Selected services started; agent mTLS and bearer authentication verified.")
+    check_daemons(directory, state)
+    print("Selected services started; native daemons and agent authentication verified.")
     print("Open the Home Assistant NetAdmin app and configure the selected services:")
     if state["dns"] == "yes":
         print(f"  DNS agent: https://{state['address']}:8083")
@@ -596,7 +655,6 @@ def main(argv=None):
                     "--directory",
                     str(args.directory),
                     "--resume",
-                    "--yes",
                 ]
             )
         )

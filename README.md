@@ -165,6 +165,9 @@ pytest
 
 ## CI and published containers
 
+Follow the [release checklist](docs/releasing.md), including first-publish GHCR
+visibility and anonymous image checks, before making a new installer release available.
+
 GitHub Actions runs the same checks plus container smoke tests on every push and
 pull request (`.github/workflows/ci.yml`, `lint.yml`, `pre-commit.yml`, `codeql.yml`).
 The smoke tests boot each image and verify real behaviour: login and Secure

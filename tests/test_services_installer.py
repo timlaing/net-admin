@@ -2,7 +2,9 @@
 
 import importlib.util
 import itertools
+import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -225,7 +227,7 @@ def test_preparation_failure_does_not_leave_or_replace_keys(installer, tmp_path,
     assert marker.read_text() == "synthetic original"
 
 
-@pytest.mark.parametrize("failure", ["pull", "validation", "authentication"])
+@pytest.mark.parametrize("failure", ["pull", "validation", "authentication", "daemon"])
 def test_startup_failure_preserves_credentials_and_never_reports_success(
     installer, tmp_path, monkeypatch, capsys, failure
 ):
@@ -244,18 +246,24 @@ def test_startup_failure_preserves_credentials_and_never_reports_success(
             raise RuntimeError("daemon validation failed")
 
     def authentication(*_args):
-        raise RuntimeError("authentication failed")
+        if failure == "authentication":
+            raise RuntimeError("authentication failed")
+
+    def daemons(*_args):
+        if failure == "daemon":
+            raise RuntimeError("native daemon is not ready")
 
     monkeypatch.setattr(installer, "compose", call)
     monkeypatch.setattr(installer, "native_validation", validation)
     monkeypatch.setattr(installer, "check_agents", authentication)
+    monkeypatch.setattr(installer, "check_daemons", daemons)
     with pytest.raises(RuntimeError):
         installer.main(["--directory", str(args.directory), "--resume"])
     captured = capsys.readouterr()
     assert "preserved" in captured.err
     assert "verified" not in captured.out
     assert (args.directory / "transport/client/client.key").read_bytes() == key
-    assert (("up", "-d", "--no-build") in calls) == (failure == "authentication")
+    assert (("up", "-d", "--no-build") in calls) == (failure in {"authentication", "daemon"})
 
 
 def test_resume_starts_only_saved_services_without_rotating_credentials(
@@ -269,9 +277,167 @@ def test_resume_starts_only_saved_services_without_rotating_credentials(
         installer, "compose", lambda _directory, *args, **_kwargs: calls.append(args)
     )
     monkeypatch.setattr(installer, "check_agents", lambda *_args: None)
+    monkeypatch.setattr(installer, "check_daemons", lambda *_args: None)
     installer.main(["--directory", str(args.directory), "--resume"])
     assert calls == [("config", "--quiet"), ("pull",), ("up", "-d", "--no-build")]
     assert before == {p: p.read_bytes() for p in args.directory.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize(
+    "backend,server,agent",
+    [
+        ("dns", "dns", "dns-agent"),
+        ("kea", "dhcp-kea", "dhcp-agent-kea"),
+    ],
+)
+@pytest.mark.parametrize("stopped", [True, False])
+def test_agent_readiness_cannot_hide_failed_daemons(
+    installer, tmp_path, monkeypatch, backend, server, agent, stopped
+):
+    state = {
+        "dns": "yes" if backend == "dns" else "no",
+        "dhcp": "kea" if backend == "kea" else "none",
+        "radius": "no",
+        "ca": "no",
+    }
+    records = [
+        {"Service": server, "State": "exited" if stopped else "running"},
+        {"Service": agent, "State": "running"},
+    ]
+    calls = []
+
+    def command(_directory, *args, **_kwargs):
+        calls.append(args)
+        if args[:1] == ("ps",):
+            return SimpleNamespace(stdout=json.dumps(records))
+        raise subprocess.CalledProcessError(1, args)
+
+    monkeypatch.setattr(installer, "compose", command)
+    with pytest.raises(RuntimeError, match="Native service readiness checks failed"):
+        installer.check_daemons(tmp_path, state, attempts=1)
+    if stopped:
+        assert len(calls) == 1
+    elif backend == "dns":
+        assert calls[-1] == ("exec", "-T", "dns", "rndc", "-t", "3", "status")
+    else:
+        assert calls[-1][-1] == "status-get"
+
+
+@pytest.mark.parametrize("ndjson", [False, True])
+def test_ca_only_readiness_reads_compose_status_formats(installer, tmp_path, monkeypatch, ndjson):
+    state = {"dns": "no", "dhcp": "none", "radius": "no", "ca": "yes"}
+    records = [{"Service": name, "State": "running"} for name in ("ca-agent", "ca-runtime")]
+    output = "\n".join(map(json.dumps, records)) if ndjson else json.dumps(records)
+    calls = []
+
+    def command(_directory, *args, **_kwargs):
+        calls.append(args)
+        return SimpleNamespace(stdout=output)
+
+    monkeypatch.setattr(installer, "compose", command)
+    installer.check_daemons(tmp_path, state, attempts=1)
+    assert calls == [("ps", "--all", "--format", "json")]
+
+
+def test_printed_python_resume_command_is_accepted(installer, tmp_path, monkeypatch, capsys):
+    directory = tmp_path / "prepared installation"
+    monkeypatch.setattr(installer, "validate", lambda _args: None)
+    installer.main(
+        [
+            "--directory",
+            str(directory),
+            "--address",
+            "192.0.2.10",
+            "--dns",
+            "no",
+            "--dhcp",
+            "none",
+            "--radius",
+            "no",
+            "--ca",
+            "yes",
+            "--version",
+            "0.0.0-test",
+            "--source-directory",
+            str(ROOT),
+            "--prepare-only",
+        ]
+    )
+    command = shlex.split(capsys.readouterr().out.splitlines()[-1])
+    assert command[0] == "sudo"
+    assert command[2] == str(directory / "bootstrap/install_services.py")
+    resumed = []
+    monkeypatch.setattr(installer, "start", resumed.append)
+    installer.main(command[3:])
+    assert resumed == [directory]
+
+
+def test_resume_dry_run_reuses_saved_credentials_and_versions(tmp_path):
+    directory = tmp_path / "existing deployment"
+    directory.mkdir()
+    marker = directory / "installation.json"
+    marker.write_text("synthetic saved state")
+    result = subprocess.run(  # noqa: S603
+        [
+            "/bin/bash",
+            str(ROOT / "scripts/install.sh"),
+            "--yes",
+            "--resume",
+            "--dry-run",
+            "--directory",
+            str(directory),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "Would resume the saved deployment" in result.stdout
+    assert (
+        "reuse saved configuration, service selection, image versions and credentials"
+        in result.stdout
+    )
+    assert "Would download release" not in result.stdout
+    assert "Transport credentials generated" not in result.stdout
+    assert marker.read_text() == "synthetic saved state"
+
+
+@pytest.mark.parametrize("private_kea", [False, True])
+def test_release_publication_checks_anonymous_kea_access(tmp_path, private_kea):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    calls = tmp_path / "calls"
+    docker = tools / "docker"
+    docker.write_text("""#!/bin/sh
+[ "$1" = --config ] && [ -d "$2" ] && [ -z "$(ls -A "$2")" ] || exit 2
+[ "$3 $4" = "manifest inspect" ] || exit 2
+printf '%s\\n' "$5" >> "$PUBLIC_CALLS"
+if [ "$PRIVATE_KEA" = yes ]; then
+  case "$5" in */netadmin-dhcp-kea:*) exit 1;; esac
+fi
+""")
+    docker.chmod(0o700)
+    result = subprocess.run(  # noqa: S603
+        ["/bin/bash", str(ROOT / "Tools/check_public_images.sh"), "0.0.0-test"],
+        env={
+            **os.environ,
+            "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+            "PUBLIC_CALLS": str(calls),
+            "PRIVATE_KEA": "yes" if private_kea else "no",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    images = calls.read_text().splitlines()
+    assert "ghcr.io/timlaing/netadmin-dhcp-kea:0.0.0-test" in images
+    if private_kea:
+        assert result.returncode != 0
+        assert "Set the GHCR package visibility to Public" in result.stderr
+    else:
+        assert result.returncode == 0
+        assert len(images) == 10
+    workflow = yaml.safe_load((ROOT / ".github/workflows/publish.yml").read_text())
+    assert "verify-public-images" in workflow["jobs"]["publish-installer"]["needs"]
 
 
 def test_inherited_compose_selectors_cannot_change_installation(installer, tmp_path, monkeypatch):
