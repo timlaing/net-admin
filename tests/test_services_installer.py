@@ -94,9 +94,10 @@ def test_port_probes_use_service_addresses_and_close_every_socket(installer, tmp
     "host,port,kind", [("127.0.0.1", 53, socket.SOCK_STREAM), ("192.0.2.10", 67, socket.SOCK_DGRAM)]
 )
 def test_busy_scoped_ports_still_abort_preflight(installer, tmp_path, port_probe, host, port, kind):
+    args = options(tmp_path)
     port_probe.occupied.add((host, port, kind))
     with pytest.raises(ValueError, match=f"Required port {port} is already in use"):
-        installer.check_ports(options(tmp_path))
+        installer.check_ports(args)
     assert port_probe.closed == len(port_probe.bindings)
 
 

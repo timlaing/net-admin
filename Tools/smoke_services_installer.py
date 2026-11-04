@@ -56,12 +56,16 @@ def authenticated(directory, state):
     if state["ca"] == "yes":
         services.append(("ca-agent", 8084))
     for service, port in services:
+        path = "/authorities" if service == "ca-agent" else "/capabilities"
         code = f"""
 import os, ssl, urllib.request, urllib.error
+from pathlib import Path
 context = ssl.create_default_context(cafile='/test-client/ca.crt')
 context.load_cert_chain('/test-client/client.crt', '/test-client/client.key')
-url = 'https://127.0.0.1:{port}/capabilities'
+url = 'https://127.0.0.1:{port}{path}'
 auth = {{'Authorization': 'Bearer ' + os.environ['NETADMIN_AGENT_TOKEN']}}
+if {service!r} == 'ca-agent':
+    auth['X-CA-Management-Token'] = Path(os.environ['CA_MANAGEMENT_TOKEN_FILE']).read_text().strip()
 request = urllib.request.Request(url, headers=auth)
 with urllib.request.urlopen(request, context=context, timeout=3) as response:
     assert response.status == 200
@@ -303,6 +307,14 @@ def main():
                     service["network_mode"] = "service:dns"
                 if "agent" in name:
                     service["volumes"].append("./transport/client:/test-client:ro")
+                if name == "ca-runtime" and dns == "no" and dhcp == "none" and radius == "no":
+                    # CA-only must wait for its controller, even when the HTTPS
+                    # agent is reachable first. Exercise this ordering explicitly.
+                    service["command"] = [
+                        "sh",
+                        "-c",
+                        "sleep 5; exec python -m netadmin.ca_runtime.app",
+                    ]
             (directory / "compose.yml").write_text(yaml.safe_dump(template))
             # Production DNS listens on loopback plus its fixed LAN address.
             if dns == "yes":
