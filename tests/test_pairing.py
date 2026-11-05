@@ -398,3 +398,11 @@ def test_disabled_radius_administration_blocks_password_agent(runtime, monkeypat
     assert client.post("/password", data={}).status_code == 403
     assert client.application.extensions["netadmin_settings"].radius_enabled
     assert "Change password" not in client.get("/").text
+
+
+@pytest.mark.parametrize("port", [443, 65536])
+def test_pairing_listener_rejects_unclaimable_ports(tmp_path, port):
+    """Never print a code for a privileged or invalid port the app refuses to claim."""
+    directory = tmp_path / "not-read"
+    with pytest.raises(ValueError, match="Pairing port"):
+        pairing_exchange.serve(directory, port=port)

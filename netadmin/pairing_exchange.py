@@ -115,6 +115,8 @@ def claim(code: str) -> dict[str, Any]:
 
 def serve(directory: Path, port: int = 8085, lifetime: int = 600) -> None:
     """Serve one authenticated claim, then close; restart explicitly to issue another code."""
+    if port != 0 and not 1024 <= port <= 65535:
+        raise ValueError("Pairing port must be 1024-65535, or 0 for an automatic port")
     state = json.loads((directory / "installation.json").read_text())
     if state.get("schema") != 1 or state.get("project") != "netadmin-services":
         raise ValueError("Unrecognized installation")
