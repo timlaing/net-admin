@@ -157,7 +157,7 @@ def serve(directory: Path, port: int = 8085, lifetime: int = 600) -> None:
         while not consumed and time.monotonic() < deadline:
             try:
                 server.handle_request()
-            except (TimeoutError, OSError):
+            except OSError:
                 continue
     print("Pairing closed. Run this command again if enrollment did not finish.")
 
