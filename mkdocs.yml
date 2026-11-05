@@ -52,6 +52,7 @@ nav:
   - Service logs: service-logs.md
   - Security: security.md
   - Development: development.md
+  - Release checklist: releasing.md
   - Contributing: contributing.md
   - Attribution: attribution.md
 

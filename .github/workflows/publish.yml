@@ -142,6 +142,16 @@ jobs:
             runner: ubuntu-24.04-arm
             dockerfile: docker/Dockerfile.dhcpd
             smoke: Tools/smoke_dhcp.sh
+          - flavour: dhcp-kea
+            arch: amd64
+            runner: ubuntu-24.04
+            dockerfile: docker/Dockerfile.kea
+            smoke: Tools/smoke_dhcp_kea.sh
+          - flavour: dhcp-kea
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+            dockerfile: docker/Dockerfile.kea
+            smoke: Tools/smoke_dhcp_kea.sh
           - flavour: radius
             arch: amd64
             runner: ubuntu-24.04
@@ -235,6 +245,60 @@ jobs:
           docker push "$image:sha-$GITHUB_SHA"
           echo "Published $image:$PUBLISH_VERSION and $image:sha-$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
 
+  verify-public-images:
+    name: Verify anonymous image access
+    needs: [prepare, manifests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check release manifests without registry credentials
+        env:
+          IMAGE_OWNER: ${{ github.repository_owner }}
+          PUBLISH_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          IMAGE_OWNER="${IMAGE_OWNER,,}" bash Tools/check_public_images.sh "$PUBLISH_VERSION"
+
+  publish-installer:
+    name: Publish fresh-host installer
+    needs: [prepare, verify-public-images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Upload installer and Compose template
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          (cd scripts && sha256sum install.sh) > install.sh.sha256
+          gh release upload "$GITHUB_REF_NAME" scripts/install.sh deployment/compose.yml \
+            install.sh.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Mark the installer release ready
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path('installer-ready.json').write_text(json.dumps({
+              'schema': 1, 'version': os.environ['PUBLISH_VERSION'],
+              'commit': os.environ['GITHUB_SHA'],
+          }) + '\n')
+          PY
+          gh release upload "$GITHUB_REF_NAME" installer-ready.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
   manifests:
     name: Combine manifests
     needs: [prepare, publish]
@@ -261,7 +325,7 @@ jobs:
           base="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/netadmin"
           prerelease=false
           [[ "$PUBLISH_VERSION" == *-* ]] && prerelease=true
-          for suffix in '' '-dhcp-agent' '-dns-agent' '-radius-agent' '-ca-agent' '-ca-runtime' '-dns' '-dhcp' '-radius'; do
+          for suffix in '' '-dhcp-agent' '-dns-agent' '-radius-agent' '-ca-agent' '-ca-runtime' '-dns' '-dhcp' '-dhcp-kea' '-radius'; do
             image="${base}${suffix}"
             sources=()
             for arch in amd64 aarch64; do

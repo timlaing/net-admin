@@ -38,6 +38,24 @@ file-backed changes.
 
 ## Configure and run
 
+For a **new service host**, ensure `curl` and system CA certificates are installed
+([bootstrap prerequisites](docs/installation.md#fresh-host-installer)), then download
+and run the interactive installer:
+
+```sh
+curl -fsSL --connect-timeout 10 --max-time 120 https://raw.githubusercontent.com/timlaing/net-admin/main/scripts/install.sh -o install.sh && bash install.sh
+```
+
+It installs missing Docker components, downloads the latest verified stable release's
+Compose deployment, and offers independent DNS, ISC/Kea/no DHCP, RADIUS and CA
+choices. CA-only and RADIUS-only installations are supported. No user zones or
+DHCP pools are required up front. Install the Home Assistant app separately;
+the installer generates transport credentials for its existing Settings page.
+QR enrollment is a separate, unimplemented workflow. See the
+[fresh-host installation guide](docs/installation.md#fresh-host-installer).
+
+For an **existing service configuration** using the original Compose layouts:
+
 1. Copy `.env.example` to `.env` and replace every placeholder.
 2. Add a matching RADIUS client and restricted TSIG update permission.
 3. Create a private CA plus separate server certificates for both agents and a NetAdmin
@@ -45,7 +63,9 @@ file-backed changes.
    `radius-agent`.
 4. Restrict private keys to the container user (`0600`) and configuration files containing
    hashes/secrets to `0640`.
-5. Run `docker compose up --build -d`.
+5. Pull and start the published images: `docker compose pull`, then
+   `docker compose up -d --no-build`. Set `NETADMIN_VERSION` in `.env` to pin
+   a release; it defaults to `latest`.
 6. Put the application behind HTTPS and open port 8099 through the reverse proxy.
 
 Direct-access cookies are always `Secure`, so direct HTTP is unsuitable for login.
@@ -99,15 +119,17 @@ when using agent mode.
 `docker-compose.yml` (ISC dhcpd) is unchanged:
 
 ```sh
-docker compose -f docker-compose.kea.yml up -d --build
+docker compose -f docker-compose.kea.yml pull
+docker compose -f docker-compose.kea.yml up -d --no-build
 ```
 
 The DHCP agent selects its backend with `DHCP_SERVER=isc|kea` (default `isc`) and
 validates candidate files with the matching daemon parser (`dhcpd -t` /
 `kea-dhcp4 -t`); in Kea mode it reloads the daemon over `/run/kea/kea4-ctrl.sock`.
-In the Home Assistant add-on, choose the matching DHCP backend in NetAdmin
-**Settings → DHCP**. All service connections are managed there; Home Assistant
-Configuration contains only the ingress login policy.
+In the Home Assistant add-on, enter the DHCP agent URL in NetAdmin
+**Settings → DHCP** and check the backend reported by the agent. All service
+connections are managed there; Home Assistant Configuration contains only the
+ingress login policy.
 
 #### Migrating an existing ISC configuration
 
@@ -144,6 +166,9 @@ pytest
 ```
 
 ## CI and published containers
+
+Follow the [release checklist](docs/releasing.md), including first-publish GHCR
+visibility and anonymous image checks, before making a new installer release available.
 
 GitHub Actions runs the same checks plus container smoke tests on every push and
 pull request (`.github/workflows/ci.yml`, `lint.yml`, `pre-commit.yml`, `codeql.yml`).

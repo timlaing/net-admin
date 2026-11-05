@@ -8,6 +8,10 @@ cancelled, neutral, or missing required checks withhold requests. Conditional
 jobs that did not run are ignored, but a skipped required job blocks reviews.
 Repositories with no checks do not request reviews. Draft PRs are excluded.
 
+CodeRabbit approval decisions are enabled. It can approve after reviewing the
+latest commit, resolving its required threads and passing its pre-merge checks.
+This does not enable merging or replace owner approval to merge.
+
 The workflow runs after other workflows and every 15 minutes to catch external
 checks. It waits at least 90 seconds after CI activity to allow chained workflows
 to start, and records requests per commit to avoid repeats.

@@ -72,6 +72,41 @@ jobs:
       - name: Check patch whitespace
         run: git show --format= --check HEAD
 
+  installer:
+    name: Fresh-host installer ${{ matrix.arch }}
+    needs: [checks, tests]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Install locked test dependencies
+        run: |
+          python -m pip install --only-binary :all: "uv==0.13.1"
+          uv sync --locked --no-build --extra dev
+      - name: Build isolated installer test images
+        run: |
+          set -euo pipefail
+          for spec in dns:bind dhcp:dhcpd dhcp-kea:kea radius:freeradius \
+            dns-agent:dns-agent dhcp-agent:dhcp-agent radius-agent:radius-agent \
+            ca-agent:ca-agent ca-runtime:ca-runtime; do
+            docker build -f "docker/Dockerfile.${spec#*:}" -t "netadmin-${spec%:*}:installer-smoke" .
+          done
+      - name: Test fresh service selections and first UI changes
+        run: sudo -- .venv/bin/python Tools/smoke_services_installer.py
+
   container:
     name: ${{ matrix.flavour }} ${{ matrix.arch }} smoke
     needs: [checks, tests]
