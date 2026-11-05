@@ -77,8 +77,51 @@ missing dependencies and enables a newly installed Docker daemon. Existing
 Docker is reused; conflicting Podman/distribution Docker/containerd packages
 are reported for manual resolution rather than removed. RHEL hosts with an old
 system Python receive Python 3.11. The installer requires a local rootful Engine
-and a fixed IPv4 address already assigned to the selected host. macOS and Docker
-Desktop are not supported by this installer; DHCP needs native Linux LAN access.
+and a fixed IPv4 address already assigned to the selected host. DHCP needs native
+Linux LAN access. macOS supports DNS, RADIUS and CA using Docker Desktop below.
+
+### macOS
+
+Docker Desktop publishes privileged DNS port 53. The desktop-user preflight
+skips direct binds below port 1024; a conflicting DNS listener is reported by
+Compose during startup, with the deployment retained for resume.
+
+macOS support requires a published release containing the platform-aware helper
+and macOS Compose template. Older Linux-only releases cannot install on macOS.
+
+On Intel and Apple silicon Macs, install [Homebrew](https://brew.sh) first, then
+run the same downloaded installer as your desktop user, without `sudo`. It uses
+Homebrew to install Docker Desktop if Desktop is missing, plus Python 3.13
+and OpenSSL 3. Existing Docker Desktop is reused. The installer starts Desktop and
+waits up to three minutes; complete its first-run setup in the Docker app if
+prompted, then rerun if startup times out. It does not accept Docker's terms for you.
+
+```sh
+bash install.sh --yes --address 192.0.2.10 --dns yes --radius yes --ca yes
+```
+
+Use the Mac's fixed LAN address. DHCP defaults to `none` and an explicit ISC/Kea
+selection is rejected before changes. DNS-only, RADIUS-only and CA-only selections
+are supported. Files default to `~/Library/Application Support/NetAdmin`; Desktop
+must have access to any custom deployment directory. Resume uses that same path.
+Keep the Mac awake and Docker Desktop running while providing network services.
+
+Desktop publishes only the selected service ports on the chosen LAN address.
+DNS's agent shares the DNS container's network namespace; RNDC stays private
+inside the VM. Host networking and privileged broadcast DHCP are not used.
+Allow the selected inbound ports through the Mac's firewall. Docker Desktop's
+privileged port support may need enabling if publishing DNS port 53 is denied.
+
+RADIUS client matching uses the packet's source address. Before adding clients,
+verify the address seen by FreeRADIUS from an actual LAN device. If Desktop
+forwarding presents a gateway/proxy address, rules for the original NAS addresses
+will not match. Use a native Linux RADIUS host when distinct NAS source-address
+rules are required and Desktop does not preserve them. No RADIUS clients are
+whitelisted automatically. The loopback CI smoke does not establish LAN source
+address preservation.
+
+See [Docker's Mac installation guide](https://docs.docker.com/desktop/setup/install/mac-install/)
+and [Desktop networking](https://docs.docker.com/desktop/features/networking/).
 
 Download the script first to inspect it or pass options:
 
@@ -89,12 +132,12 @@ curl -fsSL --connect-timeout 10 --max-time 120 https://raw.githubusercontent.com
 After a successful download, preview a selection:
 
 ```sh
-bash install.sh --yes --dry-run --address 192.0.2.10 --interface eth0 \
-  --dns yes --dhcp kea --radius yes --ca yes
+bash install.sh --yes --dry-run --address 192.0.2.10 \
+  --dns yes --dhcp none --radius yes --ca yes
 ```
 
-Replace the documentation address/interface with your host's fixed LAN address
-and interface. Remove `--dry-run` to install. `--yes` accepts defaults and package
+Replace the documentation address with the host's fixed LAN address. On Linux,
+add `--dhcp kea` or `--dhcp isc` with `--interface eth0` to include DHCP. Remove `--dry-run` to install. `--yes` accepts defaults and package
 installation without further prompts. Pass options to the downloaded `install.sh`;
 the bootstrap and repository-key transfers have connection and total time limits.
 
@@ -112,7 +155,8 @@ bash install.sh --yes --address 192.0.2.10 \
   --dns no --dhcp none --radius yes --ca no
 ```
 
-The default directory is `/opt/netadmin`; override it with `--directory`.
+The default directory is `/opt/netadmin` on Linux and
+`~/Library/Application Support/NetAdmin` on macOS; override it with `--directory`.
 `--version X.Y.Z` selects an explicit release. By default the installer resolves
 the latest verified stable GitHub release once and downloads the Compose
 template and bootstrap scripts from that exact tag. Every selected image uses the same
@@ -128,8 +172,12 @@ state. Failed pulls/startups retain state and never report success. To retry
 unchanged:
 
 ```sh
-bash install.sh --directory /opt/netadmin --resume --yes
+bash install.sh --resume --yes
 ```
+
+The retry above uses the platform default directory. If you used a custom path,
+include the same `--directory` again. Resume rejects a saved platform mismatch,
+DHCP on macOS, and remote Docker endpoints before starting services.
 
 An existing deployment directory is never overwritten. `--resume` uses its saved
 service selection, image versions and keys; it does not change services or perform

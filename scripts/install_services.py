@@ -86,8 +86,47 @@ def download(version, name):
     return content.decode("utf-8")
 
 
+def host_platform():
+    """Select the actual host instead of trusting a saved deployment or caller flag."""
+    return "macos" if sys.platform == "darwin" else "linux"
+
+
+def validate_engine(platform):
+    """Reject remote contexts before contacting an engine or starting any service."""
+    context = json.loads(
+        run(["docker", "context", "inspect"], capture_output=True, timeout=10).stdout
+    )
+    endpoint = context[0]["Endpoints"]["docker"]["Host"]
+    if not os.environ.get("DOCKER_CONTEXT"):
+        endpoint = os.environ.get("DOCKER_HOST") or endpoint
+    if not endpoint.startswith("unix://"):
+        raise ValueError("Remote Docker contexts are not supported")
+    info = json.loads(
+        run(["docker", "info", "--format", "{{json .}}"], capture_output=True, timeout=10).stdout
+    )
+    if info.get("OSType") != "linux" or any(
+        "rootless" in item for item in info.get("SecurityOptions", [])
+    ):
+        raise ValueError("Use a local, rootful Linux Docker Engine")
+    if platform == "macos" and "Docker Desktop" not in info.get("OperatingSystem", ""):
+        raise ValueError("macOS installation requires Docker Desktop")
+
+
+def validate_resume(state):
+    """Enforce host and endpoint constraints for saved deployments before Compose runs."""
+    platform = host_platform()
+    if state.get("platform", "linux") != platform:
+        raise ValueError("Saved deployment platform does not match this host")
+    if platform == "macos" and state.get("dhcp") != "none":
+        raise ValueError("Saved macOS deployment cannot enable DHCP")
+    validate_engine(platform)
+
+
 def validate(args, *, host=True):
     """Reject unsafe input and host conflicts before touching deployment files."""
+    macos = getattr(args, "platform", "linux") == "macos"
+    if macos and args.dhcp != "none":
+        raise ValueError("DHCP requires a native Linux host; select --dhcp none on macOS")
     if args.dns == "no" and args.dhcp == "none" and args.radius == "no" and args.ca == "no":
         raise ValueError("Select at least one service")
     address = ipaddress.IPv4Address(args.address)
@@ -102,29 +141,25 @@ def validate(args, *, host=True):
     if not args.directory.is_absolute() or ".." in args.directory.parts:
         raise ValueError("Use an absolute deployment directory without traversal")
     if host:
-        addresses = json.loads(run(["ip", "-j", "-4", "addr"], capture_output=True).stdout)
-        if not any(
-            item.get("local") == args.address
-            for link in addresses
-            for item in link.get("addr_info", [])
-        ):
-            raise ValueError("The selected address is not assigned to this host")
-        if args.dhcp != "none" and not any(link["ifname"] == args.interface for link in addresses):
-            raise ValueError("The selected DHCP interface does not exist")
-        info = json.loads(
-            run(["docker", "info", "--format", "{{json .}}"], capture_output=True).stdout
-        )
-        if info.get("OSType") != "linux" or any(
-            "rootless" in item for item in info.get("SecurityOptions", [])
-        ):
-            raise ValueError("Use a local, rootful Linux Docker Engine for host-network services")
-        # A remote context would interpret all bind mounts on another machine.
-        context = json.loads(run(["docker", "context", "inspect"], capture_output=True).stdout)
-        endpoint = context[0]["Endpoints"]["docker"]["Host"]
-        if not os.environ.get("DOCKER_CONTEXT"):
-            endpoint = os.environ.get("DOCKER_HOST") or endpoint
-        if not endpoint.startswith("unix://"):
-            raise ValueError("Remote Docker contexts are not supported")
+        if ("macos" if macos else "linux") != host_platform():
+            raise ValueError("Selected platform does not match this host")
+        if macos:
+            interface_data = run(["/sbin/ifconfig"], capture_output=True).stdout.decode()
+            if not re.search(r"\binet " + re.escape(args.address) + r"\s", interface_data):
+                raise ValueError("The selected address is not assigned to this Mac")
+        else:
+            addresses = json.loads(run(["ip", "-j", "-4", "addr"], capture_output=True).stdout)
+            if not any(
+                item.get("local") == args.address
+                for link in addresses
+                for item in link.get("addr_info", [])
+            ):
+                raise ValueError("The selected address is not assigned to this host")
+            if args.dhcp != "none" and not any(
+                link["ifname"] == args.interface for link in addresses
+            ):
+                raise ValueError("The selected DHCP interface does not exist")
+        validate_engine("macos" if macos else "linux")
         running = run(
             ["docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={PROJECT}"],
             capture_output=True,
@@ -139,11 +174,12 @@ def check_ports(args):
     ports = []
     if args.dns == "yes":
         ports += [(53, socket.SOCK_STREAM), (53, socket.SOCK_DGRAM), (8083, socket.SOCK_STREAM)]
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-            try:
-                listener.bind(("127.0.0.1", 953))
-            except OSError as error:
-                raise ValueError("Local RNDC port 953 is already in use") from error
+        if getattr(args, "platform", "linux") != "macos":
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+                try:
+                    listener.bind(("127.0.0.1", 953))
+                except OSError as error:
+                    raise ValueError("Local RNDC port 953 is already in use") from error
     if args.dhcp != "none":
         ports += [(67, socket.SOCK_DGRAM), (8081, socket.SOCK_STREAM)]
     if args.radius == "yes":
@@ -152,8 +188,11 @@ def check_ports(args):
         ports += [(8084, socket.SOCK_STREAM)]
         ports += [(port, socket.SOCK_STREAM) for port in range(9100, 9116)]
     for port, kind in ports:
+        # Desktop owns privileged host publishing; the desktop user cannot probe it.
+        if getattr(args, "platform", "linux") == "macos" and port < 1024:
+            continue
         hosts = [args.address]
-        if port == 53:
+        if port == 53 and getattr(args, "platform", "linux") != "macos":
             hosts.append("127.0.0.1")
         for host in hosts:
             # Probe only the intended service addresses, without listening.
@@ -258,6 +297,9 @@ def certificates(directory, address, names):
 
 def initial_configuration(directory, args, tsig):
     """Seed valid empty configurations; zones and allocation pools belong in UI."""
+    dns_listen = (
+        "any" if getattr(args, "platform", "linux") == "macos" else f"127.0.0.1; {args.address}"
+    )
     key = f'key "rndc-key" {{\n    algorithm hmac-sha256;\n    secret "{tsig}";\n}};\n'
     if args.dns == "yes":
         write(
@@ -266,7 +308,7 @@ def initial_configuration(directory, args, tsig):
             f"""include "/etc/bind/rndc.key";
     options {{
         directory "/etc/bind";
-        listen-on {{ 127.0.0.1; {args.address}; }};
+        listen-on {{ {dns_listen}; }};
         listen-on-v6 {{ none; }};
         recursion no;
         allow-transfer {{ none; }};
@@ -324,6 +366,8 @@ def prepare(args):
     """Do not leave a partially generated credential set after a preparation error."""
     assets = {}
     for source, target in ASSETS.items():
+        if source == "deployment/compose.yml" and getattr(args, "platform", "linux") == "macos":
+            source = "deployment/compose.macos.yml"
         assets[target] = (
             (args.source_directory / source).read_text()
             if args.source_directory
@@ -361,16 +405,19 @@ def prepare(args):
                 f"NETADMIN_DNS_TSIG_SECRET={tsig}\n"
             ),
         )
+        # Desktop listeners bind inside its isolated VM; only explicit host ports publish.
+        agent_bind = "0.0.0.0" if getattr(args, "platform", "linux") == "macos" else args.address  # noqa: S104
         write(
             directory,
             "agents.env",
-            (f"NETADMIN_AGENT_TOKEN={token}\nAGENT_BIND_ADDRESS={args.address}\n"),
+            (f"NETADMIN_AGENT_TOKEN={token}\nAGENT_BIND_ADDRESS={agent_bind}\n"),
         )
         if args.ca == "yes":
             write(directory, "secrets/management-token", secrets.token_urlsafe(48))
         certificates(directory, args.address, names)
         initial_configuration(directory, args, tsig)
         state = {
+            "platform": getattr(args, "platform", "linux"),
             "schema": 1,
             "project": PROJECT,
             "version": args.version,
@@ -408,7 +455,7 @@ def seed_radius(directory, state):
                 "--entrypoint",
                 "sh",
                 "--volume",
-                f"{target}:/seed:rw,z",
+                f"{target}:/seed:rw" + ("" if state.get("platform") == "macos" else ",z"),
                 f"ghcr.io/timlaing/netadmin-radius:{state['version']}",
                 "-c",
                 "cp -a /etc/raddb/. /seed/ && chown -R root:radius /seed "
@@ -595,6 +642,7 @@ def start(directory):
     state = json.loads((directory / "installation.json").read_text())
     if state.get("schema") != 1 or state.get("project") != PROJECT:
         raise ValueError("Unrecognized installation manifest")
+    validate_resume(state)
     compose(directory, "config", "--quiet")
     compose(directory, "pull")
     if state["radius"] == "yes":
@@ -642,6 +690,7 @@ def start(directory):
 def main(argv=None):
     """Called by the host bootstrap after Docker and host dependencies are ready."""
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--platform", choices=("linux", "macos"), default=host_platform())
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--address", default="")
     parser.add_argument("--interface", default="")
@@ -667,14 +716,15 @@ def main(argv=None):
         print(f"Prepared {args.directory}; no containers started. Resume with:")
         print(
             shlex.join(
-                [
-                    "sudo",
+                (["sudo"] if args.platform != "macos" else [])
+                + [
                     sys.executable,
                     str(args.directory / "bootstrap/install_services.py"),
                     "--directory",
                     str(args.directory),
                     "--resume",
                 ]
+                + (["--platform", "macos"] if args.platform == "macos" else [])
             )
         )
     else:

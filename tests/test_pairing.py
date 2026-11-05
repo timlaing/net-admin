@@ -406,3 +406,38 @@ def test_pairing_listener_rejects_unclaimable_ports(tmp_path, port):
     directory = tmp_path / "not-read"
     with pytest.raises(ValueError, match="Pairing port"):
         pairing_exchange.serve(directory, port=port)
+
+
+@pytest.mark.parametrize("platform", ["linux", "macos"])
+def test_resume_pairing_preserves_platform_selection(tmp_path, platform):
+    """Mac resume forwards both feature flags while Linux keeps old-helper compatibility."""
+    directory = tmp_path / "deployment"
+    (directory / "bootstrap").mkdir(parents=True)
+    helper = directory / "bootstrap/install_services.py"
+    helper.write_text(
+        "import argparse, json, sys\np=argparse.ArgumentParser()\n"
+        'p.add_argument("--directory")\np.add_argument("--platform")\n'
+        'p.add_argument("--resume", action="store_true")\n'
+        'p.add_argument("--pair", action="store_true")\n'
+        "p.parse_args()\nprint(json.dumps(sys.argv[1:]))\n"
+    )
+    launcher = (ROOT / "scripts/install.sh").read_text()
+    start = launcher.index('if [[ "$resume" == true ]]; then\n  [[ -f')
+    section = launcher[start : launcher.index("# Ignore newer releases", start)]
+    script = (
+        'set -euo pipefail\nresume=true\npair=true\ndirectory="$1"\n'
+        'python_command="$2"\nplatform="$3"\nfail() { echo "$*" >&2; exit 1; }\n' + section
+    )
+    result = subprocess.run(  # noqa: S603
+        ["/bin/bash", "-c", script, "probe", str(directory), sys.executable, platform],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    arguments = json.loads(result.stdout)
+    assert "--pair" in arguments
+    assert "--resume" in arguments
+    if platform == "macos":
+        assert arguments[arguments.index("--platform") + 1] == "macos"
+    else:
+        assert "--platform" not in arguments

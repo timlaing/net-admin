@@ -48,7 +48,8 @@ curl -fsSL --connect-timeout 10 --max-time 120 https://raw.githubusercontent.com
 
 It installs missing Docker components, downloads the latest verified stable release's
 Compose deployment, and offers independent DNS, ISC/Kea/no DHCP, RADIUS and CA
-choices. CA-only and RADIUS-only installations are supported. No user zones or
+choices. CA-only and RADIUS-only installations are supported. macOS uses Docker
+Desktop for DNS, RADIUS and CA; DHCP remains Linux-only. No user zones or
 DHCP pools are required up front. Install the Home Assistant app separately;
 the installer generates transport credentials for its existing Settings page.
 QR enrollment is a separate, unimplemented workflow. See the
