@@ -48,21 +48,17 @@ def parse_code(code: str) -> tuple[str, int, str, str]:
 def claim(code: str) -> dict[str, Any]:
     """Pin TLS before transmitting the single-use secret; bound time and response size."""
     host, port, token, fingerprint = parse_code(code)
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    context.check_hostname = False
-    # The out-of-band code pins the exact certificate instead of a public CA.
-    context.verify_mode = ssl.CERT_NONE
+    # Retrieve public identity only, then authenticate it using the out-of-band pin.
+    certificate = ssl.get_server_certificate((host, port), timeout=10)
+    actual = hashlib.sha256(ssl.PEM_cert_to_DER_cert(certificate)).hexdigest()
+    if not hmac.compare_digest(actual, fingerprint):
+        raise ValueError("Pairing host identity does not match")
+    context = ssl.create_default_context(cadata=certificate)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    # Trust only this pinned leaf while retaining SAN, validity and usage checks.
+    context.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN  # pylint: disable=no-member
     connection = http.client.HTTPSConnection(host, port, context=context, timeout=10)
     try:
-        connection.connect()
-        if connection.sock is None:
-            raise ValueError("Pairing connection unavailable")
-        peer = connection.sock.getpeercert(binary_form=True)
-        if not peer:
-            raise ValueError("Pairing peer has no certificate")
-        actual = hashlib.sha256(peer).hexdigest()
-        if not hmac.compare_digest(actual, fingerprint):
-            raise ValueError("Pairing host identity does not match")
         connection.request(
             "POST", "/claim", headers={"Authorization": f"Bearer {token}", "Content-Length": "0"}
         )
@@ -94,11 +90,11 @@ def serve(directory: Path, port: int = 8085, lifetime: int = 600) -> None:
     cert = identity / "server.crt"
     token = secrets.token_urlsafe(32)
     fingerprint = hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert.read_text())).hexdigest()
-    agents = dict(
-        line.split("=", 1)
+    agents = {
+        line.partition("=")[0]: line.partition("=")[2]
         for line in (directory / "agents.env").read_text().splitlines()
         if "=" in line
-    )
+    }
     payload = {
         "schema": 1,
         "services": selected,
@@ -145,6 +141,7 @@ def serve(directory: Path, port: int = 8085, lifetime: int = 600) -> None:
             self.wfile.write(content)
 
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(cert, identity / "server.key")
     with HTTPServer((address, port), Handler) as server:
         server.socket = context.wrap_socket(

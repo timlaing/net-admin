@@ -44,6 +44,7 @@ from netadmin.store import Store
 
 connection_web = Blueprint("connections", __name__)
 ERROR_TEMPLATE = "error.html"
+SETTINGS_PAGE = "connections.settings_page"
 
 
 @connection_web.route("/settings", methods=["GET", "POST"])
@@ -92,7 +93,7 @@ def settings_page() -> Any:
                     current_identity().username, "settings.connections", "connections", True
                 )
                 flash("Settings saved and applied. No restart needed.", "success")
-                return redirect(url_for("connections.settings_page"))
+                return redirect(url_for(SETTINGS_PAGE))
     pending = any(previous[field] != active[field] for field in CONNECTION_FIELDS)
     return render_template(
         "settings.html",
@@ -176,7 +177,7 @@ def reload_connections() -> Any:
         current_identity().username, "settings.reload", "connections", True
     )
     flash("Saved connections reloaded. No restart needed.", "success")
-    return redirect(url_for("connections.settings_page"))
+    return redirect(url_for(SETTINGS_PAGE))
 
 
 @connection_web.post("/settings/pair")
@@ -217,4 +218,4 @@ def pair_installation() -> Any:
         "configure this app as a RADIUS client before enabling RADIUS.",
         "success",
     )
-    return redirect(url_for("connections.settings_page"))
+    return redirect(url_for(SETTINGS_PAGE))

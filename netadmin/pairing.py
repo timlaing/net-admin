@@ -24,9 +24,8 @@ from netadmin.pairing_exchange import PORTS, claim
 from netadmin.preferences import env_path, write_env_file
 
 
-def enroll(settings: Settings, code: str) -> dict[str, Any]:  # pylint: disable=too-many-branches
-    """Stage private credentials, validate their chain and configuration, then activate them."""
-    payload = claim(code)
+def validate_payload(payload: dict[str, Any]) -> list[str]:
+    """Reject unexpected services, multiline tokens and incomplete credential material."""
     services = payload.get("services")
     if (
         payload.get("schema") != 1
@@ -44,6 +43,11 @@ def enroll(settings: Settings, code: str) -> dict[str, Any]:  # pylint: disable=
     for field in ("ca", "certificate", "key"):
         if not isinstance(payload.get(field), str):
             raise ValueError("Invalid credential material")
+    return services
+
+
+def validate_identity(payload: dict[str, Any]) -> None:
+    """Check issuer signature, CA scope, validity, client usage and matching private key."""
     authority = x509.load_pem_x509_certificate(payload["ca"].encode())
     certificate = x509.load_pem_x509_certificate(payload["certificate"].encode())
     key = serialization.load_pem_private_key(payload["key"].encode(), password=None)
@@ -67,6 +71,13 @@ def enroll(settings: Settings, code: str) -> dict[str, Any]:  # pylint: disable=
         serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
     ):
         raise ValueError("Client key does not match certificate")
+
+
+def enroll(settings: Settings, code: str) -> dict[str, Any]:
+    """Stage validated private credentials and activate the paired connections together."""
+    payload = claim(code)
+    services = validate_payload(payload)
+    validate_identity(payload)
     target = env_path().parent / "pki" / ("paired-" + secrets.token_hex(16))
     target.mkdir(parents=True, mode=0o700)
     try:

@@ -5,7 +5,6 @@ import json
 import threading
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -27,7 +26,7 @@ def deployment(tmp_path):
     spec.loader.exec_module(module)
     directory = tmp_path / "deployment"
     directory.mkdir()
-    module.certificates(directory, "192.0.2.10", ["ca"])
+    module.certificates(directory, "127.0.0.1", ["ca"])
     (directory / "installation.json").write_text(
         json.dumps(
             {
@@ -100,17 +99,17 @@ def test_invalid_credentials_keep_active_settings(runtime, monkeypatch, deployme
     assert client.application.extensions["netadmin_settings"] is runtime
 
 
-def test_pin_checked_before_authorization(monkeypatch):
+def test_pin_checked_before_authorization(monkeypatch, deployment):
     """Do not disclose the secret to a substituted TLS certificate."""
-    peer = SimpleNamespace(getpeercert=lambda **_: b"wrong peer")
-    connection = SimpleNamespace(
-        sock=peer,
-        connect=lambda: None,
-        close=lambda: None,
-        request=lambda *_a, **_k: pytest.fail("secret transmitted before pin validation"),
+    monkeypatch.setattr(
+        pairing_exchange.ssl,
+        "get_server_certificate",
+        lambda *_a, **_k: (deployment / "transport/ca/server.crt").read_text(),
     )
     monkeypatch.setattr(
-        pairing_exchange.http.client, "HTTPSConnection", lambda *_a, **_k: connection
+        pairing_exchange.http.client,
+        "HTTPSConnection",
+        lambda *_a, **_k: pytest.fail("secret connection created before pin validation"),
     )
     code = "netadmin-pair://192.0.2.10:8085/" + "a" * 43 + "#" + "0" * 64
     with pytest.raises(ValueError, match="identity"):
