@@ -27,6 +27,14 @@
    registry login. Check selected-service readiness before network traffic, then
    verify representative DNS, DHCP, RADIUS and CA operations for installed services.
 
+6. On a fresh macOS host with Docker Desktop, install DNS, RADIUS and CA using a
+   selected LAN address. From another LAN client, verify each agent's
+   `/capabilities` endpoint on ports 8083, 8082 and 8084 over mTLS and bearer auth.
+   Create a disposable managed CA in the UI and confirm its allocated listener
+   in 9100–9115 is reachable from that client. Verify real DNS queries and RADIUS
+   traffic too. The CI topology smoke rewrites ports to loopback; it does not
+   establish LAN/firewall reachability, privileged port setup or first-run UI behavior.
+
 To repeat the registry access check without publishing anything:
 
 ```sh

@@ -22,13 +22,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
-def installer():
+def installer(monkeypatch):
     """Load the standalone installer without invoking its command-line entry point."""
     spec = importlib.util.spec_from_file_location(
         "services_installer", ROOT / "scripts/install_services.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "host_platform", lambda: "linux")
     return module
 
 
@@ -54,6 +55,7 @@ def compose_probe():
 @pytest.fixture
 def compose_available(installer, monkeypatch, compose_probe):
     """Keep each preparation test independent of an optional Compose plugin."""
+    monkeypatch.setattr(installer, "validate_engine", lambda _platform: None)
     if not compose_probe:
         monkeypatch.setattr(installer, "compose", lambda *_args, **_kwargs: None)
 
@@ -754,6 +756,22 @@ def test_macos_prepares_only_desktop_services(
     installer.prepare(args)
     config = yaml.safe_load((args.directory / "compose.yml").read_text())
     assert not any(name.startswith("dhcp") for name in config["services"])
+    selected = {name for name in ("dns", "radius", "ca") if getattr(args, name) == "yes"}
+    expected = {
+        "dns": {"dns", "dns-agent"},
+        "radius": {"radius", "radius-agent"},
+        "ca": {"ca-runtime", "ca-agent"},
+    }
+    effective = {
+        name
+        for name, service in config["services"].items()
+        if not service.get("profiles") or selected.intersection(service["profiles"])
+    }
+    assert effective == set().union(*(expected[name] for name in selected))
+    if ca == "yes":
+        assert (
+            "${INSTALL_ADDRESS:?}:9100-9115:9100-9115" in config["services"]["ca-runtime"]["ports"]
+        )
     assert config["services"]["dns-agent"]["network_mode"] == "service:dns"
     assert all(service.get("network_mode") != "host" for service in config["services"].values())
     assert "${INSTALL_ADDRESS:?}:53:53/udp" in config["services"]["dns"]["ports"]
@@ -824,7 +842,7 @@ def test_macos_bootstrap_reuses_desktop_without_root_or_linux_commands(tmp_path)
             'echo "curl $*" >> "$MAC_CALLS"; while [ "$#" -gt 0 ]; do '
             'if [ "$1" = -o ]; then shift; : > "$1"; fi; shift; done'
         ),
-        "python3": 'echo "python $*" >> "$MAC_CALLS"',
+        "python3": 'echo "python $*" >> "$MAC_CALLS"; echo "--platform"',
         "sudo": 'echo forbidden-sudo >> "$MAC_CALLS"; exit 99',
         "apt-get": 'echo forbidden-apt >> "$MAC_CALLS"; exit 99',
         "dnf": 'echo forbidden-dnf >> "$MAC_CALLS"; exit 99',
@@ -869,3 +887,173 @@ def test_macos_bootstrap_reuses_desktop_without_root_or_linux_commands(tmp_path)
     assert "--platform macos" in recorded
     assert "--dhcp none" in recorded
     assert "forbidden" not in recorded
+
+
+@pytest.mark.parametrize(
+    "platform,dhcp,host,message",
+    [("linux", "none", "macos", "does not match"), ("macos", "isc", "macos", "cannot enable DHCP")],
+)
+def test_resume_rejects_incompatible_platform_before_docker(
+    installer, monkeypatch, platform, dhcp, host, message
+):
+    """Saved Linux or DHCP workloads cannot be resumed as macOS services."""
+    monkeypatch.setattr(installer, "host_platform", lambda: host)
+    monkeypatch.setattr(
+        installer,
+        "run",
+        lambda *_a, **_k: pytest.fail("Docker contacted before platform rejection"),
+    )
+    state = {"platform": platform, "dhcp": dhcp}
+    with pytest.raises(ValueError, match=message):
+        installer.validate_resume(state)
+
+
+def test_resume_rejects_remote_docker_before_any_compose(installer, monkeypatch, tmp_path):
+    """A remote context must never receive saved deployments or bind mounts."""
+    state = {"schema": 1, "project": installer.PROJECT, "platform": "linux", "dhcp": "none"}
+    (tmp_path / "installation.json").write_text(json.dumps(state))
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+    calls = []
+
+    def run(command, **_kwargs):
+        """Expose only local context metadata; any other operation fails the regression."""
+        calls.append(command)
+        assert command == ["docker", "context", "inspect"]
+        return SimpleNamespace(
+            stdout=json.dumps([{"Endpoints": {"docker": {"Host": "ssh://remote"}}}])
+        )
+
+    monkeypatch.setattr(installer, "run", run)
+    monkeypatch.setattr(
+        installer, "compose", lambda *_a, **_k: pytest.fail("remote Compose invoked")
+    )
+    with pytest.raises(ValueError, match="Remote Docker contexts"):
+        installer.start(tmp_path)
+    assert len(calls) == 1
+
+
+def test_legacy_resume_manifest_is_linux_only(installer, monkeypatch):
+    """Accept an old Linux manifest while retaining the current engine preflight."""
+    checked = []
+    monkeypatch.setattr(installer, "validate_engine", checked.append)
+    installer.validate_resume({"dhcp": "none"})
+    assert checked == ["linux"]
+
+
+def test_macos_printed_resume_keeps_desktop_user(
+    installer, tmp_path, monkeypatch, capsys, compose_available
+):
+    """Do not elevate away from the user's Desktop context in recovery instructions."""
+    monkeypatch.setattr(installer, "host_platform", lambda: "macos")
+    monkeypatch.setattr(installer, "validate", lambda _args: None)
+    installer.main(
+        [
+            "--directory",
+            str(tmp_path / "mac"),
+            "--address",
+            "192.0.2.10",
+            "--platform",
+            "macos",
+            "--dhcp",
+            "none",
+            "--dns",
+            "no",
+            "--radius",
+            "no",
+            "--ca",
+            "yes",
+            "--version",
+            "1.2.3",
+            "--source-directory",
+            str(ROOT),
+            "--prepare-only",
+        ]
+    )
+    command = shlex.split(capsys.readouterr().out.splitlines()[-1])
+    assert command[0] == sys.executable
+    assert command[command.index("--platform") + 1] == "macos"
+    assert "sudo" not in command
+
+
+@pytest.mark.parametrize("platform,expected", [("linux", 0), ("macos", 1)])
+def test_bootstrap_handoff_is_compatible_with_old_linux_helper(tmp_path, platform, expected):
+    """Keep Linux installs working and clearly reject a release without Mac support."""
+    temporary = tmp_path / "download"
+    temporary.mkdir()
+    helper = temporary / "install_services.py"
+    helper.write_text(
+        "import argparse\np=argparse.ArgumentParser()\n"
+        'for flag in "directory address interface dns dhcp radius ca version".split():\n'
+        ' p.add_argument("--" + flag)\np.parse_args()\n'
+    )
+    launcher = (ROOT / "scripts/install.sh").read_text()
+    start = launcher.index('\nargs=(--directory "$directory"') + 1
+    section = launcher[start : launcher.index("\n}\n# Parse the complete body", start)]
+    prefix = (
+        'set -euo pipefail\ndirectory="$1"\ntemporary="$2"\npython_command="$3"\nplatform="$4"\n'
+        'address=192.0.2.10; interface=""; dns=no; dhcp=none; radius=no; ca=yes;\n'
+        'version=1.2.3; prepare_only=false; source_directory=""\n'
+        'fail() { echo "$*" >&2; exit 1; }\n'
+    )
+    result = subprocess.run(  # noqa: S603
+        [
+            "/bin/bash",
+            "-c",
+            prefix + section,
+            "probe",
+            str(tmp_path / "deployment"),
+            str(temporary),
+            sys.executable,
+            platform,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == expected
+    if platform == "macos":
+        assert "predates macOS support" in result.stderr
+    else:
+        assert "unrecognized arguments" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "platform,saved,dhcp,endpoint,message",
+    [
+        ("linux", "linux", "none", "ssh://remote", "Remote Docker contexts"),
+        ("macos", "linux", "none", "unix:///tmp/docker.sock", "does not match"),
+        ("macos", "macos", "isc", "unix:///tmp/docker.sock", "cannot enable DHCP"),
+    ],
+)
+def test_bootstrap_preflight_protects_saved_older_helpers(
+    tmp_path, platform, saved, dhcp, endpoint, message
+):
+    """Old saved helpers receive the same host/endpoint guards before being executed."""
+    directory = tmp_path / "deployment"
+    directory.mkdir()
+    (directory / "installation.json").write_text(
+        json.dumps({"schema": 1, "project": "netadmin-services", "platform": saved, "dhcp": dhcp})
+    )
+    launcher = (ROOT / "scripts/install.sh").read_text()
+    source = launcher.split("<<'PREFLIGHT'\n", 1)[1].split("\nPREFLIGHT", 1)[0]
+    contexts = [{"Endpoints": {"docker": {"Host": endpoint}}}]
+    harness = (
+        "import sys, subprocess\nfrom types import SimpleNamespace\n"
+        f"sys.argv = {['preflight', str(directory), platform, 'true']!r}\n"
+        f"subprocess.run = lambda *_a, **_k: SimpleNamespace(stdout={json.dumps(contexts)!r})\n"
+    )
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"DOCKER_HOST", "DOCKER_CONTEXT"}
+    }
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", harness + source],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert message in result.stderr

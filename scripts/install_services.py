@@ -85,6 +85,42 @@ def download(version, name):
     return content.decode("utf-8")
 
 
+def host_platform():
+    """Select the actual host instead of trusting a saved deployment or caller flag."""
+    return "macos" if sys.platform == "darwin" else "linux"
+
+
+def validate_engine(platform):
+    """Reject remote contexts before contacting an engine or starting any service."""
+    context = json.loads(
+        run(["docker", "context", "inspect"], capture_output=True, timeout=10).stdout
+    )
+    endpoint = context[0]["Endpoints"]["docker"]["Host"]
+    if not os.environ.get("DOCKER_CONTEXT"):
+        endpoint = os.environ.get("DOCKER_HOST") or endpoint
+    if not endpoint.startswith("unix://"):
+        raise ValueError("Remote Docker contexts are not supported")
+    info = json.loads(
+        run(["docker", "info", "--format", "{{json .}}"], capture_output=True, timeout=10).stdout
+    )
+    if info.get("OSType") != "linux" or any(
+        "rootless" in item for item in info.get("SecurityOptions", [])
+    ):
+        raise ValueError("Use a local, rootful Linux Docker Engine")
+    if platform == "macos" and "Docker Desktop" not in info.get("OperatingSystem", ""):
+        raise ValueError("macOS installation requires Docker Desktop")
+
+
+def validate_resume(state):
+    """Enforce host and endpoint constraints for saved deployments before Compose runs."""
+    platform = host_platform()
+    if state.get("platform", "linux") != platform:
+        raise ValueError("Saved deployment platform does not match this host")
+    if platform == "macos" and state.get("dhcp") != "none":
+        raise ValueError("Saved macOS deployment cannot enable DHCP")
+    validate_engine(platform)
+
+
 def validate(args, *, host=True):
     """Reject unsafe input and host conflicts before touching deployment files."""
     macos = getattr(args, "platform", "linux") == "macos"
@@ -104,6 +140,8 @@ def validate(args, *, host=True):
     if not args.directory.is_absolute() or ".." in args.directory.parts:
         raise ValueError("Use an absolute deployment directory without traversal")
     if host:
+        if ("macos" if macos else "linux") != host_platform():
+            raise ValueError("Selected platform does not match this host")
         if macos:
             interface_data = run(["/sbin/ifconfig"], capture_output=True).stdout.decode()
             if not re.search(r"\binet " + re.escape(args.address) + r"\s", interface_data):
@@ -120,22 +158,7 @@ def validate(args, *, host=True):
                 link["ifname"] == args.interface for link in addresses
             ):
                 raise ValueError("The selected DHCP interface does not exist")
-        info = json.loads(
-            run(["docker", "info", "--format", "{{json .}}"], capture_output=True).stdout
-        )
-        if info.get("OSType") != "linux" or any(
-            "rootless" in item for item in info.get("SecurityOptions", [])
-        ):
-            raise ValueError("Use a local, rootful Linux Docker Engine for host-network services")
-        if macos and "Docker Desktop" not in info.get("OperatingSystem", ""):
-            raise ValueError("macOS installation requires Docker Desktop")
-        # A remote context would interpret all bind mounts on another machine.
-        context = json.loads(run(["docker", "context", "inspect"], capture_output=True).stdout)
-        endpoint = context[0]["Endpoints"]["docker"]["Host"]
-        if not os.environ.get("DOCKER_CONTEXT"):
-            endpoint = os.environ.get("DOCKER_HOST") or endpoint
-        if not endpoint.startswith("unix://"):
-            raise ValueError("Remote Docker contexts are not supported")
+        validate_engine("macos" if macos else "linux")
         running = run(
             ["docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={PROJECT}"],
             capture_output=True,
@@ -615,6 +638,7 @@ def start(directory):
     state = json.loads((directory / "installation.json").read_text())
     if state.get("schema") != 1 or state.get("project") != PROJECT:
         raise ValueError("Unrecognized installation manifest")
+    validate_resume(state)
     compose(directory, "config", "--quiet")
     compose(directory, "pull")
     if state["radius"] == "yes":
@@ -648,7 +672,7 @@ def start(directory):
 def main(argv=None):
     """Called by the host bootstrap after Docker and host dependencies are ready."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--platform", choices=("linux", "macos"), default="linux")
+    parser.add_argument("--platform", choices=("linux", "macos"), default=host_platform())
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--address", default="")
     parser.add_argument("--interface", default="")
@@ -671,14 +695,15 @@ def main(argv=None):
         print(f"Prepared {args.directory}; no containers started. Resume with:")
         print(
             shlex.join(
-                [
-                    "sudo",
+                (["sudo"] if args.platform != "macos" else [])
+                + [
                     sys.executable,
                     str(args.directory / "bootstrap/install_services.py"),
                     "--directory",
                     str(args.directory),
                     "--resume",
                 ]
+                + (["--platform", "macos"] if args.platform == "macos" else [])
             )
         )
     else:

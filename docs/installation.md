@@ -82,6 +82,9 @@ Linux LAN access. macOS supports DNS, RADIUS and CA using Docker Desktop below.
 
 ### macOS
 
+macOS support requires a published release containing the platform-aware helper
+and macOS Compose template. Older Linux-only releases cannot install on macOS.
+
 On Intel and Apple silicon Macs, install [Homebrew](https://brew.sh) first, then
 run the same downloaded installer as your desktop user, without `sudo`. It uses
 Homebrew to install Docker Desktop if Desktop is missing, plus Python 3.13
@@ -117,12 +120,12 @@ curl -fsSL --connect-timeout 10 --max-time 120 https://raw.githubusercontent.com
 After a successful download, preview a selection:
 
 ```sh
-bash install.sh --yes --dry-run --address 192.0.2.10 --interface eth0 \
-  --dns yes --dhcp kea --radius yes --ca yes
+bash install.sh --yes --dry-run --address 192.0.2.10 \
+  --dns yes --dhcp none --radius yes --ca yes
 ```
 
-Replace the documentation address/interface with your host's fixed LAN address
-and interface. Remove `--dry-run` to install. `--yes` accepts defaults and package
+Replace the documentation address with the host's fixed LAN address. On Linux,
+add `--dhcp kea` or `--dhcp isc` with `--interface eth0` to include DHCP. Remove `--dry-run` to install. `--yes` accepts defaults and package
 installation without further prompts. Pass options to the downloaded `install.sh`;
 the bootstrap and repository-key transfers have connection and total time limits.
 
@@ -140,7 +143,8 @@ bash install.sh --yes --address 192.0.2.10 \
   --dns no --dhcp none --radius yes --ca no
 ```
 
-The default directory is `/opt/netadmin`; override it with `--directory`.
+The default directory is `/opt/netadmin` on Linux and
+`~/Library/Application Support/NetAdmin` on macOS; override it with `--directory`.
 `--version X.Y.Z` selects an explicit release. By default the installer resolves
 the latest verified stable GitHub release once and downloads the Compose
 template and bootstrap scripts from that exact tag. Every selected image uses the same
@@ -156,8 +160,12 @@ state. Failed pulls/startups retain state and never report success. To retry
 unchanged:
 
 ```sh
-bash install.sh --directory /opt/netadmin --resume --yes
+bash install.sh --resume --yes
 ```
+
+The retry above uses the platform default directory. If you used a custom path,
+include the same `--directory` again. Resume rejects a saved platform mismatch,
+DHCP on macOS, and remote Docker endpoints before starting services.
 
 An existing deployment directory is never overwritten. `--resume` uses its saved
 service selection, image versions and keys; it does not change services or perform

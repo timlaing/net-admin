@@ -8,10 +8,10 @@ original_arguments=("$@")
 usage() {
   cat <<'EOF'
 Usage: install.sh [options]
-  --directory PATH         Deployment directory (default /opt/netadmin)
+  --directory PATH         Deployment directory (Linux: /opt/netadmin; macOS: ~/Library/Application Support/NetAdmin)
   --address IPV4           Fixed LAN address of this host
   --interface NAME         LAN interface for DHCP (for example eth0)
-  --dhcp isc|kea|none       DHCP backend (default kea)
+  --dhcp isc|kea|none       DHCP backend (Linux default kea; macOS default none)
   --dns yes|no             Include Bind DNS (default yes)
   --radius yes|no          Include FreeRADIUS (default yes)
   --ca yes|no              Include the managed CA (default yes)
@@ -266,9 +266,39 @@ fi
 docker info >/dev/null || fail 'Docker is installed but unavailable. Start/fix its daemon and rerun.'
 docker compose version >/dev/null
 fi
+# Saved helpers may predate platform checks, so enforce them in the bootstrap too.
+"$python_command" - "$directory" "$platform" "$resume" <<'PREFLIGHT'
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+directory, platform, resume = sys.argv[1:]
+if resume == 'true':
+    state = json.loads((Path(directory) / 'installation.json').read_text())
+    if state.get('schema') != 1 or state.get('project') != 'netadmin-services':
+        raise SystemExit('Unrecognized installer deployment')
+    if state.get('platform', 'linux') != platform:
+        raise SystemExit('Saved deployment platform does not match this host')
+    if platform == 'macos' and state.get('dhcp') != 'none':
+        raise SystemExit('Saved macOS deployment cannot enable DHCP')
+context = json.loads(subprocess.run(['docker', 'context', 'inspect'], check=True,
+                                  capture_output=True, timeout=10).stdout)
+endpoint = context[0]['Endpoints']['docker']['Host']
+if not os.environ.get('DOCKER_CONTEXT'):
+    endpoint = os.environ.get('DOCKER_HOST') or endpoint
+if not endpoint.startswith('unix://'):
+    raise SystemExit('Remote Docker contexts are not supported')
+PREFLIGHT
 if [[ "$resume" == true ]]; then
   [[ -f "$directory/bootstrap/install_services.py" ]] || fail 'No installer deployment found to resume.'
-  exec "$python_command" "$directory/bootstrap/install_services.py" --directory "$directory" --resume
+  resume_args=(--directory "$directory" --resume)
+  if [[ "$platform" == macos ]]; then
+    "$python_command" "$directory/bootstrap/install_services.py" --help | grep -q -- --platform || fail 'The saved helper does not support macOS.'
+    resume_args+=(--platform macos)
+  fi
+  exec "$python_command" "$directory/bootstrap/install_services.py" "${resume_args[@]}"
 fi
 # Ignore newer releases whose images/assets have not finished publication.
 if [[ "$version" == latest ]]; then
@@ -320,7 +350,11 @@ else
     "https://raw.githubusercontent.com/timlaing/net-admin/v$version/scripts/install_services.py" \
     -o "$temporary/install_services.py"
 fi
-args=(--directory "$directory" --address "$address" --interface "$interface" --dns "$dns" --dhcp "$dhcp" --radius "$radius" --ca "$ca" --version "$version" --platform "$platform")
+args=(--directory "$directory" --address "$address" --interface "$interface" --dns "$dns" --dhcp "$dhcp" --radius "$radius" --ca "$ca" --version "$version")
+if [[ "$platform" == macos ]]; then
+  "$python_command" "$temporary/install_services.py" --help | grep -q -- --platform || fail 'This release predates macOS support. Select a macOS-capable release.'
+  args+=(--platform macos)
+fi
 [[ "$prepare_only" == false ]] || args+=(--prepare-only)
 [[ -z "$source_directory" ]] || args+=(--source-directory "$source_directory")
 "$python_command" "$temporary/install_services.py" "${args[@]}"
