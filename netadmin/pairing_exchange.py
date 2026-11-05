@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import hmac
 import http.client
 import ipaddress
 import json
 import secrets
+import socket
 import ssl
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -17,6 +20,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 LIMIT = 65_536
+CLAIM_SECONDS = 30
+CONNECTION_SECONDS = 5
 PORTS = {"dns": 8083, "dhcp": 8081, "radius": 8082, "ca": 8084}
 
 
@@ -45,8 +50,30 @@ def parse_code(code: str) -> tuple[str, int, str, str]:
     return str(address), parsed.port, token, fingerprint
 
 
+def close_socket(peer: socket.socket) -> None:
+    """Interrupt buffered TLS reads as well as raw reads when a hard deadline expires."""
+    with contextlib.suppress(OSError):
+        peer.shutdown(socket.SHUT_RDWR)
+    peer.close()
+
+
+def read_response(response: http.client.HTTPResponse, deadline: float) -> bytes:
+    """Bound aggregate response time and bytes, even when the peer trickles data."""
+    content = bytearray()
+    while len(content) <= LIMIT:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Pairing response deadline expired")
+        chunk = response.read1(min(4096, LIMIT + 1 - len(content)))
+        if not chunk:
+            return bytes(content)
+        content.extend(chunk)
+    raise ValueError("Pairing response exceeds limit")
+
+
 def claim(code: str) -> dict[str, Any]:
     """Pin TLS before transmitting the single-use secret; bound time and response size."""
+    deadline = time.monotonic() + CLAIM_SECONDS
     host, port, token, fingerprint = parse_code(code)
     # Retrieve public identity only, then authenticate it using the out-of-band pin.
     certificate = ssl.get_server_certificate((host, port), timeout=10)
@@ -58,22 +85,31 @@ def claim(code: str) -> dict[str, Any]:
     # Trust only this pinned leaf while retaining SAN, validity and usage checks.
     context.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN  # pylint: disable=no-member
     connection = http.client.HTTPSConnection(host, port, context=context, timeout=10)
+    timer = None
     try:
+        connection.connect()
+        peer = connection.sock
+        remaining = deadline - time.monotonic()
+        if peer is None or remaining <= 0:
+            raise TimeoutError("Pairing connection deadline expired")
+        timer = threading.Timer(remaining, close_socket, args=(peer,))
+        timer.daemon = True
+        timer.start()
         connection.request(
             "POST", "/claim", headers={"Authorization": f"Bearer {token}", "Content-Length": "0"}
         )
-        response = connection.getresponse()
-        if response.status != 200:
-            raise ValueError("Pairing code expired or already used")
-        content = response.read(LIMIT + 1)
-        if len(content) > LIMIT:
-            raise ValueError("Pairing response exceeds limit")
+        with connection.getresponse() as response:
+            if response.status != 200:
+                raise ValueError("Pairing code expired or already used")
+            content = read_response(response, deadline)
         payload = json.loads(content)
         if not isinstance(payload, dict):
             raise ValueError("Invalid pairing response")
         payload["address"] = host
         return payload
     finally:
+        if timer is not None:
+            timer.cancel()
         connection.close()
 
 
@@ -114,8 +150,19 @@ def serve(directory: Path, port: int = 8085, lifetime: int = 600) -> None:
 
         def setup(self) -> None:
             """Keep slow clients from extending the bounded enrollment window."""
-            self.request.settimeout(5)
+            duration = max(0.01, min(CONNECTION_SECONDS, deadline - time.monotonic()))
+            self.request.settimeout(duration)
+            self.deadline_timer = threading.Timer(duration, close_socket, args=(self.request,))
+            self.deadline_timer.daemon = True
+            self.deadline_timer.start()
             super().setup()
+
+        def finish(self) -> None:
+            """Cancel the hard timeout once the connection has finished normally."""
+            try:
+                super().finish()
+            finally:
+                self.deadline_timer.cancel()
 
         def log_message(self, format: str, *args: Any) -> None:
             """Never log tokens or credential payloads."""

@@ -20,6 +20,7 @@ from netadmin.connections import (
     env_key,
     settings_with_connections,
 )
+from netadmin.pairing_credentials import environment_uses
 from netadmin.pairing_exchange import PORTS, claim
 from netadmin.preferences import env_path, write_env_file
 
@@ -65,6 +66,9 @@ def validate_identity(payload: dict[str, Any]) -> None:
         not in certificate.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
     ):
         raise ValueError("Client authentication certificate required")
+    usage = certificate.extensions.get_extension_for_class(x509.KeyUsage).value
+    if not usage.digital_signature and not usage.key_agreement:
+        raise ValueError("Client certificate needs signature or key agreement usage")
     if key.public_key().public_bytes(
         serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
     ) != certificate.public_key().public_bytes(
@@ -81,6 +85,7 @@ def enroll(settings: Settings, code: str) -> dict[str, Any]:
     target = env_path().parent / "pki" / ("paired-" + secrets.token_hex(16))
     target.mkdir(parents=True, mode=0o700)
     try:
+        (target / ".managed").touch(mode=0o600)
         for field, name in (("ca", "ca.crt"), ("certificate", "client.crt"), ("key", "client.key")):
             path = target / name
             with os.fdopen(
@@ -95,22 +100,20 @@ def enroll(settings: Settings, code: str) -> dict[str, Any]:
             agent_key=str(target / "client.key"),
         )
         for name, port in PORTS.items():
-            values[f"{name}_enabled"] = str(name in services).lower()
+            flag = "radius_admin_enabled" if name == "radius" else f"{name}_enabled"
+            values[flag] = str(name in services).lower()
             if name in services:
                 values[f"{name}_agent_url"] = f"https://{payload['address']}:{port}"
         values["dns_use_agent"] = str("dns" in services).lower()
+        if "dns" not in services:
+            values["dns_config_path"] = ""
         values["ca_management_token"] = payload["management_token"]
-        # RADIUS login policy requires a configured NAS/shared secret. Preserve
-        # administration URL, but let the operator enable login after adding its client.
-        if "radius" in services:
-            values["radius_host"] = payload["address"]
-            if not values["radius_secret"]:
-                values["radius_enabled"] = "false"
         if configuration_errors(values):
             raise ValueError("Imported connections are invalid")
         replacements = connection_extensions(settings_with_connections(settings, values))
         write_env_file({env_key(field): value for field, value in values.items()})
         return replacements
     except BaseException:
-        shutil.rmtree(target)
+        if not environment_uses(target):
+            shutil.rmtree(target)
         raise

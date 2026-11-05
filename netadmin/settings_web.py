@@ -39,6 +39,7 @@ from netadmin.connections import (
     test_connection,
 )
 from netadmin.pairing import enroll
+from netadmin.pairing_credentials import retire
 from netadmin.preferences import read_env_file, write_env_file
 from netadmin.store import Store
 
@@ -192,7 +193,8 @@ def pair_installation() -> Any:
     if len(code) > 512:
         return render_template(ERROR_TEMPLATE, message="Invalid pairing code."), 400
     try:
-        replacements = enroll(cast(Settings, extension("netadmin_settings")), code)
+        previous = cast(Settings, extension("netadmin_settings"))
+        replacements = enroll(previous, code)
     except (
         OSError,
         ValueError,
@@ -210,12 +212,16 @@ def pair_installation() -> Any:
             ),
         ), 400
     current_app.extensions.update(replacements)
+    try:
+        retire(previous, replacements["netadmin_settings"])
+    except OSError:
+        current_app.logger.warning("Could not mark superseded pairing credentials for cleanup.")
     cast(Store, extension("netadmin_store")).audit(
         current_identity().username, "settings.pair", "installation", True
     )
     flash(
-        "Installation paired. Test active connections. For RADIUS login, "
-        "configure this app as a RADIUS client before enabling RADIUS.",
+        "Installation paired. Test active connections. RADIUS login settings were preserved. "
+        "Configure RADIUS clients through administration before enabling new logins.",
         "success",
     )
     return redirect(url_for(SETTINGS_PAGE))

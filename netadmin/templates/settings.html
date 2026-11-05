@@ -24,7 +24,7 @@
   {% else %}<section class="card settings-section"><div class="card-body"><span class="service-glyph">{{ icon(title|lower) }}</span><h2 class="h4">{{ title }}</h2>{% endif %}
   {% if title == 'DNS' %}<p>Choose one connection mode. The DNS agent manages zones and records using its local Bind credentials. Turn it off to configure direct Bind access below.</p>{% endif %}
   {% if title == 'DHCP' %}<p>Manage reservations and leases through your existing DHCP agent. The agent reports whether it manages ISC DHCPD or Kea; its backend is configured on the agent.</p>{% endif %}
-  {% if title == 'RADIUS' %}<p>The authentication server and administration agent are separate connections. Root login remains available when RADIUS is disabled.</p>{% endif %}
+  {% if title == 'RADIUS' %}<p>Administration and login are independent. Enable administration to configure clients before enabling RADIUS login. Pairing keeps your existing login host, secret and enablement. Root login remains available.</p>{% endif %}
   {% if title == 'Agent security' %}<p>Use the token already configured on your agents. Provision certificates inside NetAdmin separately; paths refer to this app's filesystem. All enabled agents must trust this client certificate and accept this token.</p>{% endif %}
   {% if title == 'Direct Bind' %}<p>Used only when Use DNS agent is off. Match the TSIG key configured on Bind and enter zone names or a readable local Bind configuration.</p>{% endif %}
   <div class="settings-grid">

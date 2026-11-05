@@ -227,7 +227,10 @@ docker compose version >/dev/null
 if [[ "$resume" == true ]]; then
   [[ -f "$directory/bootstrap/install_services.py" ]] || fail 'No installer deployment found to resume.'
   resume_args=(--directory "$directory" --resume)
-  [[ "$pair" == false ]] || resume_args+=(--pair)
+  if [[ "$pair" == true ]]; then
+    "$python_command" "$directory/bootstrap/install_services.py" --help | grep -q -- --pair || fail "This saved installer predates pairing. Use manual credentials or a new deployment from a pairing-capable release."
+    resume_args+=(--pair)
+  fi
   exec "$python_command" "$directory/bootstrap/install_services.py" "${resume_args[@]}"
 fi
 # Ignore newer releases whose images/assets have not finished publication.
@@ -282,7 +285,10 @@ else
 fi
 args=(--directory "$directory" --address "$address" --interface "$interface" --dns "$dns" --dhcp "$dhcp" --radius "$radius" --ca "$ca" --version "$version")
 [[ "$prepare_only" == false ]] || args+=(--prepare-only)
-[[ "$pair" == false ]] || args+=(--pair)
+if [[ "$pair" == true ]]; then
+  "$python_command" "$temporary/install_services.py" --help | grep -q -- --pair || fail 'The selected release predates pairing. Select a pairing-capable release or use manual credentials.'
+  args+=(--pair)
+fi
 [[ -z "$source_directory" ]] || args+=(--source-directory "$source_directory")
 "$python_command" "$temporary/install_services.py" "${args[@]}"
 }

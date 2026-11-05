@@ -25,12 +25,25 @@ DIRECT_BIND = "Direct Bind"
 NOT_CONFIGURED = "Not configured"
 
 SECRET_FIELDS = ("dns_tsig_secret", "radius_secret", "agent_token", "ca_management_token")
-BOOLEAN_FIELDS = ("dns_enabled", "dhcp_enabled", "radius_enabled", "ca_enabled", "dns_use_agent")
+BOOLEAN_FIELDS = (
+    "dns_enabled",
+    "dhcp_enabled",
+    "radius_enabled",
+    "radius_admin_enabled",
+    "ca_enabled",
+    "dns_use_agent",
+)
 PATH_FIELDS = ("dns_config_path", "agent_ca", "agent_cert", "agent_key")
 SECTIONS = {
     "DNS": ("dns_enabled", "dns_use_agent", "dns_agent_url"),
     "DHCP": ("dhcp_enabled", "dhcp_agent_url"),
-    "RADIUS": ("radius_enabled", "radius_agent_url", "radius_host", "radius_secret"),
+    "RADIUS": (
+        "radius_admin_enabled",
+        "radius_enabled",
+        "radius_agent_url",
+        "radius_host",
+        "radius_secret",
+    ),
     "CA": ("ca_enabled", "ca_agent_url", "ca_management_token"),
     AGENT_SECURITY: ("agent_token", "agent_ca", "agent_cert", "agent_key"),
     DIRECT_BIND: (
@@ -62,6 +75,7 @@ def normalize_connection(field: str, value: str) -> str:
 def connection_values(settings: Settings) -> dict[str, str]:
     """Serialize connections for persistence; never place these in a cookie."""
     data = asdict(settings)
+    data["radius_admin_enabled"] = settings.service_enabled("radius")
     return {
         field: ",".join(value)
         if isinstance(value, tuple)
@@ -160,7 +174,8 @@ class ConnectionForm(FlaskForm):  # type: ignore[misc]
     dns_config_path = text_field("Local Bind configuration path (optional)", 1024)
     dhcp_enabled = BooleanField("Enable DHCP administration")
     dhcp_agent_url = text_field("DHCP agent HTTPS URL")
-    radius_enabled = BooleanField("Enable RADIUS administration and login")
+    radius_enabled = BooleanField("Enable RADIUS login")
+    radius_admin_enabled = BooleanField("Enable RADIUS administration")
     radius_agent_url = text_field("RADIUS agent HTTPS URL")
     radius_host = text_field("RADIUS authentication server")
     radius_secret = PasswordField("RADIUS shared secret", validators=[Length(max=253)])
@@ -264,7 +279,8 @@ def _agent_errors(values: dict[str, str]) -> dict[str, str]:
     for service in ("dns", "dhcp", "radius", "ca"):
         if service == "dns" and values["dns_use_agent"] != "true":
             continue
-        if values[f"{service}_enabled"] != "true":
+        flag = "radius_admin_enabled" if service == "radius" else f"{service}_enabled"
+        if values[flag] != "true":
             continue
         field = f"{service}_agent_url"
         if not _valid_agent_url(values[field]):
@@ -318,7 +334,7 @@ class ConnectionResult:
 
 def agent_status(settings: Settings, service: str) -> ConnectionResult:
     """Check agent transport without requiring DNS transfer or RADIUS login permissions."""
-    if not getattr(settings, f"{service}_enabled"):
+    if not settings.service_enabled(service):
         return ConnectionResult("Disabled", "Enable this service in Settings when you need it.")
     if service == "dns" and not settings.dns_use_agent:
         return ConnectionResult(
@@ -360,7 +376,7 @@ def test_connection(settings: Settings, service: str) -> ConnectionResult:
     if service == "ca":
         return agent_status(settings, service)
     values = connection_values(settings)
-    if values[f"{service}_enabled"] != "true":
+    if not settings.service_enabled(service):
         return ConnectionResult("Disabled", "Enable this service in Settings when you need it.")
     errors = configuration_errors(values)
     fields = set(SECTIONS[service.upper()])

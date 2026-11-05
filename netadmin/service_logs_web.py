@@ -72,7 +72,7 @@ LABELS = {
 
 def _load(service: str, resource: str) -> dict[str, Any]:
     settings = cast(Settings, extension("netadmin_settings"))
-    if not getattr(settings, f"{service}_enabled"):
+    if not settings.service_enabled(service):
         return {"status": "unavailable", "rows": [], "reason": "Service is disabled."}
     agent: AgentClient
     if service == "dns":

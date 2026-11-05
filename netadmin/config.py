@@ -61,9 +61,16 @@ class Settings:  # pylint: disable=too-many-instance-attributes
     dns_enabled: bool = True
     dhcp_enabled: bool = True
     radius_enabled: bool = True
+    radius_admin_enabled: bool | None = None
     ingress_require_login: bool = True
     ca_management_token: str = ""
     ca_enabled: bool = False
+
+    def service_enabled(self, service: str) -> bool:
+        """Keep legacy RADIUS behavior unless administration is configured separately."""
+        if service == "radius" and self.radius_admin_enabled is not None:
+            return self.radius_admin_enabled
+        return bool(getattr(self, f"{service}_enabled"))
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -114,6 +121,11 @@ class Settings:  # pylint: disable=too-many-instance-attributes
             dns_enabled=_choice("NETADMIN_DNS_ENABLED", "true", {"true", "false"}) == "true",
             dhcp_enabled=_choice("NETADMIN_DHCP_ENABLED", "true", {"true", "false"}) == "true",
             radius_enabled=_choice("NETADMIN_RADIUS_ENABLED", "true", {"true", "false"}) == "true",
+            radius_admin_enabled=(
+                None
+                if os.getenv("NETADMIN_RADIUS_ADMIN_ENABLED") is None
+                else _choice("NETADMIN_RADIUS_ADMIN_ENABLED", "true", {"true", "false"}) == "true"
+            ),
             ingress_require_login=_choice(
                 "NETADMIN_INGRESS_REQUIRE_LOGIN", "true", {"true", "false"}
             )

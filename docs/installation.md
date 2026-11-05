@@ -152,7 +152,8 @@ token from `secrets/management-token`. Use **Test active connections**.
 ### One-time pairing
 
 Use `bash install.sh --pair` with your service choices to offer enrollment after
-startup. For an existing installation, use `bash install.sh --resume --pair
+startup. Pairing requires a release that includes this feature. For an installation
+created by such a release, use `bash install.sh --resume --pair
 --directory /opt/netadmin --yes`. Instead, you can run the pairing command printed
 by the installer (also available as `sudo python3 /opt/netadmin/bootstrap/pairing.py
 --directory /opt/netadmin`). Keep that terminal open. In the Home Assistant app,
@@ -167,15 +168,20 @@ The host closes enrollment after one claim, including an interrupted transfer;
 run the command again to recover. No transport authority or managed CA private
 keys are transferred. Codes and credentials must not be pasted into logs or chat.
 
-RADIUS authentication policy remains separate: add the app as a RADIUS client
-and configure its login shared secret before enabling RADIUS login. Pairing saves
-the administration agent URL but leaves RADIUS disabled if no login secret exists.
+RADIUS administration and login are independent. Pairing enables administration
+for installed RADIUS services and imports their agent URL, while preserving your
+existing login host, shared secret and login enablement. Add the app as a RADIUS
+client through administration before configuring or enabling new RADIUS logins.
+`NETADMIN_RADIUS_ADMIN_ENABLED` controls administration; if unset, it follows the
+legacy `NETADMIN_RADIUS_ENABLED` flag. Both have separate switches in Settings.
 Manual credential setup above remains supported. QR scanning is not required.
 
 Keep the deployment directory and Docker volumes in protected backups. Transport
 identities expire after one year; reissue them using the retained transport CA
 before expiry. Pairing transfers the existing client identity; it does not rotate
-keys or extend certificate validity.
+keys or extend certificate validity. Superseded app-owned paired credentials
+are removed after successful activation once in-flight requests have released
+them. Manually provisioned credentials are left alone.
 
 ### Configure the network
 
