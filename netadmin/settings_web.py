@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import http.client
 import os
 from datetime import UTC, datetime
 from typing import Any, cast
 
 import dns.exception
+from cryptography import x509
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from flask import (  # pylint: disable=wrong-import-order
     Blueprint,
     current_app,
@@ -35,6 +38,7 @@ from netadmin.connections import (
     settings_with_connections,
     test_connection,
 )
+from netadmin.pairing import enroll
 from netadmin.preferences import read_env_file, write_env_file
 from netadmin.store import Store
 
@@ -172,4 +176,45 @@ def reload_connections() -> Any:
         current_identity().username, "settings.reload", "connections", True
     )
     flash("Saved connections reloaded. No restart needed.", "success")
+    return redirect(url_for("connections.settings_page"))
+
+
+@connection_web.post("/settings/pair")
+@admin_required
+def pair_installation() -> Any:
+    """Consume a host-issued code only after authenticated administrator consent."""
+    if os.getenv("NETADMIN_ADDON") != "1":
+        return render_template(
+            ERROR_TEMPLATE, message="Pairing requires Home Assistant settings storage."
+        ), 403
+    code = request.form.get("pairing_code", "")
+    if len(code) > 512:
+        return render_template(ERROR_TEMPLATE, message="Invalid pairing code."), 400
+    try:
+        replacements = enroll(cast(Settings, extension("netadmin_settings")), code)
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        http.client.HTTPException,
+        x509.ExtensionNotFound,
+        InvalidSignature,
+        UnsupportedAlgorithm,
+    ):
+        return render_template(
+            ERROR_TEMPLATE,
+            message=(
+                "Pairing failed. Request a new code from the host. Existing connections were kept."
+            ),
+        ), 400
+    current_app.extensions.update(replacements)
+    cast(Store, extension("netadmin_store")).audit(
+        current_identity().username, "settings.pair", "installation", True
+    )
+    flash(
+        "Installation paired. Test active connections. For RADIUS login, "
+        "configure this app as a RADIUS client before enabling RADIUS.",
+        "success",
+    )
     return redirect(url_for("connections.settings_page"))

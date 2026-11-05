@@ -19,6 +19,7 @@ Usage: install.sh [options]
   --yes                    Accept defaults without interactive prompts
   --dry-run                Describe actions without downloads or changes
   --prepare-only           Prepare and validate, but do not start containers
+  --pair                   Offer a ten-minute one-time pairing code after startup
   --resume                 Resume an existing installer deployment unchanged
   --source-directory PATH  Use local deployment assets for development
 
@@ -28,6 +29,7 @@ Existing Docker installations are reused; conflicting packages are not removed.
 EOF
 }
 directory=/opt/netadmin address='' interface='' dns='' dhcp='' radius='' ca=''
+pair=false
 version=latest yes=false dry_run=false prepare_only=false resume=false source_directory=''
 while (($#)); do
   case "$1" in
@@ -43,6 +45,7 @@ while (($#)); do
     --yes) yes=true; shift ;;
     --dry-run) dry_run=true; shift ;;
     --prepare-only) prepare_only=true; shift ;;
+    --pair) pair=true; shift ;;
     --resume) resume=true; shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -223,7 +226,9 @@ docker info >/dev/null || fail 'Docker is installed but unavailable. Start/fix i
 docker compose version >/dev/null
 if [[ "$resume" == true ]]; then
   [[ -f "$directory/bootstrap/install_services.py" ]] || fail 'No installer deployment found to resume.'
-  exec "$python_command" "$directory/bootstrap/install_services.py" --directory "$directory" --resume
+  resume_args=(--directory "$directory" --resume)
+  [[ "$pair" == false ]] || resume_args+=(--pair)
+  exec "$python_command" "$directory/bootstrap/install_services.py" "${resume_args[@]}"
 fi
 # Ignore newer releases whose images/assets have not finished publication.
 if [[ "$version" == latest ]]; then
@@ -277,6 +282,7 @@ else
 fi
 args=(--directory "$directory" --address "$address" --interface "$interface" --dns "$dns" --dhcp "$dhcp" --radius "$radius" --ca "$ca" --version "$version")
 [[ "$prepare_only" == false ]] || args+=(--prepare-only)
+[[ "$pair" == false ]] || args+=(--pair)
 [[ -z "$source_directory" ]] || args+=(--source-directory "$source_directory")
 "$python_command" "$temporary/install_services.py" "${args[@]}"
 }

@@ -149,11 +149,33 @@ for DHCP enter the agent URL and check its reported ISC/Kea backend. The backend
 is configured on the agent, not selected in the app. For CA, enter the separate
 token from `secrets/management-token`. Use **Test active connections**.
 
-QR/one-time enrollment is not implemented yet; the generated credentials work
-with the existing Settings flow. Keep the deployment directory and Docker volumes
-in protected backups. Transport identities expire after one year; reissue them
-using the retained transport CA before expiry. Re-running the installer never
-rotates keys or extends certificates automatically.
+### One-time pairing
+
+Use `bash install.sh --pair` with your service choices to offer enrollment after
+startup. For an existing installation, use `bash install.sh --resume --pair
+--directory /opt/netadmin --yes`. Instead, you can run the pairing command printed
+by the installer (also available as `sudo python3 /opt/netadmin/bootstrap/pairing.py
+--directory /opt/netadmin`). Keep that terminal open. In the Home Assistant app,
+open **Settings → Pair installation**, paste the `netadmin-pair://...` code and
+choose **Pair installation**. This replaces the current agent connections with
+this host's selected services. Test the active connections afterward.
+
+The code contains a random single-use secret and a certificate fingerprint.
+It expires after ten minutes; TCP port 8085 must be reachable from the app during
+that window only. The app pins the host certificate before sending the secret.
+The host closes enrollment after one claim, including an interrupted transfer;
+run the command again to recover. No transport authority or managed CA private
+keys are transferred. Codes and credentials must not be pasted into logs or chat.
+
+RADIUS authentication policy remains separate: add the app as a RADIUS client
+and configure its login shared secret before enabling RADIUS login. Pairing saves
+the administration agent URL but leaves RADIUS disabled if no login secret exists.
+Manual credential setup above remains supported. QR scanning is not required.
+
+Keep the deployment directory and Docker volumes in protected backups. Transport
+identities expire after one year; reissue them using the retained transport CA
+before expiry. Pairing transfers the existing client identity; it does not rotate
+keys or extend certificate validity.
 
 ### Configure the network
 
