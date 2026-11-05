@@ -2,9 +2,7 @@
 # Provision /pki/dns-agent certificates (server SAN: dns) before starting.
 services:
   dns-agent:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.dns-agent
+    image: ghcr.io/timlaing/netadmin-dns-agent:${NETADMIN_VERSION:-latest}
     restart: unless-stopped
     network_mode: service:dns
     depends_on: [dns]

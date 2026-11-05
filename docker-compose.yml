@@ -1,9 +1,7 @@
 services:
 
   netadmin:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/timlaing/netadmin:${NETADMIN_VERSION:-latest}
     container_name: netadmin
     restart: unless-stopped
     depends_on: [dns, radius, dhcp-agent, radius-agent]
@@ -22,9 +20,7 @@ services:
       - "./pki:/pki:ro"
 
   dhcp-agent:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.dhcp-agent
+    image: ghcr.io/timlaing/netadmin-dhcp-agent:${NETADMIN_VERSION:-latest}
     restart: unless-stopped
     pid: service:dhcp
     depends_on: [dhcp]
@@ -40,9 +36,7 @@ services:
       - "./pki/dhcp-agent:/pki:ro"
 
   radius-agent:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.radius-agent
+    image: ghcr.io/timlaing/netadmin-radius-agent:${NETADMIN_VERSION:-latest}
     restart: unless-stopped
     pid: service:radius
     depends_on: [radius]
@@ -70,10 +64,7 @@ services:
       - "./pki/radius-agent:/pki:ro"
 
   dhcp:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.dhcpd
-    image: ghcr.io/timlaing/netadmin-dhcp
+    image: ghcr.io/timlaing/netadmin-dhcp:${NETADMIN_VERSION:-latest}
     container_name: dhcp
     hostname: dhcp
     restart: unless-stopped
@@ -99,10 +90,7 @@ services:
       - "/var/lib/dhcp/dhcpd.leases"
 
   dns:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.bind
-    image: ghcr.io/timlaing/netadmin-dns
+    image: ghcr.io/timlaing/netadmin-dns:${NETADMIN_VERSION:-latest}
     container_name: dns
     hostname: dns-master
     restart: unless-stopped
@@ -135,10 +123,7 @@ services:
       - "./dns/zones/rev:/var/bind/rev"
 
   radius:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.freeradius
-    image: ghcr.io/timlaing/netadmin-radius
+    image: ghcr.io/timlaing/netadmin-radius:${NETADMIN_VERSION:-latest}
     container_name: freeradius
     hostname: radius
     restart: unless-stopped

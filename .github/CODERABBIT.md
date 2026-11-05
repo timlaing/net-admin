@@ -5,6 +5,10 @@ repository and organization preferences. Automatic and incremental reviews stay
 disabled: **CodeRabbit after checks** requests reviews after successful CI.
 Dependabot is excluded from that workflow and does not depend on CodeRabbit approval.
 
+CodeRabbit can approve after reviewing the latest commit, resolving its required
+threads, and passing its pre-merge checks. Approval never bypasses GitHub merge
+requirements.
+
 The gate checks the current PR head and merge commit, reported jobs and commit
 statuses, workflow runs, and configured and live required check names. Failed,
 pending, neutral, cancelled, or missing required checks withhold reviews.

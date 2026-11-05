@@ -1,0 +1,167 @@
+# Fresh, service-only deployment. scripts/install.sh writes .env and initial files.
+# The Home Assistant app is installed separately. No local image builds.
+x-agent: &agent
+  restart: unless-stopped
+  env_file: ./agents.env
+
+services:
+  dns:
+    image: ghcr.io/timlaing/netadmin-dns:${NETADMIN_VERSION:?}
+    profiles: [dns]
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      NETADMIN_DNS_TSIG_SECRET: ${NETADMIN_DNS_TSIG_SECRET:?}
+    command: ["-c", "/etc/bind/named.conf", "-4"]
+    volumes:
+      - ./config/bind:/etc/bind:rw,z
+      - rndc-shared:/run/rndc
+
+  dns-agent:
+    <<: *agent
+    image: ghcr.io/timlaing/netadmin-dns-agent:${NETADMIN_VERSION:?}
+    profiles: [dns]
+    network_mode: host
+    depends_on: [dns]
+    environment:
+      DNS_SERVER: 127.0.0.1
+    command: ["sh", "-c", "exec gunicorn --bind $${AGENT_BIND_ADDRESS}:8083 --workers 1 --certfile /pki/server.crt --keyfile /pki/server.key --ca-certs /pki/ca.crt --cert-reqs 2 'netadmin.agents.dns:create_dns_agent()'"]
+    volumes:
+      - ./config/bind:/etc/bind:rw,z
+      - ./transport/dns:/pki:ro,z
+      - rndc-shared:/run/rndc:ro
+
+  dhcp-isc:
+    image: ghcr.io/timlaing/netadmin-dhcp:${NETADMIN_VERSION:?}
+    profiles: [isc]
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      DHCP_INTERFACE: ${DHCP_INTERFACE:?}
+    entrypoint: ["sh", "/bootstrap/isc-supervisor.sh"]
+    volumes:
+      - ./config/dhcp:/etc/dhcp:rw,z
+      - ./leases:/var/lib/dhcp:rw,z
+      - ./bootstrap:/bootstrap:ro,z
+      - ./config/keys:/run/rndc:ro,z
+      - isc-control:/run/netadmin
+
+  dhcp-agent-isc:
+    <<: *agent
+    image: ghcr.io/timlaing/netadmin-dhcp-agent:${NETADMIN_VERSION:?}
+    profiles: [isc]
+    network_mode: host
+    pid: service:dhcp-isc
+    depends_on: [dhcp-isc]
+    environment:
+      DHCP_MAIN_CONFIG: /etc/dhcp/dhcpd.conf
+      DHCP_MANAGED_FILE: /etc/dhcp/netadmin-reservations.conf
+      DHCP_LEASES_FILE: /var/lib/dhcp/dhcpd.leases
+      DHCP_RELOAD_COMMAND: python3 /bootstrap/reload-isc.py
+    command: ["sh", "-c", "exec gunicorn --bind $${AGENT_BIND_ADDRESS}:8081 --workers 1 --certfile /pki/server.crt --keyfile /pki/server.key --ca-certs /pki/ca.crt --cert-reqs 2 'netadmin.agents.dhcp:create_dhcp_agent()'"]
+    volumes:
+      - ./config/dhcp:/etc/dhcp:rw,z
+      - ./leases:/var/lib/dhcp:ro,z
+      - ./transport/dhcp:/pki:ro,z
+      - ./bootstrap:/bootstrap:ro,z
+      - isc-control:/run/netadmin
+
+  dhcp-kea:
+    image: ghcr.io/timlaing/netadmin-dhcp-kea:${NETADMIN_VERSION:?}
+    profiles: [kea]
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./config/dhcp:/etc/dhcp:rw,z
+      - ./leases:/var/lib/kea:rw,z
+      - ./config/keys:/run/rndc:ro,z
+      - kea-run:/run/kea
+
+  dhcp-agent-kea:
+    <<: *agent
+    image: ghcr.io/timlaing/netadmin-dhcp-agent:${NETADMIN_VERSION:?}
+    profiles: [kea]
+    network_mode: host
+    depends_on: [dhcp-kea]
+    environment:
+      DHCP_SERVER: kea
+      DHCP_MAIN_CONFIG: /etc/dhcp/kea4.conf
+      DHCP_MANAGED_FILE: /etc/dhcp/netadmin-reservations.json
+      DHCP_LEASES_FILE: /var/lib/kea/dhcp4.leases
+      DHCP_RELOAD_COMMAND: python3 -m netadmin.agents.kea_ctrl config-reload
+    command: ["sh", "-c", "exec gunicorn --bind $${AGENT_BIND_ADDRESS}:8081 --workers 1 --certfile /pki/server.crt --keyfile /pki/server.key --ca-certs /pki/ca.crt --cert-reqs 2 'netadmin.agents.dhcp:create_dhcp_agent()'"]
+    volumes:
+      - ./config/dhcp:/etc/dhcp:rw,z
+      - ./leases:/var/lib/kea:ro,z
+      - ./transport/dhcp:/pki:ro,z
+      - kea-run:/run/kea
+
+  radius:
+    image: ghcr.io/timlaing/netadmin-radius:${NETADMIN_VERSION:?}
+    profiles: [radius]
+    restart: unless-stopped
+    ports: ["${INSTALL_ADDRESS:?}:1812:1812/udp", "${INSTALL_ADDRESS:?}:1813:1813/udp"]
+    volumes:
+      - ./config/radius:/etc/raddb:rw,z
+      - radius-certs:/etc/raddb/certs
+
+  radius-agent:
+    <<: *agent
+    image: ghcr.io/timlaing/netadmin-radius-agent:${NETADMIN_VERSION:?}
+    profiles: [radius]
+    pid: service:radius
+    depends_on: [radius]
+    environment:
+      RADIUS_CERT_MANAGEMENT: "true"
+      RADIUS_AUTH_MANAGEMENT: "true"
+      RADIUS_RELOAD_COMMAND: kill -HUP 1
+    ports: ["${INSTALL_ADDRESS:?}:8082:8082"]
+    volumes:
+      - ./config/radius:/etc/raddb:rw,z
+      - radius-certs:/etc/raddb/certs
+      - ./transport/radius:/pki:ro,z
+
+  ca-runtime:
+    image: ghcr.io/timlaing/netadmin-ca-runtime:${NETADMIN_VERSION:?}
+    profiles: [ca]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, KILL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      CA_MANAGEMENT_TOKEN_FILE: /run/secrets/management-token
+    volumes:
+      - ca-state:/state
+      - ca-control:/control
+      - ./secrets/management-token:/run/secrets/management-token:ro,z
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    ports: ["${INSTALL_ADDRESS:?}:9100-9115:9100-9115"]
+
+  ca-agent:
+    <<: *agent
+    image: ghcr.io/timlaing/netadmin-ca-agent:${NETADMIN_VERSION:?}
+    profiles: [ca]
+    depends_on: [ca-runtime]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      CA_CONTROL_SOCKET: /control/ca.sock
+      CA_MANAGEMENT_TOKEN_FILE: /run/secrets/management-token
+    volumes:
+      - ca-control:/control:ro
+      - ca-agent-data:/data
+      - ./secrets/management-token:/run/secrets/management-token:ro,z
+      - ./transport/ca:/pki:ro,z
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    ports: ["${INSTALL_ADDRESS:?}:8084:8084"]
+
+volumes:
+  rndc-shared:
+  isc-control:
+  kea-run:
+  radius-certs:
+  ca-state:
+  ca-control:
+  ca-agent-data:
