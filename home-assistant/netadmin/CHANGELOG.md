@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026.11.0
+
+- Add integrated CA service controls and authority deletion safeguards.
+- Add selectable fresh-host installers for Linux and macOS, including DNS, RADIUS and CA services.
+- Pair service installations with NetAdmin using a one-time code.
+- Adopt calendar-based release numbering.
+
 ## 0.8.0
 
 - Add first-run CA setup in the interface: the CA runtime generates its encrypted root private key on first boot, and administrators choose certificate CN, subject, DNS/IP SANs, lifetime and hierarchy limits.
