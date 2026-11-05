@@ -22,12 +22,16 @@ Usage: install.sh [options]
   --resume                 Resume an existing installer deployment unchanged
   --source-directory PATH  Use local deployment assets for development
 
-Run on a dedicated Linux Docker host; sudo is requested when needed. Supports
+Run on Linux or macOS (DNS, RADIUS and CA only on macOS); sudo is requested when needed. Supports
 installation: Debian, Ubuntu, 64-bit Raspberry Pi OS, Fedora and RHEL.
 Existing Docker installations are reused; conflicting packages are not removed.
 EOF
 }
-directory=/opt/netadmin address='' interface='' dns='' dhcp='' radius='' ca=''
+platform=linux
+[[ "$(uname -s)" != Darwin ]] || platform=macos
+directory=/opt/netadmin
+[[ "$platform" != macos ]] || directory="$HOME/Library/Application Support/NetAdmin"
+address='' interface='' dns='' dhcp='' radius='' ca=''
 version=latest yes=false dry_run=false prepare_only=false resume=false source_directory=''
 while (($#)); do
   case "$1" in
@@ -65,7 +69,11 @@ ask() {
 }
 if [[ "$resume" == false ]]; then
   [[ -n "$dns" ]] || dns="$(ask 'Include Bind DNS: yes or no' yes)"
-  [[ -n "$dhcp" ]] || dhcp="$(ask 'DHCP backend: isc, kea or none' kea)"
+  if [[ "$platform" == macos ]]; then
+    [[ -n "$dhcp" ]] || dhcp=none
+  else
+    [[ -n "$dhcp" ]] || dhcp="$(ask 'DHCP backend: isc, kea or none' kea)"
+  fi
   [[ -n "$radius" ]] || radius="$(ask 'Include FreeRADIUS: yes or no' yes)"
   [[ -n "$ca" ]] || ca="$(ask 'Include managed certificate authority: yes or no' yes)"
   [[ -n "$address" ]] || address="$(ask 'Fixed IPv4 address of this host' '')"
@@ -83,8 +91,15 @@ fi
 if [[ "$resume" == false && -e "$directory" ]]; then
   fail 'Deployment directory exists. Use --resume for an installer deployment; no files overwritten.'
 fi
+if [[ "$platform" == macos && "$dhcp" != none && "$resume" == false ]]; then
+  fail "DHCP requires Linux; use --dhcp none on macOS."
+fi
 if [[ "$dry_run" == true ]]; then
-  echo "Would reuse Docker Engine/Compose, or install missing components from Docker's official repository."
+  if [[ "$platform" == macos ]]; then
+    echo "Would reuse or install Docker Desktop through Homebrew, start it and publish selected service ports."
+  else
+    echo "Would reuse Docker Engine/Compose, or install missing components from Docker's official repository."
+  fi
   if [[ "$resume" == true ]]; then
     echo "Would resume the saved deployment in $directory."
     echo 'Would reuse saved configuration, service selection, image versions and credentials.'
@@ -101,8 +116,37 @@ if [[ "$dry_run" == true ]]; then
   echo 'No packages, downloads, files or containers changed.'
   exit 0
 fi
-[[ "$(uname -s)" == Linux ]] || fail 'Install on Linux; host-network DHCP is required. --dry-run works elsewhere.'
-[[ "$(uname -m)" =~ ^(x86_64|aarch64)$ ]] || fail 'Published images require amd64 or arm64 (use 64-bit Raspberry Pi OS).'
+[[ "$(uname -s)" =~ ^(Linux|Darwin)$ ]] || fail 'Install on Linux or macOS.'
+[[ "$(uname -m)" =~ ^(x86_64|aarch64|arm64)$ ]] || fail 'Published images require amd64 or arm64 (use 64-bit Raspberry Pi OS).'
+if [[ "$platform" == macos ]]; then
+  [[ "$EUID" != 0 ]] || fail 'Run the macOS installer as your desktop user, without sudo.'
+  export PATH="$PATH:$HOME/.docker/bin:/Applications/Docker.app/Contents/Resources/bin"
+  if [[ "$yes" == false ]]; then
+    [[ "$(ask 'Install missing desktop dependencies and start selected services: yes or no' no)" == yes ]] || exit 0
+  fi
+  if ! command -v docker >/dev/null || { [[ ! -d /Applications/Docker.app ]] && [[ ! -d "$HOME/Applications/Docker.app" ]]; }; then
+    command -v brew >/dev/null || fail 'Install Homebrew from https://brew.sh, then rerun to install Docker Desktop.'
+    brew install --cask docker-desktop
+  fi
+  # Homebrew OpenSSL provides the certificate-generation flags used on Linux too.
+  if ! command -v brew >/dev/null; then
+    fail 'Install Homebrew from https://brew.sh for Python and OpenSSL 3, then rerun.'
+  fi
+  if ! brew list --versions python@3.13 >/dev/null 2>&1; then brew install python@3.13; fi
+  if ! brew list --versions openssl@3 >/dev/null 2>&1; then brew install openssl@3; fi
+  openssl_prefix="$(brew --prefix openssl@3)"
+  python_prefix="$(brew --prefix python@3.13)"
+  export PATH="$openssl_prefix/bin:$python_prefix/libexec/bin:$PATH"
+  python_command=python3
+  open -a Docker
+  echo 'Waiting for Docker Desktop. Complete its first-run setup in the app if prompted.'
+  deadline=$((SECONDS + 180))
+  until docker info >/dev/null 2>&1; do
+    (( SECONDS < deadline )) || fail 'Start Docker Desktop, complete its setup, then rerun the installer.'
+    sleep 3
+  done
+  docker compose version >/dev/null
+else
 if [[ "$EUID" != 0 ]]; then
   command -v sudo >/dev/null || fail 'sudo is required to install host packages and service files.'
   # A piped installer has no reusable source filename. Save the fully parsed
@@ -221,6 +265,7 @@ EOF
 fi
 docker info >/dev/null || fail 'Docker is installed but unavailable. Start/fix its daemon and rerun.'
 docker compose version >/dev/null
+fi
 if [[ "$resume" == true ]]; then
   [[ -f "$directory/bootstrap/install_services.py" ]] || fail 'No installer deployment found to resume.'
   exec "$python_command" "$directory/bootstrap/install_services.py" --directory "$directory" --resume
@@ -275,7 +320,7 @@ else
     "https://raw.githubusercontent.com/timlaing/net-admin/v$version/scripts/install_services.py" \
     -o "$temporary/install_services.py"
 fi
-args=(--directory "$directory" --address "$address" --interface "$interface" --dns "$dns" --dhcp "$dhcp" --radius "$radius" --ca "$ca" --version "$version")
+args=(--directory "$directory" --address "$address" --interface "$interface" --dns "$dns" --dhcp "$dhcp" --radius "$radius" --ca "$ca" --version "$version" --platform "$platform")
 [[ "$prepare_only" == false ]] || args+=(--prepare-only)
 [[ -z "$source_directory" ]] || args+=(--source-directory "$source_directory")
 "$python_command" "$temporary/install_services.py" "${args[@]}"

@@ -738,3 +738,134 @@ def test_documented_install_command_stops_when_download_fails(tmp_path, document
     )
     assert result.returncode == 22
     assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "dns,radius,ca",
+    [("yes", "no", "no"), ("no", "yes", "no"), ("no", "no", "yes"), ("yes", "yes", "yes")],
+)
+def test_macos_prepares_only_desktop_services(
+    installer, tmp_path, compose_available, dns, radius, ca
+):
+    """Prepare independent Mac service selections without host networking or DHCP."""
+    args = options(tmp_path, dns=dns, dhcp="none", radius=radius, ca=ca)
+    args.platform = "macos"
+    installer.validate(args, host=False)
+    installer.prepare(args)
+    config = yaml.safe_load((args.directory / "compose.yml").read_text())
+    assert not any(name.startswith("dhcp") for name in config["services"])
+    assert config["services"]["dns-agent"]["network_mode"] == "service:dns"
+    assert all(service.get("network_mode") != "host" for service in config["services"].values())
+    assert "${INSTALL_ADDRESS:?}:53:53/udp" in config["services"]["dns"]["ports"]
+    assert "AGENT_BIND_ADDRESS=0.0.0.0" in (args.directory / "agents.env").read_text()
+    assert json.loads((args.directory / "installation.json").read_text())["platform"] == "macos"
+    if dns == "yes":
+        assert "listen-on { any; };" in (args.directory / "config/bind/named.conf").read_text()
+
+
+def test_macos_rejects_dhcp_before_writes(installer, tmp_path):
+    """Do not claim LAN DHCP support through Desktop port forwarding."""
+    args = options(tmp_path)
+    args.platform = "macos"
+    with pytest.raises(ValueError, match="DHCP requires a native Linux host"):
+        installer.validate(args, host=False)
+    assert not args.directory.exists()
+
+
+def test_macos_probes_only_published_ports(installer, tmp_path, port_probe):
+    """Leave VM-only RNDC and loopback DNS ports out of Mac host preflight."""
+    args = options(tmp_path, dhcp="none")
+    args.platform = "macos"
+    installer.check_ports(args)
+    assert all(host == args.address and port != 953 for host, port, _ in port_probe.bindings)
+
+
+def test_macos_launcher_preview(tmp_path):
+    """A Mac preview selects Desktop and defaults DHCP off without mutation."""
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    uname = tools / "uname"
+    uname.write_text('#!/bin/sh\ncase "$1" in -s) echo Darwin;; -m) echo arm64;; esac\n')
+    uname.chmod(0o700)
+    result = subprocess.run(  # noqa: S603
+        [
+            "/bin/bash",
+            str(ROOT / "scripts/install.sh"),
+            "--yes",
+            "--dry-run",
+            "--address",
+            "192.0.2.10",
+            "--directory",
+            str(tmp_path / "new"),
+        ],
+        env={**os.environ, "PATH": str(tools) + os.pathsep + os.environ["PATH"]},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "Docker Desktop" in result.stdout
+    assert "DHCP=none" in result.stdout
+    assert not (tmp_path / "new").exists()
+
+
+def test_macos_bootstrap_reuses_desktop_without_root_or_linux_commands(tmp_path):
+    """Exercise dependency selection and helper handoff with mocked host commands."""
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    calls = tmp_path / "calls"
+    commands = {
+        "uname": 'case "$1" in -s) echo Darwin;; -m) echo arm64;; esac',
+        "docker": 'echo "docker $*" >> "$MAC_CALLS"; exit 0',
+        "brew": (
+            'echo "brew $*" >> "$MAC_CALLS"; if [ "$1" = --prefix ]; then echo "$MAC_TOOLS"; fi'
+        ),
+        "open": 'echo "open $*" >> "$MAC_CALLS"',
+        "curl": (
+            'echo "curl $*" >> "$MAC_CALLS"; while [ "$#" -gt 0 ]; do '
+            'if [ "$1" = -o ]; then shift; : > "$1"; fi; shift; done'
+        ),
+        "python3": 'echo "python $*" >> "$MAC_CALLS"',
+        "sudo": 'echo forbidden-sudo >> "$MAC_CALLS"; exit 99',
+        "apt-get": 'echo forbidden-apt >> "$MAC_CALLS"; exit 99',
+        "dnf": 'echo forbidden-dnf >> "$MAC_CALLS"; exit 99',
+    }
+    for name, body in commands.items():
+        command = tools / name
+        command.write_text("#!/bin/sh\n" + body + "\n")
+        command.chmod(0o700)
+    result = subprocess.run(  # noqa: S603
+        [
+            "/bin/bash",
+            str(ROOT / "scripts/install.sh"),
+            "--yes",
+            "--address",
+            "192.0.2.10",
+            "--version",
+            "1.2.3",
+            "--directory",
+            str(tmp_path / "deployment"),
+            "--dns",
+            "no",
+            "--radius",
+            "no",
+            "--ca",
+            "yes",
+        ],
+        env={
+            **os.environ,
+            "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+            "MAC_CALLS": str(calls),
+            "MAC_TOOLS": str(tools),
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.returncode == 0
+    recorded = calls.read_text()
+    assert "open -a Docker" in recorded
+    assert "brew list --versions python@3.13" in recorded
+    assert "docker compose version" in recorded
+    assert "--platform macos" in recorded
+    assert "--dhcp none" in recorded
+    assert "forbidden" not in recorded

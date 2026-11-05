@@ -77,8 +77,36 @@ missing dependencies and enables a newly installed Docker daemon. Existing
 Docker is reused; conflicting Podman/distribution Docker/containerd packages
 are reported for manual resolution rather than removed. RHEL hosts with an old
 system Python receive Python 3.11. The installer requires a local rootful Engine
-and a fixed IPv4 address already assigned to the selected host. macOS and Docker
-Desktop are not supported by this installer; DHCP needs native Linux LAN access.
+and a fixed IPv4 address already assigned to the selected host. DHCP needs native
+Linux LAN access. macOS supports DNS, RADIUS and CA using Docker Desktop below.
+
+### macOS
+
+On Intel and Apple silicon Macs, install [Homebrew](https://brew.sh) first, then
+run the same downloaded installer as your desktop user, without `sudo`. It uses
+Homebrew to install Docker Desktop if Desktop is missing, plus Python 3.13
+and OpenSSL 3. Existing Docker Desktop is reused. The installer starts Desktop and
+waits up to three minutes; complete its first-run setup in the Docker app if
+prompted, then rerun if startup times out. It does not accept Docker's terms for you.
+
+```sh
+bash install.sh --yes --address 192.0.2.10 --dns yes --radius yes --ca yes
+```
+
+Use the Mac's fixed LAN address. DHCP defaults to `none` and an explicit ISC/Kea
+selection is rejected before changes. DNS-only, RADIUS-only and CA-only selections
+are supported. Files default to `~/Library/Application Support/NetAdmin`; Desktop
+must have access to any custom deployment directory. Resume uses that same path.
+Keep the Mac awake and Docker Desktop running while providing network services.
+
+Desktop publishes only the selected service ports on the chosen LAN address.
+DNS's agent shares the DNS container's network namespace; RNDC stays private
+inside the VM. Host networking and privileged broadcast DHCP are not used.
+Allow the selected inbound ports through the Mac's firewall. Docker Desktop's
+privileged port support may need enabling if publishing DNS port 53 is denied.
+
+See [Docker's Mac installation guide](https://docs.docker.com/desktop/setup/install/mac-install/)
+and [Desktop networking](https://docs.docker.com/desktop/features/networking/).
 
 Download the script first to inspect it or pass options:
 

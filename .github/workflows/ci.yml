@@ -106,6 +106,8 @@ jobs:
           done
       - name: Test fresh service selections and first UI changes
         run: sudo -- .venv/bin/python Tools/smoke_services_installer.py
+      - name: Test macOS published-port topology
+        run: sudo -- .venv/bin/python Tools/smoke_macos_installer.py
 
   container:
     name: ${{ matrix.flavour }} ${{ matrix.arch }} smoke
