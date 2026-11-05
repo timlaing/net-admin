@@ -160,11 +160,12 @@ def reload_connections() -> Any:
             field: normalize_connection(field, saved.get(env_key(field), value))
             for field, value in connection_values(runtime).items()
         }
-        legacy_radius = (
-            env_key("radius_admin_enabled") not in saved and runtime.radius_admin_enabled is None
-        )
-        if legacy_radius:
-            values["radius_admin_enabled"] = values["radius_enabled"]
+        radius_default = cast(bool | None, extension("netadmin_radius_admin_default"))
+        saved_radius = env_key("radius_admin_enabled") in saved
+        if not saved_radius:
+            values["radius_admin_enabled"] = (
+                values["radius_enabled"] if radius_default is None else str(radius_default).lower()
+            )
         if configuration_errors(values):
             return render_template(
                 ERROR_TEMPLATE,
@@ -174,8 +175,8 @@ def reload_connections() -> Any:
                 ),
             ), 400
         reloaded = settings_with_connections(runtime, values)
-        if legacy_radius:
-            reloaded = replace(reloaded, radius_admin_enabled=None)
+        if not saved_radius:
+            reloaded = replace(reloaded, radius_admin_enabled=radius_default)
         replacements = connection_extensions(reloaded)
     except (OSError, ValueError, dns.exception.DNSException):
         return render_template(

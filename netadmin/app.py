@@ -38,6 +38,7 @@ from netadmin.forms import (
 )
 from netadmin.ingress import configure_ingress, session_cookie_secure
 from netadmin.pairing_credentials import begin_request, end_request
+from netadmin.preferences import read_env_file
 from netadmin.presentation import display_time
 from netadmin.radius_certificates_web import certificate_web
 from netadmin.radius_modes_web import modes_web
@@ -584,6 +585,18 @@ def create_app(settings: Settings | None = None) -> Flask:
     CSRFProtect(app)
     store = Store(runtime.data_dir / "netadmin.sqlite3")
     app.extensions.update(netadmin_store=store, **connection_extensions(runtime))
+    radius_default = runtime.radius_admin_enabled
+    if os.getenv("NETADMIN_ADDON") == "1":
+        try:
+            saved = read_env_file()
+        except (OSError, ValueError):
+            app.logger.warning("Could not identify saved RADIUS administration default")
+        else:
+            # The add-on sources this file before starting Python. Do not mistake
+            # that persisted value for an independent process-level override.
+            if saved.get("NETADMIN_RADIUS_ADMIN_ENABLED") == str(radius_default).lower():
+                radius_default = None
+    app.extensions["netadmin_radius_admin_default"] = radius_default
     app.before_request(begin_request)
     app.teardown_request(end_request)
     app.before_request(load_identity)
