@@ -1,0 +1,129 @@
+# macOS Docker Desktop: published ports, shared DNS namespace; no DHCP.
+x-agent:
+  restart: unless-stopped
+  env_file: ./agents.env
+services:
+  dns:
+    image: ghcr.io/timlaing/netadmin-dns:${NETADMIN_VERSION:?}
+    profiles:
+    - dns
+    restart: unless-stopped
+    environment:
+      NETADMIN_DNS_TSIG_SECRET: ${NETADMIN_DNS_TSIG_SECRET:?}
+    command:
+    - -c
+    - /etc/bind/named.conf
+    - '-4'
+    volumes:
+    - ./config/bind:/etc/bind:rw
+    - rndc-shared:/run/rndc
+    ports:
+    - ${INSTALL_ADDRESS:?}:53:53/tcp
+    - ${INSTALL_ADDRESS:?}:53:53/udp
+    - ${INSTALL_ADDRESS:?}:8083:8083
+  dns-agent:
+    restart: unless-stopped
+    env_file: ./agents.env
+    image: ghcr.io/timlaing/netadmin-dns-agent:${NETADMIN_VERSION:?}
+    profiles:
+    - dns
+    network_mode: service:dns
+    depends_on:
+    - dns
+    environment:
+      DNS_SERVER: 127.0.0.1
+    command:
+    - sh
+    - -c
+    - exec gunicorn --bind $${AGENT_BIND_ADDRESS}:8083 --workers 1 --certfile /pki/server.crt
+      --keyfile /pki/server.key --ca-certs /pki/ca.crt --cert-reqs 2 'netadmin.agents.dns:create_dns_agent()'
+    volumes:
+    - ./config/bind:/etc/bind:rw
+    - ./transport/dns:/pki:ro
+    - rndc-shared:/run/rndc:ro
+  radius:
+    image: ghcr.io/timlaing/netadmin-radius:${NETADMIN_VERSION:?}
+    profiles:
+    - radius
+    restart: unless-stopped
+    ports:
+    - ${INSTALL_ADDRESS:?}:1812:1812/udp
+    - ${INSTALL_ADDRESS:?}:1813:1813/udp
+    volumes:
+    - ./config/radius:/etc/raddb:rw
+    - radius-certs:/etc/raddb/certs
+  radius-agent:
+    restart: unless-stopped
+    env_file: ./agents.env
+    image: ghcr.io/timlaing/netadmin-radius-agent:${NETADMIN_VERSION:?}
+    profiles:
+    - radius
+    pid: service:radius
+    depends_on:
+    - radius
+    environment:
+      RADIUS_CERT_MANAGEMENT: 'true'
+      RADIUS_AUTH_MANAGEMENT: 'true'
+      RADIUS_RELOAD_COMMAND: kill -HUP 1
+    ports:
+    - ${INSTALL_ADDRESS:?}:8082:8082
+    volumes:
+    - ./config/radius:/etc/raddb:rw
+    - radius-certs:/etc/raddb/certs
+    - ./transport/radius:/pki:ro
+  ca-runtime:
+    image: ghcr.io/timlaing/netadmin-ca-runtime:${NETADMIN_VERSION:?}
+    profiles:
+    - ca
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+    - ALL
+    cap_add:
+    - CHOWN
+    - SETUID
+    - SETGID
+    - KILL
+    security_opt:
+    - no-new-privileges:true
+    environment:
+      CA_MANAGEMENT_TOKEN_FILE: /run/secrets/management-token
+    volumes:
+    - ca-state:/state
+    - ca-control:/control
+    - ./secrets/management-token:/run/secrets/management-token:ro
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    ports:
+    - ${INSTALL_ADDRESS:?}:9100-9115:9100-9115
+  ca-agent:
+    restart: unless-stopped
+    env_file: ./agents.env
+    image: ghcr.io/timlaing/netadmin-ca-agent:${NETADMIN_VERSION:?}
+    profiles:
+    - ca
+    depends_on:
+    - ca-runtime
+    read_only: true
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    environment:
+      CA_CONTROL_SOCKET: /control/ca.sock
+      CA_MANAGEMENT_TOKEN_FILE: /run/secrets/management-token
+    volumes:
+    - ca-control:/control:ro
+    - ca-agent-data:/data
+    - ./secrets/management-token:/run/secrets/management-token:ro
+    - ./transport/ca:/pki:ro
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    ports:
+    - ${INSTALL_ADDRESS:?}:8084:8084
+volumes:
+  rndc-shared: null
+  radius-certs: null
+  ca-state: null
+  ca-control: null
+  ca-agent-data: null
