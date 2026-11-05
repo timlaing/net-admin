@@ -4,7 +4,7 @@
 {% block content %}
 <section class="hero">
   <div><p class="eyebrow">YOUR NETWORK, IN VIEW</p><h1>Network overview</h1><p>Manage names, addresses and access from one workspace. Your network services stay in control.</p>
-  <div class="hero-actions">{% if g.identity.role == 'admin' %}<a class="btn btn-primary" href="{{ url_for('connections.settings_page') }}">Connection settings {{ icon('arrow') }}</a><a class="btn btn-outline-secondary" href="{{ url_for('web.audit') }}">View activity</a>{% elif service_settings.radius_admin_enabled != false %}<a class="btn btn-primary" href="{{ url_for('web.password') }}">Change password {{ icon('arrow') }}</a>{% endif %}</div></div>
+  <div class="hero-actions">{% if g.identity.role == 'admin' %}<a class="btn btn-primary" href="{{ url_for('connections.settings_page') }}">Connection settings {{ icon('arrow') }}</a><a class="btn btn-outline-secondary" href="{{ url_for('web.audit') }}">View activity</a>{% elif service_settings.radius_enabled and service_settings.service_enabled('radius') %}<a class="btn btn-primary" href="{{ url_for('web.password') }}">Change password {{ icon('arrow') }}</a>{% endif %}</div></div>
   <img src="{{ url_for('static', filename='network.svg') }}" width="480" height="250" alt="">
 </section>
 {% if g.identity.role == 'admin' %}
@@ -34,6 +34,6 @@
 <div class="section-heading"><h2>Recent activity</h2><a href="{{ url_for('web.audit') }}">View all activity {{ icon('arrow') }}</a></div>
 <section class="table-panel">{% if events %}{{ audit_table(events) }}{% else %}{{ empty('No activity yet', 'Sign-ins and administrative changes will appear here.') }}{% endif %}</section>
 {% else %}
-<section class="card password-card"><div class="card-body"><p class="eyebrow">SELF SERVICE</p><h2 class="h4">Keep your account secure</h2><p>{% if service_settings.radius_admin_enabled != false %}Your role permits changing your own RADIUS password. Use the Change password page to update it.{% else %}Password self-service is disabled. Contact your administrator to update your password.{% endif %}</p></div></section>
+<section class="card password-card"><div class="card-body"><p class="eyebrow">SELF SERVICE</p><h2 class="h4">Keep your account secure</h2><p>{% if service_settings.radius_enabled and service_settings.service_enabled('radius') %}Your role permits changing your own RADIUS password. Use the Change password page to update it.{% else %}Password self-service is disabled. Contact your administrator to update your password.{% endif %}</p></div></section>
 {% endif %}
 {% endblock %}

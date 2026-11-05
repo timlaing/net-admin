@@ -521,7 +521,7 @@ def password() -> Any:
     if identity.username == "root":
         flash("The emergency root password is managed through its environment hash.", "info")
         return redirect(url_for(DASHBOARD_INDEX))
-    if _settings().radius_admin_enabled is False:
+    if not (_settings().radius_enabled and _settings().service_enabled("radius")):
         return render_template("error.html", message="RADIUS password management is disabled."), 403
     if form.validate_on_submit():
         if not _store().allow_attempt(f"password:{identity.username}", 5, 900):

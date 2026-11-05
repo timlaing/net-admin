@@ -39,7 +39,7 @@
 <a class="section-link {{ 'active' if active }}" href="{{ (url_for(endpoint, page='radius-logins') if endpoint == 'service_logs.index' else url_for(endpoint)) }}" {% if active %}aria-current="page"{% endif %}>{{ icon(glyph) }}<span>{{ label }}</span></a>
 {% endif %}
 {% endfor %}
-{% if g.identity.source != 'ingress' and g.identity.username != 'root' and service_settings.radius_admin_enabled != false %}
+{% if g.identity.source != 'ingress' and g.identity.username != 'root' and service_settings.radius_enabled and service_settings.service_enabled('radius') %}
 <a class="section-link {{ 'active' if request.endpoint == 'web.password' }}" href="{{ url_for('web.password') }}" {% if request.endpoint == 'web.password' %}aria-current="page"{% endif %}>{{ icon('key') }}<span>Change password</span></a>
 {% endif %}
 {%- endmacro %}

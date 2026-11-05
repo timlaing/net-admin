@@ -376,14 +376,19 @@ def test_resume_refuses_pairing_with_older_saved_installer(tmp_path):
     assert "unrecognized arguments" not in result.stderr
 
 
-def test_disabled_radius_administration_blocks_password_agent(runtime, monkeypatch):
+@pytest.mark.parametrize(
+    "login_enabled,admin_enabled", [(True, False), (False, None), (False, True)]
+)
+def test_disabled_radius_administration_blocks_password_agent(
+    runtime, monkeypatch, login_enabled, admin_enabled
+):
     """Keep authentication available without permitting calls to a disabled admin agent."""
     from dataclasses import replace
 
     settings = replace(
         runtime,
-        radius_enabled=True,
-        radius_admin_enabled=False,
+        radius_enabled=login_enabled,
+        radius_admin_enabled=admin_enabled,
         radius_secret="synthetic-policy",  # noqa: S106 - synthetic login policy
     )
     client = client_for(settings, monkeypatch, role="standard")
@@ -396,7 +401,8 @@ def test_disabled_radius_administration_blocks_password_agent(runtime, monkeypat
         lambda *_a, **_k: pytest.fail("disabled agent invoked"),
     )
     assert client.post("/password", data={}).status_code == 403
-    assert client.application.extensions["netadmin_settings"].radius_enabled
+    assert client.application.extensions["netadmin_settings"].radius_enabled is login_enabled
+    assert client.get("/password").status_code == 403
     assert "Change password" not in client.get("/").text
 
 
