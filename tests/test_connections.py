@@ -536,3 +536,34 @@ def test_disable_ca_preserves_invalid_endpoint_without_requiring_credentials(run
     values["ca_enabled"] = "true"
     assert client.post("/settings", data=values).status_code == 200
     assert not client.application.extensions["netadmin_settings"].ca_enabled
+
+
+@pytest.mark.parametrize("override", [None, False, True])
+@pytest.mark.parametrize("saved_admin", [None, "false", "true"])
+def test_reload_radius_legacy_default_and_explicit_overrides(
+    runtime, monkeypatch, override, saved_admin
+):
+    """Repeated reloads follow login only when administration has no override."""
+    runtime = replace(
+        runtime,
+        radius_admin_enabled=override,
+        radius_host="radius.example.test",
+        radius_secret="synthetic-radius-secret",  # noqa: S106
+        radius_agent_url="https://radius.example.test:8082",
+        agent_token="synthetic-agent-token",  # noqa: S106
+        agent_cert=Path("/synthetic/client.crt"),
+        agent_key=Path("/synthetic/client.key"),
+    )
+    client = client_for(runtime, monkeypatch)
+    for enabled in (True, False, True):
+        saved = {"NETADMIN_RADIUS_ENABLED": str(enabled).lower()}
+        if saved_admin is not None:
+            saved["NETADMIN_RADIUS_ADMIN_ENABLED"] = saved_admin
+        write_env_file(saved)
+        assert client.post("/settings/reload").status_code == 302
+        active = client.application.extensions["netadmin_settings"]
+        expected = saved_admin == "true" if saved_admin is not None else override
+        assert active.radius_enabled is enabled
+        assert active.service_enabled("radius") is (enabled if expected is None else expected)
+        if override is None and saved_admin is None:
+            assert active.radius_admin_enabled is None
