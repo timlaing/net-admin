@@ -333,6 +333,7 @@ def test_listener_deadline_interrupts_partial_headers(deployment, monkeypatch, c
     assert code
     port = int(code.split(":")[2].split("/")[0])
     context = ssl.create_default_context(cafile=str(deployment / "transport/client/ca.crt"))
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     with (
         socket.create_connection(("127.0.0.1", port), timeout=2) as raw,
         context.wrap_socket(raw, server_hostname="127.0.0.1") as connection,
