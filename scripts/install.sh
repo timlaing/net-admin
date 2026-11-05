@@ -19,6 +19,7 @@ Usage: install.sh [options]
   --yes                    Accept defaults without interactive prompts
   --dry-run                Describe actions without downloads or changes
   --prepare-only           Prepare and validate, but do not start containers
+  --pair                   Offer a ten-minute one-time pairing code after startup
   --resume                 Resume an existing installer deployment unchanged
   --source-directory PATH  Use local deployment assets for development
 
@@ -32,6 +33,7 @@ platform=linux
 directory=/opt/netadmin
 [[ "$platform" != macos ]] || directory="$HOME/Library/Application Support/NetAdmin"
 address='' interface='' dns='' dhcp='' radius='' ca=''
+pair=false
 version=latest yes=false dry_run=false prepare_only=false resume=false source_directory=''
 while (($#)); do
   case "$1" in
@@ -47,6 +49,7 @@ while (($#)); do
     --yes) yes=true; shift ;;
     --dry-run) dry_run=true; shift ;;
     --prepare-only) prepare_only=true; shift ;;
+    --pair) pair=true; shift ;;
     --resume) resume=true; shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -302,6 +305,10 @@ PREFLIGHT
 if [[ "$resume" == true ]]; then
   [[ -f "$directory/bootstrap/install_services.py" ]] || fail 'No installer deployment found to resume.'
   resume_args=(--directory "$directory" --resume)
+  if [[ "$pair" == true ]]; then
+    "$python_command" "$directory/bootstrap/install_services.py" --help | grep -q -- --pair || fail "This saved installer predates pairing. Use manual credentials or a new deployment from a pairing-capable release."
+    resume_args+=(--pair)
+  fi
   if [[ "$platform" == macos ]]; then
     "$python_command" "$directory/bootstrap/install_services.py" --help | grep -q -- --platform || fail 'The saved helper does not support macOS.'
     resume_args+=(--platform macos)
@@ -364,6 +371,10 @@ if [[ "$platform" == macos ]]; then
   args+=(--platform macos)
 fi
 [[ "$prepare_only" == false ]] || args+=(--prepare-only)
+if [[ "$pair" == true ]]; then
+  "$python_command" "$temporary/install_services.py" --help | grep -q -- --pair || fail 'The selected release predates pairing. Select a pairing-capable release or use manual credentials.'
+  args+=(--pair)
+fi
 [[ -z "$source_directory" ]] || args+=(--source-directory "$source_directory")
 "$python_command" "$temporary/install_services.py" "${args[@]}"
 }

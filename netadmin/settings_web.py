@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import http.client
 import os
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, cast
 
 import dns.exception
+from cryptography import x509
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from flask import (  # pylint: disable=wrong-import-order
     Blueprint,
     current_app,
@@ -35,11 +39,14 @@ from netadmin.connections import (
     settings_with_connections,
     test_connection,
 )
+from netadmin.pairing import enroll
+from netadmin.pairing_credentials import retire
 from netadmin.preferences import read_env_file, write_env_file
 from netadmin.store import Store
 
 connection_web = Blueprint("connections", __name__)
 ERROR_TEMPLATE = "error.html"
+SETTINGS_PAGE = "connections.settings_page"
 
 
 @connection_web.route("/settings", methods=["GET", "POST"])
@@ -88,7 +95,7 @@ def settings_page() -> Any:
                     current_identity().username, "settings.connections", "connections", True
                 )
                 flash("Settings saved and applied. No restart needed.", "success")
-                return redirect(url_for("connections.settings_page"))
+                return redirect(url_for(SETTINGS_PAGE))
     pending = any(previous[field] != active[field] for field in CONNECTION_FIELDS)
     return render_template(
         "settings.html",
@@ -153,6 +160,12 @@ def reload_connections() -> Any:
             field: normalize_connection(field, saved.get(env_key(field), value))
             for field, value in connection_values(runtime).items()
         }
+        radius_default = cast(bool | None, extension("netadmin_radius_admin_default"))
+        saved_radius = env_key("radius_admin_enabled") in saved
+        if not saved_radius:
+            values["radius_admin_enabled"] = (
+                values["radius_enabled"] if radius_default is None else str(radius_default).lower()
+            )
         if configuration_errors(values):
             return render_template(
                 ERROR_TEMPLATE,
@@ -161,7 +174,10 @@ def reload_connections() -> Any:
                     "Active connections were kept."
                 ),
             ), 400
-        replacements = connection_extensions(settings_with_connections(runtime, values))
+        reloaded = settings_with_connections(runtime, values)
+        if not saved_radius:
+            reloaded = replace(reloaded, radius_admin_enabled=radius_default)
+        replacements = connection_extensions(reloaded)
     except (OSError, ValueError, dns.exception.DNSException):
         return render_template(
             ERROR_TEMPLATE,
@@ -172,4 +188,50 @@ def reload_connections() -> Any:
         current_identity().username, "settings.reload", "connections", True
     )
     flash("Saved connections reloaded. No restart needed.", "success")
-    return redirect(url_for("connections.settings_page"))
+    return redirect(url_for(SETTINGS_PAGE))
+
+
+@connection_web.post("/settings/pair")
+@admin_required
+def pair_installation() -> Any:
+    """Consume a host-issued code only after authenticated administrator consent."""
+    if os.getenv("NETADMIN_ADDON") != "1":
+        return render_template(
+            ERROR_TEMPLATE, message="Pairing requires Home Assistant settings storage."
+        ), 403
+    code = request.form.get("pairing_code", "")
+    if len(code) > 512:
+        return render_template(ERROR_TEMPLATE, message="Invalid pairing code."), 400
+    try:
+        previous = cast(Settings, extension("netadmin_settings"))
+        replacements = enroll(previous, code)
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        http.client.HTTPException,
+        x509.ExtensionNotFound,
+        InvalidSignature,
+        UnsupportedAlgorithm,
+    ):
+        return render_template(
+            ERROR_TEMPLATE,
+            message=(
+                "Pairing failed. Request a new code from the host. Existing connections were kept."
+            ),
+        ), 400
+    current_app.extensions.update(replacements)
+    try:
+        retire(previous, replacements["netadmin_settings"])
+    except OSError:
+        current_app.logger.warning("Could not mark superseded pairing credentials for cleanup.")
+    cast(Store, extension("netadmin_store")).audit(
+        current_identity().username, "settings.pair", "installation", True
+    )
+    flash(
+        "Installation paired. Test active connections. RADIUS login settings were preserved. "
+        "Configure RADIUS clients through administration before enabling new logins.",
+        "success",
+    )
+    return redirect(url_for(SETTINGS_PAGE))

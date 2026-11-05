@@ -197,11 +197,39 @@ for DHCP enter the agent URL and check its reported ISC/Kea backend. The backend
 is configured on the agent, not selected in the app. For CA, enter the separate
 token from `secrets/management-token`. Use **Test active connections**.
 
-QR/one-time enrollment is not implemented yet; the generated credentials work
-with the existing Settings flow. Keep the deployment directory and Docker volumes
-in protected backups. Transport identities expire after one year; reissue them
-using the retained transport CA before expiry. Re-running the installer never
-rotates keys or extends certificates automatically.
+### One-time pairing
+
+Use `bash install.sh --pair` with your service choices to offer enrollment after
+startup. Pairing requires a release that includes this feature. For an installation
+created by such a release, use `bash install.sh --resume --pair
+--directory /opt/netadmin --yes`. Instead, you can run the pairing command printed
+by the installer (also available as `sudo python3 /opt/netadmin/bootstrap/pairing.py
+--directory /opt/netadmin`). Keep that terminal open. In the Home Assistant app,
+open **Settings → Pair installation**, paste the `netadmin-pair://...` code and
+choose **Pair installation**. This replaces the current agent connections with
+this host's selected services. Test the active connections afterward.
+
+The code contains a random single-use secret and a certificate fingerprint.
+It expires after ten minutes; TCP port 8085 must be reachable from the app during
+that window only. The app pins the host certificate before sending the secret.
+The host closes enrollment after one claim, including an interrupted transfer;
+run the command again to recover. No transport authority or managed CA private
+keys are transferred. Codes and credentials must not be pasted into logs or chat.
+
+RADIUS administration and login are independent. Pairing enables administration
+for installed RADIUS services and imports their agent URL, while preserving your
+existing login host, shared secret and login enablement. Add the app as a RADIUS
+client through administration before configuring or enabling new RADIUS logins.
+`NETADMIN_RADIUS_ADMIN_ENABLED` controls administration; if unset, it follows the
+legacy `NETADMIN_RADIUS_ENABLED` flag. Both have separate switches in Settings.
+Manual credential setup above remains supported. QR scanning is not required.
+
+Keep the deployment directory and Docker volumes in protected backups. Transport
+identities expire after one year; reissue them using the retained transport CA
+before expiry. Pairing transfers the existing client identity; it does not rotate
+keys or extend certificate validity. Superseded app-owned paired credentials
+are removed after successful activation once in-flight requests have released
+them. Manually provisioned credentials are left alone.
 
 ### Configure the network
 

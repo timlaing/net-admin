@@ -22,6 +22,7 @@ from pathlib import Path
 PROJECT = "netadmin-services"
 ASSETS = {
     "deployment/compose.yml": "compose.yml",
+    "netadmin/pairing_exchange.py": "bootstrap/pairing.py",
     "deployment/isc-supervisor.sh": "bootstrap/isc-supervisor.sh",
     "deployment/reload-isc.py": "bootstrap/reload-isc.py",
     "deployment/radius-check.sh": "bootstrap/radius-check.sh",
@@ -668,7 +669,21 @@ def start(directory):
     print("No user zones or allocation pools were created. Configure them in NetAdmin.")
     if state["dns"] == "yes":
         print("DNS starts authoritative-only; recursive resolver configuration is not enabled.")
-    print("QR enrollment is not implemented; these credentials use existing app Settings.")
+    print(
+        "Pair without copying credentials: run this command, "
+        "then paste its code into Settings > Pair installation:"
+    )
+    print(
+        shlex.join(
+            [
+                "sudo",
+                sys.executable,
+                str(directory / "bootstrap/pairing.py"),
+                "--directory",
+                str(directory),
+            ]
+        )
+    )
     print("Service traffic and write/reload operations still require functional validation.")
 
 
@@ -687,6 +702,9 @@ def main(argv=None):
     parser.add_argument("--source-directory", type=Path)
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--pair", action="store_true", help="Offer one-time enrollment after startup"
+    )
     args = parser.parse_args(argv)
     # Ignore inherited Compose selectors, which could otherwise select both backends.
     for name in ("COMPOSE_PROFILES", "COMPOSE_FILE", "COMPOSE_PROJECT_NAME"):
@@ -712,6 +730,16 @@ def main(argv=None):
     else:
         try:
             start(args.directory)
+            if args.pair:
+                run(
+                    [
+                        sys.executable,
+                        str(args.directory / "bootstrap/pairing.py"),
+                        "--directory",
+                        str(args.directory),
+                    ],
+                    timeout=620,
+                )
         except Exception:
             print(
                 f"Installation incomplete; files and keys preserved in {args.directory}.",

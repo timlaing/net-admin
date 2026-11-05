@@ -994,7 +994,7 @@ def test_bootstrap_handoff_is_compatible_with_old_linux_helper(tmp_path, platfor
     prefix = (
         'set -euo pipefail\ndirectory="$1"\ntemporary="$2"\npython_command="$3"\nplatform="$4"\n'
         'address=192.0.2.10; interface=""; dns=no; dhcp=none; radius=no; ca=yes;\n'
-        'version=1.2.3; prepare_only=false; source_directory=""\n'
+        'version=1.2.3; prepare_only=false; pair=false; source_directory=""\n'
         'fail() { echo "$*" >&2; exit 1; }\n'
     )
     result = subprocess.run(  # noqa: S603

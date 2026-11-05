@@ -4,7 +4,7 @@
 {% block content %}
 <section class="hero">
   <div><p class="eyebrow">YOUR NETWORK, IN VIEW</p><h1>Network overview</h1><p>Manage names, addresses and access from one workspace. Your network services stay in control.</p>
-  <div class="hero-actions">{% if g.identity.role == 'admin' %}<a class="btn btn-primary" href="{{ url_for('connections.settings_page') }}">Connection settings {{ icon('arrow') }}</a><a class="btn btn-outline-secondary" href="{{ url_for('web.audit') }}">View activity</a>{% else %}<a class="btn btn-primary" href="{{ url_for('web.password') }}">Change password {{ icon('arrow') }}</a>{% endif %}</div></div>
+  <div class="hero-actions">{% if g.identity.role == 'admin' %}<a class="btn btn-primary" href="{{ url_for('connections.settings_page') }}">Connection settings {{ icon('arrow') }}</a><a class="btn btn-outline-secondary" href="{{ url_for('web.audit') }}">View activity</a>{% elif service_settings.radius_enabled and service_settings.service_enabled('radius') %}<a class="btn btn-primary" href="{{ url_for('web.password') }}">Change password {{ icon('arrow') }}</a>{% endif %}</div></div>
   <img src="{{ url_for('static', filename='network.svg') }}" width="480" height="250" alt="">
 </section>
 {% if g.identity.role == 'admin' %}
@@ -16,7 +16,7 @@
 <div class="section-heading"><h2>Network services</h2><span class="form-text">Agent connections refresh automatically every 30 seconds</span></div>
 <div class="service-grid">
 {% for title, text, endpoint, address in [('DNS','Names & records','web.dns_index', service_settings.dns_agent_url if service_settings.dns_use_agent else service_settings.dns_server),('DHCP','Addresses & reservations','web.dhcp_index', service_settings.dhcp_agent_url),('RADIUS','Users & access','web.radius_index', service_settings.radius_agent_url),('CA','Authorities & certificates','authorities.index', service_settings.ca_agent_url)] %}
-{% set key = title|lower %}{% set enabled = service_settings|attr(key ~ '_enabled') %}{% set check = checks.get(key) %}{% set agent_check = agent_checks.get(key) %}
+{% set key = title|lower %}{% set enabled = service_settings.service_enabled(key) %}{% set check = checks.get(key) %}{% set agent_check = agent_checks.get(key) %}
 {% if enabled %}
 <article class="service-card" {% if enabled %}data-connection-status-url="{{ url_for('connections.connection_status', service=key) }}"{% endif %}>
   <div class="service-card-top"><span class="service-glyph">{{ icon(key) }}</span><div class="d-flex flex-wrap justify-content-end gap-2"><span data-connection-state aria-live="polite" class="status {{ 'status-success' if agent_check and agent_check.state == 'Connected' else 'status-warning' if agent_check else '' }}">{{ agent_check.state if enabled and agent_check else 'Checking…' if enabled else 'Disabled' }}</span>{% if enabled %}<span class="status" data-connection-access aria-live="polite">{{ agent_check.access_mode if agent_check and agent_check.access_mode else 'Unknown' }}</span>{% endif %}</div></div>
@@ -34,6 +34,6 @@
 <div class="section-heading"><h2>Recent activity</h2><a href="{{ url_for('web.audit') }}">View all activity {{ icon('arrow') }}</a></div>
 <section class="table-panel">{% if events %}{{ audit_table(events) }}{% else %}{{ empty('No activity yet', 'Sign-ins and administrative changes will appear here.') }}{% endif %}</section>
 {% else %}
-<section class="card password-card"><div class="card-body"><p class="eyebrow">SELF SERVICE</p><h2 class="h4">Keep your account secure</h2><p>Your role permits changing your own RADIUS password. Use the Change password page to update it.</p></div></section>
+<section class="card password-card"><div class="card-body"><p class="eyebrow">SELF SERVICE</p><h2 class="h4">Keep your account secure</h2><p>{% if service_settings.radius_enabled and service_settings.service_enabled('radius') %}Your role permits changing your own RADIUS password. Use the Change password page to update it.{% else %}Password self-service is disabled. Contact your administrator to update your password.{% endif %}</p></div></section>
 {% endif %}
 {% endblock %}
