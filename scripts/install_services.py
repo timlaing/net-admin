@@ -187,6 +187,9 @@ def check_ports(args):
         ports += [(8084, socket.SOCK_STREAM)]
         ports += [(port, socket.SOCK_STREAM) for port in range(9100, 9116)]
     for port, kind in ports:
+        # Desktop owns privileged host publishing; the desktop user cannot probe it.
+        if getattr(args, "platform", "linux") == "macos" and port < 1024:
+            continue
         hosts = [args.address]
         if port == 53 and getattr(args, "platform", "linux") != "macos":
             hosts.append("127.0.0.1")

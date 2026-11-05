@@ -82,6 +82,10 @@ Linux LAN access. macOS supports DNS, RADIUS and CA using Docker Desktop below.
 
 ### macOS
 
+Docker Desktop publishes privileged DNS port 53. The desktop-user preflight
+skips direct binds below port 1024; a conflicting DNS listener is reported by
+Compose during startup, with the deployment retained for resume.
+
 macOS support requires a published release containing the platform-aware helper
 and macOS Compose template. Older Linux-only releases cannot install on macOS.
 

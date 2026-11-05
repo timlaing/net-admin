@@ -795,7 +795,8 @@ def test_macos_probes_only_published_ports(installer, tmp_path, port_probe):
     args = options(tmp_path, dhcp="none")
     args.platform = "macos"
     installer.check_ports(args)
-    assert all(host == args.address and port != 953 for host, port, _ in port_probe.bindings)
+    assert all(host == args.address and port >= 1024 for host, port, _ in port_probe.bindings)
+    assert (args.address, 8083, socket.SOCK_STREAM) in port_probe.bindings
 
 
 def test_macos_launcher_preview(tmp_path):
@@ -1057,3 +1058,28 @@ def test_bootstrap_preflight_protects_saved_older_helpers(
     )
     assert result.returncode != 0
     assert message in result.stderr
+
+
+@pytest.mark.parametrize("content", [None, "{", "[]", "null", "\xff"])
+def test_bootstrap_resume_invalid_manifest_has_friendly_error(tmp_path, content):
+    """Reject missing or invalid manifests before Docker without a traceback."""
+    if content is not None:
+        (tmp_path / "installation.json").write_bytes(content.encode("latin1"))
+    launcher = (ROOT / "scripts/install.sh").read_text()
+    source = launcher.split("<<'PREFLIGHT'\n", 1)[1].split("\nPREFLIGHT", 1)[0]
+    harness = (
+        "import sys, subprocess\n"
+        f"sys.argv = {['preflight', str(tmp_path), 'macos', 'true']!r}\n"
+        "def unexpected(*args, **kwargs):\n raise AssertionError('Docker contacted')\n"
+        "subprocess.run = unexpected\n"
+    )
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", harness + source],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "deployment" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "Docker contacted" not in result.stderr

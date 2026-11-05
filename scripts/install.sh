@@ -276,7 +276,15 @@ from pathlib import Path
 
 directory, platform, resume = sys.argv[1:]
 if resume == 'true':
-    state = json.loads((Path(directory) / 'installation.json').read_text())
+    manifest = Path(directory) / 'installation.json'
+    if not manifest.is_file():
+        raise SystemExit('No installer deployment found to resume.')
+    try:
+        state = json.loads(manifest.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise SystemExit('Invalid installer deployment manifest') from None
+    if not isinstance(state, dict):
+        raise SystemExit('Invalid installer deployment manifest')
     if state.get('schema') != 1 or state.get('project') != 'netadmin-services':
         raise SystemExit('Unrecognized installer deployment')
     if state.get('platform', 'linux') != platform:
