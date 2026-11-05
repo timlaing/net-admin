@@ -6,3 +6,4 @@ reviews:
     enabled: false
     auto_incremental_review: false
     description_keyword: ""
+inheritance: true
