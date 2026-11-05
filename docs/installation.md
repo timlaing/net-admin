@@ -108,6 +108,14 @@ inside the VM. Host networking and privileged broadcast DHCP are not used.
 Allow the selected inbound ports through the Mac's firewall. Docker Desktop's
 privileged port support may need enabling if publishing DNS port 53 is denied.
 
+RADIUS client matching uses the packet's source address. Before adding clients,
+verify the address seen by FreeRADIUS from an actual LAN device. If Desktop
+forwarding presents a gateway/proxy address, rules for the original NAS addresses
+will not match. Use a native Linux RADIUS host when distinct NAS source-address
+rules are required and Desktop does not preserve them. No RADIUS clients are
+whitelisted automatically. The loopback CI smoke does not establish LAN source
+address preservation.
+
 See [Docker's Mac installation guide](https://docs.docker.com/desktop/setup/install/mac-install/)
 and [Desktop networking](https://docs.docker.com/desktop/features/networking/).
 

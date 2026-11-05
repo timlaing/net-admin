@@ -32,7 +32,9 @@
    `/capabilities` endpoint on ports 8083, 8082 and 8084 over mTLS and bearer auth.
    Create a disposable managed CA in the UI and confirm its allocated listener
    in 9100–9115 is reachable from that client. Verify real DNS queries and RADIUS
-   traffic too. The CI topology smoke rewrites ports to loopback; it does not
+   traffic too. Confirm the actual NAS source addresses seen by FreeRADIUS and
+   that intended client rules/shared secrets work; gateway/proxy translation must
+   not be mistaken for per-NAS address matching. The CI topology smoke rewrites ports to loopback; it does not
    establish LAN/firewall reachability, privileged port setup or first-run UI behavior.
 
 To repeat the registry access check without publishing anything:
