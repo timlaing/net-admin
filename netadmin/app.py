@@ -68,6 +68,7 @@ DASHBOARD_INDEX = "web.dashboard"
 DNS_INDEX = "web.dns_index"
 DHCP_INDEX = "web.dhcp_index"
 RADIUS_INDEX = "web.radius_index"
+INVALID_DNS_RECORD = "Invalid DNS record."
 
 
 def _settings() -> Settings:
@@ -255,7 +256,7 @@ def dns_save() -> Any:
         _audit("dns.upsert", f"{form.name.data}.{form.zone.data}/{form.record_type.data}")
         flash("DNS record saved.", "success")
     else:
-        flash("Invalid DNS record.", "danger")
+        flash(INVALID_DNS_RECORD, "danger")
     return redirect(url_for(DNS_INDEX, zone=form.zone.data))
 
 
@@ -267,8 +268,8 @@ def dns_delete() -> Any:
     asynchronous = wants_json()
     if not form.validate_on_submit() or (asynchronous and not form.value.data):
         if asynchronous:
-            return jsonify(deleted=False, error="Invalid DNS record."), 400
-        flash("Invalid DNS record.", "danger")
+            return jsonify(deleted=False, error=INVALID_DNS_RECORD), 400
+        flash(INVALID_DNS_RECORD, "danger")
         return redirect(url_for(DNS_INDEX, zone=form.zone.data))
     if (form.record_type.data or "").upper() in {"SOA", "NS", "ANY", "AXFR", "IXFR", "OPT", "TSIG"}:
         if asynchronous:

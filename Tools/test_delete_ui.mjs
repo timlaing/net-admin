@@ -67,7 +67,7 @@ function fixture(path = paths[0], behavior = async () => ({ ok: true, json: asyn
     FormData: class { constructor(form) { this.fields = { ...form.fields }; } },
     DOMParser: class { parseFromString() { return { getElementById: () => ({ childNodes: ['fresh-state'] }) }; } },
     fetch: async (url, options) => { calls.push({ url, options }); return behavior(url, options, calls.length); },
-  });
+  }, { filename: new URL('../netadmin/static/table_delete.js', import.meta.url).pathname });
   document.fire('DOMContentLoaded');
   return { table, tools, header, selected, clear, selectedCount, count, empty, message, filter, main, standalone, document,
     rows: () => rows, calls, confirmations, cancel: () => { agree = false; }, scroll: () => scroll, history: () => history };

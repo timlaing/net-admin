@@ -63,8 +63,8 @@
   const initialize = () => {
     document.querySelectorAll('form[action]').forEach(form => {
       const path = new URL(form.action, window.location.href).pathname;
-      if (rowPaths.some(suffix => path.endsWith(suffix)) && form.closest('table')) form.setAttribute('data-row-delete', '');
-      else if (standalonePaths.some(suffix => path.endsWith(suffix))) form.setAttribute('data-async-delete', '');
+      if (rowPaths.some(suffix => path.endsWith(suffix)) && form.closest('table')) form.dataset.rowDelete = '';
+      else if (standalonePaths.some(suffix => path.endsWith(suffix))) form.dataset.asyncDelete = '';
     });
     document.querySelectorAll('table').forEach(table => {
       const forms = [...table.querySelectorAll('[data-row-delete]')];
@@ -117,7 +117,8 @@
         const locked = busy || activeDelete;
         const chosen = selected(), page = visible();
         const hidden = chosen.filter(box => box.closest('tr').hidden).length;
-        selectedCount.textContent = `${chosen.length} selected${hidden ? ` (${hidden} on other pages or filtered out)` : ''}`;
+        const hiddenSummary = hidden ? ` (${hidden} on other pages or filtered out)` : '';
+        selectedCount.textContent = `${chosen.length} selected${hiddenSummary}`;
         deleteSelected.disabled = locked || !chosen.length;
         clearSelected.disabled = locked || !chosen.length;
         selectPage.disabled = locked || !page.length;
@@ -148,16 +149,21 @@
         message.textContent = `Deleting ${jobs.length} items…`;
         let deleted = 0;
         try {
-          for (const job of jobs) {
+          const deleteJob = async job => {
             await acknowledge(job.form, job.body);
             job.row.remove();
             deleted++;
             table.dispatchEvent(new Event('table-rows-changed'));
             update();
             message.textContent = `Deleted ${deleted} of ${jobs.length} items…`;
-          }
+          };
+          // Each promise starts only after the preceding acknowledgement;
+          // a rejection prevents every later job from being sent.
+          await jobs.reduce((pending, job) => pending.then(() => deleteJob(job)), Promise.resolve());
           message.textContent = `Deleted ${deleted} ${deleted === 1 ? 'item' : 'items'}.`;
-        } catch (_) {
+        } catch {
+          // Deliberately omit raw exception details: they may contain private
+          // backend data. Report confirmed progress and the recovery action.
           // A missing acknowledgement can mean the write succeeded remotely.
           // Keep uncertain rows and stop the batch; do not silently retry them.
           message.textContent = `Deleted ${deleted} of ${jobs.length} items. Could not confirm the next deletion; remaining rows are kept. Refresh to verify server state before retrying.`;
@@ -182,7 +188,7 @@
       });
       table.querySelectorAll('[data-row-delete]').forEach(form => {
         form.addEventListener('submit', event => { event.preventDefault(); void remove([form]); });
-        form.setAttribute('data-delete-enhanced', 'true');
+        form.dataset.deleteEnhanced = 'true';
       });
       table.addEventListener('table-rows-rendered', update);
       table.addEventListener('deletion-state-changed', update);
@@ -208,7 +214,9 @@
           const result = await acknowledge(form, body);
           acknowledged = true;
           await refreshContent(result.refresh_url);
-        } catch (_) {
+        } catch {
+          // Deliberately redact network/parse exceptions while preserving
+          // the acknowledgement state and original-operation recovery link.
           message.textContent = acknowledged ? 'Deletion confirmed, but the view could not be updated. Refresh to load current state; do not repeat the deletion.' :
             'Could not confirm deletion. Check current service state or the original operation before retrying.';
           if (form.dataset.deleteOperationUrl) {
@@ -220,7 +228,7 @@
           setActive(false);
         }
       });
-      form.setAttribute('data-delete-enhanced', 'true');
+      form.dataset.deleteEnhanced = 'true';
     });
   };
   document.addEventListener('DOMContentLoaded', initialize);

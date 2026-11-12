@@ -50,7 +50,7 @@ jobs:
           --reporter=lcov --reporter=text --reports-dir=coverage-js
           --include='netadmin/static/*.js'
           node --input-type=module -e
-          "await import('./Tools/test_ui.mjs'); await import('./Tools/test_subnet_ui.mjs');"
+          "await import('./Tools/test_ui.mjs'); await import('./Tools/test_delete_ui.mjs'); await import('./Tools/test_subnet_ui.mjs');"
       - name: Analyze and enforce quality gate
         uses: SonarSource/sonarqube-scan-action@e805d875275f728fac1885b413934be6d7c63f65 # v8
         env:
