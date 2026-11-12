@@ -224,8 +224,9 @@ def test_address_selection_budget_failures_do_not_send_dns_requests(
         "netadmin.services.dns.time.monotonic",
         lambda: 0.0 if phase == "unreachable" else next(ticks),
     )
+    service = BindService("bind.test", "key", "")
     with pytest.raises(OSError):
-        BindService("bind.test", "key", "").records("example.test")
+        service.records("example.test")
 
 
 def test_update_is_not_retried_after_dns_transport_starts(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -6,6 +6,7 @@ import ipaddress
 import re
 import socket
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
@@ -22,41 +23,50 @@ import dns.zone
 
 from netadmin.services.agents import AgentClient
 
+type _SocketAddress = tuple[str, int] | tuple[str, int, int, int] | tuple[int, bytes]
+
+
+def _reachable_address(
+    addresses: Sequence[tuple[int, int, int, str, _SocketAddress]], deadline: float
+) -> _SocketAddress:
+    """Probe TCP establishment only, without sending or retrying DNS mutations."""
+    selection_deadline = min(deadline, time.monotonic() + 2)
+    last_error: OSError | None = None
+    for family, kind, protocol, _, candidate in addresses:
+        timeout = min(0.5, selection_deadline - time.monotonic())
+        if timeout <= 0:
+            raise TimeoutError("DNS address selection timed out") from last_error
+        try:
+            with socket.socket(family, kind, protocol) as connection:
+                connection.settimeout(timeout)
+                connection.connect(candidate)
+            return candidate
+        except OSError as error:
+            last_error = error
+    raise OSError("Cannot connect to any resolved Bind address") from last_error
+
 
 def _server_target(server: str, port: int) -> tuple[str, float]:
     """Resolve a reachable address and the remaining DNS operation time budget."""
     try:
         ipaddress.ip_address(server)
     except ValueError:
-        deadline = time.monotonic() + 9
-        addresses = socket.getaddrinfo(server, port, type=socket.SOCK_STREAM)
-        _, _, _, _, address = addresses[0]
-        if len(addresses) > 1:
-            # Establish TCP only; never retry a DNS mutation. Reserve most of the
-            # caller's ten-second timeout for the actual DNS request/response.
-            selection_deadline = min(deadline, time.monotonic() + 2)
-            last_error: OSError | None = None
-            for family, kind, protocol, _, candidate in addresses:
-                timeout = min(0.5, selection_deadline - time.monotonic())
-                if timeout <= 0:
-                    raise TimeoutError("DNS address selection timed out") from last_error
-                try:
-                    with socket.socket(family, kind, protocol) as connection:
-                        connection.settimeout(timeout)
-                        connection.connect(candidate)
-                        address = connection.getpeername()
-                    break
-                except OSError as error:
-                    last_error = error
-            else:
-                raise OSError("Cannot connect to any resolved Bind address") from last_error
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("DNS address resolution timed out") from None
-        if len(address) == 4 and address[3]:
-            return f"{address[0]}%{address[3]}", remaining
-        return str(address[0]), remaining
-    return server, 10
+        # A non-numeric address is resolved as a hostname below.
+        pass
+    else:
+        return server, 10
+    deadline = time.monotonic() + 9
+    addresses = socket.getaddrinfo(server, port, type=socket.SOCK_STREAM)
+    address = addresses[0][4]
+    if len(addresses) > 1:
+        # Reserve most of the caller's ten-second timeout for DNS transport.
+        address = _reachable_address(addresses, deadline)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("DNS address resolution timed out")
+    if len(address) == 4 and address[3]:
+        return f"{address[0]}%{address[3]}", remaining
+    return str(address[0]), remaining
 
 
 @dataclass(frozen=True, slots=True)
