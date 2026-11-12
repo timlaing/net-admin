@@ -9,6 +9,9 @@
   };
   const rowPaths = ['/dns/records/delete', '/dhcp/reservations/delete', '/dhcp/subnets/delete', '/radius/users/delete', '/radius/clients/delete'];
   const standalonePaths = ['/dns/zones/delete', '/dhcp/subnets/delete', '/certificates/authorities/delete'];
+  const inSequence = (jobs, run) => jobs.reduce(
+    (pending, job) => pending.then(() => run(job)), Promise.resolve(),
+  );
   const create = (tag, attributes, text = '') => {
     const element = document.createElement(tag);
     Object.entries(attributes).forEach(([name, value]) => element.setAttribute(name, value));
@@ -159,7 +162,7 @@
           };
           // Each promise starts only after the preceding acknowledgement;
           // a rejection prevents every later job from being sent.
-          await jobs.reduce((pending, job) => pending.then(() => deleteJob(job)), Promise.resolve());
+          await inSequence(jobs, deleteJob);
           message.textContent = `Deleted ${deleted} ${deleted === 1 ? 'item' : 'items'}.`;
         } catch {
           // Deliberately omit raw exception details: they may contain private
