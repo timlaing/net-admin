@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import socket
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
@@ -19,6 +21,42 @@ import dns.update
 import dns.zone
 
 from netadmin.services.agents import AgentClient
+
+
+def _server_target(server: str, port: int) -> tuple[str, float]:
+    """Resolve a reachable address and the remaining DNS operation time budget."""
+    try:
+        ipaddress.ip_address(server)
+    except ValueError:
+        deadline = time.monotonic() + 9
+        addresses = socket.getaddrinfo(server, port, type=socket.SOCK_STREAM)
+        _, _, _, _, address = addresses[0]
+        if len(addresses) > 1:
+            # Establish TCP only; never retry a DNS mutation. Reserve most of the
+            # caller's ten-second timeout for the actual DNS request/response.
+            selection_deadline = min(deadline, time.monotonic() + 2)
+            last_error: OSError | None = None
+            for family, kind, protocol, _, candidate in addresses:
+                timeout = min(0.5, selection_deadline - time.monotonic())
+                if timeout <= 0:
+                    raise TimeoutError("DNS address selection timed out") from last_error
+                try:
+                    with socket.socket(family, kind, protocol) as connection:
+                        connection.settimeout(timeout)
+                        connection.connect(candidate)
+                        address = connection.getpeername()
+                    break
+                except OSError as error:
+                    last_error = error
+            else:
+                raise OSError("Cannot connect to any resolved Bind address") from last_error
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("DNS address resolution timed out") from None
+        if len(address) == 4 and address[3]:
+            return f"{address[0]}%{address[3]}", remaining
+        return str(address[0]), remaining
+    return server, 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,13 +147,14 @@ class BindService:  # pylint: disable=too-many-instance-attributes
 
     def records(self, zone_name: str) -> list[DnsRecord]:
         """Read current zone state with AXFR."""
+        server, timeout = _server_target(self.server, self.port)
         transfer = dns.query.xfr(
-            self.server,
+            server,
             zone_name,
             keyring=self.keyring,
             keyname=self.key_name if self.keyring else None,
             relativize=True,
-            lifetime=10,
+            lifetime=timeout,
             port=self.port,
         )
         zone = dns.zone.from_xfr(transfer)
@@ -139,7 +178,8 @@ class BindService:  # pylint: disable=too-many-instance-attributes
             keyalgorithm=self.algorithm,
         )
         update.replace(name, ttl, record_type, value)
-        response = dns.query.tcp(update, self.server, port=self.port, timeout=10)
+        server, timeout = _server_target(self.server, self.port)
+        response = dns.query.tcp(update, server, port=self.port, timeout=timeout)
         if response.rcode() != 0:
             raise RuntimeError(f"DNS update failed with rcode {response.rcode()}")
 
@@ -155,7 +195,8 @@ class BindService:  # pylint: disable=too-many-instance-attributes
             update.delete(name, record_type, value)
         else:
             update.delete(name, record_type)
-        response = dns.query.tcp(update, self.server, port=self.port, timeout=10)
+        server, timeout = _server_target(self.server, self.port)
+        response = dns.query.tcp(update, server, port=self.port, timeout=timeout)
         if response.rcode() != 0:
             raise RuntimeError(f"DNS delete failed with rcode {response.rcode()}")
 
@@ -190,7 +231,8 @@ class BindService:  # pylint: disable=too-many-instance-attributes
         if self.keyring:
             query.use_tsig(self.keyring, keyname=self.key_name, algorithm=self.algorithm)
         try:
-            response = dns.query.tcp(query, self.server, port=self.port, timeout=10)
+            server, timeout = _server_target(self.server, self.port)
+            response = dns.query.tcp(query, server, port=self.port, timeout=timeout)
         except (dns.exception.DNSException, OSError) as error:
             raise RuntimeError("Cannot read prior authoritative A records") from error
         return _address_records(response, owner, name, bool(self.keyring))
@@ -211,7 +253,8 @@ class BindService:  # pylint: disable=too-many-instance-attributes
             update.replace(name, previous[0].ttl, "A", *(item.value for item in previous))
         else:
             update.delete(name, "A")
-        response = dns.query.tcp(update, self.server, port=self.port, timeout=10)
+        server, timeout = _server_target(self.server, self.port)
+        response = dns.query.tcp(update, server, port=self.port, timeout=timeout)
         if response.rcode() != 0:
             raise RuntimeError(f"DNS rollback failed with rcode {response.rcode()}")
 

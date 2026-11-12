@@ -20,34 +20,39 @@ edited).
 
 ## Web application
 
-| Variable                                                           | Default                    | Purpose                                                                  |
-| ------------------------------------------------------------------ | -------------------------- | ------------------------------------------------------------------------ |
-| `NETADMIN_DATA_DIR`                                                | `/data`                    | SQLite data and application state                                        |
-| `NETADMIN_SESSION_MINUTES`                                         | `60`                       | Session lifetime in minutes                                              |
-| `NETADMIN_AGENT_TOKEN`                                             | _(empty)_                  | Bearer token shared with both agents (set in compose)                    |
-| `NETADMIN_AGENT_CA` / `NETADMIN_AGENT_CERT` / `NETADMIN_AGENT_KEY` | _(unset)_                  | Client mTLS material for agent calls (compose: `/pki/*.crt`)             |
+| Variable                                                           | Default                     | Purpose                                                                  |
+| ------------------------------------------------------------------ | --------------------------- | ------------------------------------------------------------------------ |
+| `NETADMIN_DATA_DIR`                                                | `/data`                     | SQLite data and application state                                        |
+| `NETADMIN_SESSION_MINUTES`                                         | `60`                        | Session lifetime in minutes                                              |
+| `NETADMIN_AGENT_TOKEN`                                             | _(empty)_                   | Bearer token shared with both agents (set in compose)                    |
+| `NETADMIN_AGENT_CA` / `NETADMIN_AGENT_CERT` / `NETADMIN_AGENT_KEY` | _(unset)_                   | Client mTLS material for agent calls (compose: `/pki/*.crt`)             |
 | `NETADMIN_DHCP_AGENT_URL`                                          | `https://dhcp-agent:8081`   | DHCP agent endpoint (compose: `https://…`)                               |
 | `NETADMIN_RADIUS_AGENT_URL`                                        | `https://radius-agent:8082` | RADIUS agent endpoint (compose: `https://…`)                             |
-| `NETADMIN_DHCP_BACKEND`                                            | `isc`                      | Backend label shown by the web UI and the add-on toggle (`isc` \| `kea`) |
+| `NETADMIN_DHCP_BACKEND`                                            | `isc`                       | Backend label shown by the web UI and the add-on toggle (`isc` \| `kea`) |
 
 ## DNS
 
-| Variable                      | Default       | Purpose                                                                |
-| ----------------------------- | ------------- | ---------------------------------------------------------------------- |
-| `NETADMIN_DNS_USE_AGENT` | inferred from agent URL if unset | Select agent (`true`) or direct Bind (`false`); only the selected transport is used |
-| `NETADMIN_DNS_AGENT_URL` | _(empty)_ | Agent HTTPS URL, using shared agent TLS and token settings |
-| `NETADMIN_DNS_SERVER`         | `dns`         | Bind service host                                                      |
-| `NETADMIN_DNS_CONFIG_PATH`    | _(unset)_     | `named.conf` path (compose: `/bind-config/named.conf`)                 |
-| `NETADMIN_DNS_ZONES`          | _(empty)_     | Comma-separated zone list carried from setup                           |
-| `NETADMIN_DNS_TSIG_NAME`      | `rndc-key`    | TSIG key name                                                          |
-| `NETADMIN_DNS_TSIG_SECRET`    | _(empty)_     | Base64 TSIG secret; the DNS container seeds or generates it when empty |
-| `NETADMIN_DNS_TSIG_ALGORITHM` | `hmac-sha256` | TSIG algorithm                                                         |
+| Variable                      | Default                          | Purpose                                                                             |
+| ----------------------------- | -------------------------------- | ----------------------------------------------------------------------------------- |
+| `NETADMIN_DNS_USE_AGENT`      | inferred from agent URL if unset | Select agent (`true`) or direct Bind (`false`); only the selected transport is used |
+| `NETADMIN_DNS_AGENT_URL`      | _(empty)_                        | Agent HTTPS URL, using shared agent TLS and token settings                          |
+| `NETADMIN_DNS_SERVER`         | `dns`                            | Bind service host                                                                   |
+| `NETADMIN_DNS_CONFIG_PATH`    | _(unset)_                        | `named.conf` path (compose: `/bind-config/named.conf`)                              |
+| `NETADMIN_DNS_ZONES`          | _(empty)_                        | Comma-separated zone list carried from setup                                        |
+| `NETADMIN_DNS_TSIG_NAME`      | `rndc-key`                       | TSIG key name                                                                       |
+| `NETADMIN_DNS_TSIG_SECRET`    | _(empty)_                        | Base64 TSIG secret; the DNS container seeds or generates it when empty              |
+| `NETADMIN_DNS_TSIG_ALGORITHM` | `hmac-sha256`                    | TSIG algorithm                                                                      |
 
 Agent mode requires a matching 0.6.0+ DNS agent and shared agent security. Direct
 Bind fields above are unused in agent mode. The agent reads its TSIG key from
 local Bind configuration and uses `DNS_SERVER`/`DNS_PORT` (defaults `127.0.0.1`/`53`).
 Set `DNS_UPDATE_KEY` only when the declared key name differs from `rndc-key`
 (or its `NETADMIN_DNS_TSIG_NAME` fallback). Upgrade the agent before the web app.
+
+`NETADMIN_DNS_SERVER` (direct mode) and the agent's `DNS_SERVER` accept IPv4/IPv6
+addresses or hostnames, including Docker service names. Hostnames are resolved
+before each Bind operation so container address changes do not require a restart.
+The selected address must be reachable from the web app or DNS agent respectively.
 
 ## RADIUS authentication
 
@@ -88,8 +93,8 @@ The Kea stack (`docker-compose.kea.yml`) sets `DHCP_SERVER: kea` for you.
 
 ## Home Assistant add-on options
 
-| Option | Schema | Purpose |
-| --- | --- | --- |
+| Option                  | Schema | Purpose                                                 |
+| ----------------------- | ------ | ------------------------------------------------------- |
 | `ingress_require_login` | `bool` | Require NetAdmin login through ingress (default `true`) |
 
 All service connection details are managed in **NetAdmin → Settings**, including
@@ -114,7 +119,6 @@ is managed by the **Require NetAdmin login through ingress** option. Setting it
 to `false` delegates trusted ingress administrator access to Home Assistant; it
 never disables direct or standalone authentication. Connection reloads preserve it.
 
-
 ## RADIUS certificates
 
 Open **RADIUS → Certificates** to see the current CA and server subjects, serials,
@@ -133,13 +137,13 @@ material produce an unavailable/disabled state, never invented certificate detai
 
 Agent settings:
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `RADIUS_CERT_DIR` | `/etc/raddb/certs` | Shared service certificate directory. |
-| `RADIUS_CERT_MANAGEMENT` | `false` | Enable mutations; the provided Compose files set this to true. |
-| `RADIUS_CERT_KEY_PASSWORD` | packaged bootstrap password | Password for existing CA keys and generated server keys; must match the EAP private-key password. Set through deployment secrets. |
-| `RADIUS_CERT_RESTART_MODE` | `signal` | Use the packaged wrapper, or explicitly choose `command` for an existing acknowledged restart helper. |
-| `RADIUS_CERT_RESTART_COMMAND` | `kill -USR1 1` | Signal the supported service wrapper. The agent waits for an acknowledgement before reporting success. |
+| Variable                      | Default                     | Meaning                                                                                                                           |
+| ----------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `RADIUS_CERT_DIR`             | `/etc/raddb/certs`          | Shared service certificate directory.                                                                                             |
+| `RADIUS_CERT_MANAGEMENT`      | `false`                     | Enable mutations; the provided Compose files set this to true.                                                                    |
+| `RADIUS_CERT_KEY_PASSWORD`    | packaged bootstrap password | Password for existing CA keys and generated server keys; must match the EAP private-key password. Set through deployment secrets. |
+| `RADIUS_CERT_RESTART_MODE`    | `signal`                    | Use the packaged wrapper, or explicitly choose `command` for an existing acknowledged restart helper.                             |
+| `RADIUS_CERT_RESTART_COMMAND` | `kill -USR1 1`              | Signal the supported service wrapper. The agent waits for an acknowledgement before reporting success.                            |
 
 For deployments with a restricted host restart service and no shared PID namespace,
 set `RADIUS_CERT_RESTART_MODE=command` and explicitly set
