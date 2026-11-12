@@ -15,6 +15,12 @@
   system.addEventListener('change', apply);
   const missingSortValue = text => !text || text === '—';
   const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+  const enhanced = new WeakSet();
+  const once = (selector, setup) => document.querySelectorAll(selector).forEach(element => {
+    if (enhanced.has(element)) return;
+    enhanced.add(element);
+    setup(element);
+  });
   const setupTableSorting = table => {
     const body = table.tBodies[0];
     if (!body || !table.tHead) return;
@@ -61,11 +67,11 @@
       });
     });
   };
-  document.addEventListener('DOMContentLoaded', () => {
-    document.querySelectorAll('[data-dns-zone-select]').forEach(select => {
+  const initialize = () => {
+    once('[data-dns-zone-select]', select => {
       select.addEventListener('change', () => { select.form.requestSubmit(); });
     });
-    document.querySelectorAll('[data-connection-status-url]').forEach(card => {
+    once('[data-connection-status-url]', card => {
       const badge = card.querySelector('[data-connection-state]');
       const message = card.querySelector('[data-connection-message]');
       const checked = card.querySelector('[data-connection-checked]');
@@ -98,7 +104,8 @@
       window.setInterval(() => { void update(); }, 30000);
     });
     const dnsMode = document.getElementById('dns_use_agent');
-    if (dnsMode) {
+    if (dnsMode && !enhanced.has(dnsMode)) {
+      enhanced.add(dnsMode);
       const updateDnsMode = () => {
         document.querySelectorAll('[data-direct-dns]').forEach(section => {
           section.hidden = dnsMode.checked;
@@ -109,7 +116,7 @@
       dnsMode.addEventListener('change', updateDnsMode);
       updateDnsMode();
     }
-    document.querySelectorAll('[data-scroll-region]').forEach(region => {
+    once('[data-scroll-region]', region => {
       // Native scrolling accepts arrow keys once focused. Avoid extra Tab stops
       // when the complete table already fits in the available width.
       const updateFocus = () => { region.tabIndex = region.scrollWidth > region.clientWidth ? 0 : -1; };
@@ -120,7 +127,7 @@
       if (table) observer.observe(table);
     });
     document.querySelectorAll('[data-theme-control]').forEach(control => { control.hidden = false; });
-    document.querySelectorAll('[data-theme-choice]').forEach(choice => {
+    once('[data-theme-choice]', choice => {
       choice.value = preference;
       choice.addEventListener('change', () => {
         preference = choice.value;
@@ -128,9 +135,9 @@
         apply();
       });
     });
-    document.querySelectorAll('table').forEach(setupTableSorting);
+    once('table', setupTableSorting);
     document.querySelectorAll('[data-filter-tools]').forEach(control => { control.hidden = false; });
-    document.querySelectorAll('[data-table-filter]').forEach(input => {
+    once('[data-table-filter]', input => {
       const table = document.getElementById(input.dataset.tableFilter);
       if (!table) return;
       const count = document.querySelector(`[data-filter-count="${table.id}"]`);
@@ -147,6 +154,7 @@
         const pageSize = Number(size.value);
         const pages = Math.max(1, Math.ceil(matching.length / pageSize));
         page = Math.min(page, pages);
+        table.dataset.page = String(page);
         const start = (page - 1) * pageSize;
         rows.forEach(row => { row.hidden = true; });
         matching.slice(start, start + pageSize).forEach(row => { row.hidden = false; });
@@ -154,15 +162,21 @@
         position.textContent = `Page ${page} of ${pages}`;
         previous.disabled = page === 1;
         next.disabled = page === pages;
+        table.dispatchEvent(new Event('table-rows-rendered'));
       };
       table.addEventListener('table-sorted', () => { page = 1; render(); });
+      table.addEventListener('table-rows-changed', render);
+      table.addEventListener('table-state-restore', () => {
+        page = Math.max(1, Number(table.dataset.page) || 1);
+        render();
+      });
       input.addEventListener('input', () => { page = 1; render(); });
       size.addEventListener('change', () => { page = 1; render(); });
       previous.addEventListener('click', () => { page--; render(); });
       next.addEventListener('click', () => { page++; render(); });
       render();
     });
-    document.querySelectorAll('[data-edit-client]').forEach(button => {
+    once('[data-edit-client]', button => {
       button.addEventListener('click', () => {
         const form = document.getElementById('client-form');
         ['name', 'address', 'shortname'].forEach(name => { form.elements[name].value = button.dataset[name] || ''; });
@@ -173,7 +187,7 @@
         form.elements.address.focus();
       });
     });
-    document.querySelectorAll('[data-new-client]').forEach(button => {
+    once('[data-new-client]', button => {
       button.addEventListener('click', () => {
         const form = document.getElementById('client-form');
         form.reset();
@@ -181,7 +195,7 @@
         form.elements.name.focus();
       });
     });
-    document.querySelectorAll('form[data-csr-issue]').forEach(form => {
+    once('form[data-csr-issue]', form => {
       const csr = form.querySelector('[name="csr"]');
       const approval = form.querySelector('[name="confirm"]');
       csr.addEventListener('input', () => {
@@ -189,10 +203,13 @@
         document.querySelectorAll('[data-csr-preview]').forEach(preview => { preview.hidden = true; });
       });
     });
-    document.querySelectorAll('form[data-confirm]').forEach(form => {
+    once('form[data-confirm]', form => {
+      if (form.dataset.deleteEnhanced === 'true') return;
       form.addEventListener('submit', event => {
         if (!window.confirm(form.dataset.confirm)) event.preventDefault();
       });
     });
-  });
+  };
+  document.addEventListener('DOMContentLoaded', initialize);
+  document.addEventListener('netadmin-content-updated', initialize);
 })();

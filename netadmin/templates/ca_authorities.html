@@ -42,7 +42,7 @@
 {% if not read_only %}
 <details class="mt-3"><summary>Delete {{ 'intermediate CA' if ca.parent_id else 'root CA' }}</summary>
 <p class="text-danger">Permanently remove this authority, its keys, active certificate inventory and revocation data. Historical operation records retain public certificate results for audit and replay protection. Existing certificates are not revoked by deletion. Delete child authorities first. Deleting the root creates a fresh root identity; clients must trust the replacement root.</p>
-<form method="post" action="{{ url_for('authorities.mutate', action='delete') }}">
+<form method="post" action="{{ url_for('authorities.mutate', action='delete') }}" data-async-delete data-delete-timeout="110000" data-delete-operation-url="{{ url_for('authorities.operation', operation_id=request_id) }}" data-confirm="Permanently delete authority {{ ca.common_name }} and its keys? Existing certificates will not be revoked. Deleting the root replaces its identity.">
 <input type="hidden" name="authority_id" value="{{ ca.id }}">
 <label class="form-label" for="delete-{{ ca.id }}">Type DELETE CA to confirm</label>
 <input class="form-control" id="delete-{{ ca.id }}" name="confirmation" pattern="DELETE CA" required autocomplete="off">

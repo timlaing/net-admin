@@ -59,10 +59,10 @@ class DnsRecordForm(FlaskForm):
 class DeleteDnsForm(FlaskForm):
     """DNS record deletion form."""
 
-    zone = StringField(validators=[DataRequired()])
-    name = StringField(validators=[DataRequired()])
-    record_type = StringField(validators=[DataRequired()])
-    value = StringField()
+    zone = StringField(validators=[DataRequired(), Length(max=253)])
+    name = StringField(validators=[DataRequired(), Length(max=253)])
+    record_type = StringField(validators=[DataRequired(), Length(max=16)])
+    value = StringField(validators=[Length(max=65535)])
     submit = SubmitField("Delete")
 
 

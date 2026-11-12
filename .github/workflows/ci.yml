@@ -42,6 +42,7 @@ jobs:
       - name: UI behavior checks
         run: |
           node Tools/test_ui.mjs
+          node Tools/test_delete_ui.mjs
           node Tools/test_subnet_ui.mjs
 
   tests:

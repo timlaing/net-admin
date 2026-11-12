@@ -242,6 +242,29 @@ not imply that Bind allows AXFR, and a connected RADIUS agent does not verify a
 RADIUS user's login. Use the Settings diagnostics to check those service operations.
 Direct Bind mode is labelled separately because no DNS agent is configured.
 
+### In-place deletion and multiple selection
+
+DNS records, DHCP reservations/subnets and RADIUS users/clients use the same
+deletion controls. With JavaScript enabled, deleting a row keeps the current
+search, sort order, page size and page instead of reloading the browser. Select
+individual rows or all deletable rows on the current page, then **Delete selected**.
+Selections remain across pages and filters; the count and confirmation include
+hidden selections. Protected records and unmanaged/read-only items have no delete
+selection control.
+
+Bulk deletion is sequential, not an atomic transaction. Each item uses its existing
+CSRF-protected, administrator-only endpoint and the agent's normal validation and
+rollback. Only acknowledged deletions disappear. An unconfirmed result stops the
+batch, leaves remaining rows and selections in place, and is never automatically
+retried. Refresh and check authoritative state before retrying an uncertain write.
+
+Whole-zone/subnet and CA-authority deletion forms also update content without a
+browser reload, preserving table state and scroll position where applicable.
+Authority deletion retains its typed confirmation, separate management scope and
+operation ID. Without JavaScript, the existing form submissions and redirects
+remain available. Viewing leases, audit records and other read-only tables does
+not grant deletion rights.
+
 ### Subnet table and editor (0.6.2)
 
 The DHCP page lists subnets in a searchable, paginated table. Select **Edit subnet**

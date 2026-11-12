@@ -7,9 +7,21 @@ from typing import Any, cast
 
 import dns.exception
 import httpx  # pylint: disable=wrong-import-order
-from flask import Blueprint, Flask, abort, flash, g, redirect, render_template, request, url_for  # pylint: disable=wrong-import-order
+from flask import (
+    Blueprint,
+    Flask,
+    abort,
+    flash,
+    g,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)  # pylint: disable=wrong-import-order
 from flask_wtf import CSRFProtect  # pylint: disable=wrong-import-order
 
+from netadmin.async_web import deletion_response, wants_json
 from netadmin.auth import (
     admin_required,
     authenticate_radius,
@@ -221,7 +233,9 @@ def dns_zone_remove() -> Any:
     else:
         agent.post("zones/delete", {"name": zone})
         _audit("dns.zone.delete", zone)
-        flash("Zone removed from Bind. Its data and journal were retained.", "success")
+        return deletion_response(
+            url_for(DNS_INDEX), "Zone removed from Bind. Its data and journal were retained."
+        )
     return redirect(url_for(DNS_INDEX))
 
 
@@ -248,15 +262,31 @@ def dns_save() -> Any:
 @web.route("/dns/records/delete", methods=["POST"])
 @admin_required
 def dns_delete() -> Any:
-    """Delete a DNS value or RRset."""
+    """Delete a DNS value or RRset, acknowledging asynchronous requests explicitly."""
     form = DeleteDnsForm()
-    if form.validate_on_submit():
+    asynchronous = wants_json()
+    if not form.validate_on_submit() or (asynchronous and not form.value.data):
+        if asynchronous:
+            return jsonify(deleted=False, error="Invalid DNS record."), 400
+        flash("Invalid DNS record.", "danger")
+        return redirect(url_for(DNS_INDEX, zone=form.zone.data))
+    if (form.record_type.data or "").upper() in {"SOA", "NS", "ANY", "AXFR", "IXFR", "OPT", "TSIG"}:
+        if asynchronous:
+            return jsonify(deleted=False, error="Protected record type."), 400
+        flash("Protected record type.", "danger")
+        return redirect(url_for(DNS_INDEX, zone=form.zone.data))
+    target = f"{form.name.data}.{form.zone.data}/{form.record_type.data}"
+    try:
         extension("netadmin_dns").delete(
             form.zone.data, form.name.data, form.record_type.data, form.value.data
         )
-        _audit("dns.delete", f"{form.name.data}.{form.zone.data}/{form.record_type.data}")
-        flash("DNS record deleted.", "success")
-    return redirect(url_for(DNS_INDEX, zone=form.zone.data))
+    except (httpx.HTTPError, dns.exception.DNSException, OSError, RuntimeError, ValueError):
+        if not asynchronous:
+            raise
+        _audit("dns.delete", target, False)
+        return jsonify(deleted=False, error="Could not confirm DNS record deletion."), 502
+    _audit("dns.delete", target)
+    return deletion_response(url_for(DNS_INDEX, zone=form.zone.data), "DNS record deleted.")
 
 
 @web.route("/dns/rpi", methods=["POST"])
@@ -322,7 +352,7 @@ def dhcp_delete() -> Any:
     name = request.form.get("name", "")
     cast(AgentClient, extension("netadmin_dhcp")).post("reservations/delete", {"name": name})
     _audit("dhcp.reservation.delete", name)
-    return redirect(url_for(DHCP_INDEX))
+    return deletion_response(url_for(DHCP_INDEX))
 
 
 @web.route("/dhcp/subnets/<network>", methods=["GET", "POST"])
@@ -412,8 +442,7 @@ def dhcp_subnet_remove() -> Any:
     network = request.form.get("network", "")
     cast(AgentClient, extension("netadmin_dhcp")).post("subnets/delete", {"network": network})
     _audit("dhcp.subnet.delete", network)
-    flash("Subnet removed. Lease history was retained.", "success")
-    return redirect(url_for(DHCP_INDEX))
+    return deletion_response(url_for(DHCP_INDEX), "Subnet removed. Lease history was retained.")
 
 
 @web.route("/dhcp/export/kea", methods=["GET"])
@@ -466,7 +495,7 @@ def radius_user_delete() -> Any:
     username = request.form.get("username", "")
     cast(AgentClient, extension("netadmin_radius")).post("users/delete", {"username": username})
     _audit("radius.user.delete", username)
-    return redirect(url_for(RADIUS_INDEX))
+    return deletion_response(url_for(RADIUS_INDEX))
 
 
 @web.route("/radius/clients", methods=["POST"])
@@ -496,7 +525,7 @@ def radius_client_delete() -> Any:
     name = request.form.get("name", "")
     cast(AgentClient, extension("netadmin_radius")).post("clients/delete", {"name": name})
     _audit("radius.client.delete", name)
-    return redirect(url_for(RADIUS_INDEX))
+    return deletion_response(url_for(RADIUS_INDEX))
 
 
 @web.route("/radius/migrate", methods=["POST"])
@@ -616,8 +645,12 @@ def create_app(settings: Settings | None = None) -> Flask:
 
     @app.errorhandler(httpx.HTTPError)
     @app.errorhandler(RuntimeError)
-    def service_error(error: Exception) -> tuple[str, int]:
+    def service_error(error: Exception) -> Any:
         app.logger.exception("Backend service operation failed", exc_info=error)
+        if wants_json():
+            return jsonify(
+                deleted=False, error="A service is unavailable or rejected the change."
+            ), 502
         return render_template(
             "error.html", message="A network service is unavailable or rejected the change."
         ), 502
