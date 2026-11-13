@@ -35,6 +35,9 @@ sortable.table.tHead = { rows: [{ cells: headers }] };
 const body = { rows: sortable.rows, append(row) { const index = this.rows.indexOf(row); this.rows.splice(index, 1); this.rows.push(row); } };
 sortable.table.tBodies = [body];
 const mode = new Element(); mode.checked = true;
+const zone = new Element();
+const zoneSubmissions = [];
+zone.form = { requestSubmit() { zoneSubmissions.push(zone.value); } };
 const direct = new Element(), agentField = new Element();
 let polling = [], fetchCalls = 0, connected = true, accessMode = 'Read-only';
 function statusCard(url) {
@@ -52,13 +55,19 @@ const document = {
   getElementById: id => ({ dns_use_agent: mode, leases: leases.table, clients: clients.table, sorted: sortable.table })[id],
   addEventListener: (_, callback) => callback(),
   querySelector: selector => selector.includes('leases') ? leases.counter : clients.counter,
-  querySelectorAll: selector => ({ '[data-direct-dns]': [direct], '[data-dns-agent-field]': [agentField], 'table': [sortable.table], '[data-table-filter]': [leases.input, clients.input, sortable.input], '[data-connection-status-url]': [status] })[selector] || [],
+  querySelectorAll: selector => ({ '[data-dns-zone-select]': [zone], '[data-direct-dns]': [direct], '[data-dns-agent-field]': [agentField], 'table': [sortable.table], '[data-table-filter]': [leases.input, clients.input, sortable.input], '[data-connection-status-url]': [status] })[selector] || [],
 };
 vm.runInNewContext(readFileSync(new URL('../netadmin/static/app.js', import.meta.url), 'utf8'), {
   document, window: { matchMedia: () => ({ matches: false, addEventListener() {} }), setInterval(callback, delay) { assert.equal(delay, 30000); polling.push(callback); } },
   Event, AbortSignal, fetch: async (url, options) => { fetchCalls++; assert.equal(url, '/connections/status/dhcp'); assert.equal(options.credentials, 'same-origin'); if (connected === 'timeout') throw Object.assign(new Error('private backend data'), { name: 'TimeoutError' }); if (!connected) throw new Error('private backend data'); return { ok: true, redirected: false, json: async () => ({ state: 'Connected', message: 'Agent authenticated', checked_at: 1, access_mode: accessMode }) }; },
   localStorage: { getItem: () => null }, ResizeObserver: class { observe() {} },
 }, { filename: new URL('../netadmin/static/app.js', import.meta.url).pathname });
+assert.deepEqual(zoneSubmissions, []); // Initial rendering does not trigger a transfer.
+zone.value = 'example.test'; zone.fire('change');
+zone.value = 'other.test'; zone.fire('change');
+zone.value = ''; zone.fire('change');
+assert.deepEqual(zoneSubmissions, ['example.test', 'other.test', '']);
+console.log('DNS zone selection submits immediately, including clearing the selection');
 sortable.next.fire('click');
 headers[0].child.fire('click');
 assert.equal(sortable.visible()[0].cells[0].textContent, '192.0.2.1');

@@ -62,6 +62,9 @@
     });
   };
   document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('[data-dns-zone-select]').forEach(select => {
+      select.addEventListener('change', () => { select.form.requestSubmit(); });
+    });
     document.querySelectorAll('[data-connection-status-url]').forEach(card => {
       const badge = card.querySelector('[data-connection-state]');
       const message = card.querySelector('[data-connection-message]');

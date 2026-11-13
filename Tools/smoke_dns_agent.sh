@@ -14,6 +14,9 @@ from netadmin.agents.dns import create_dns_agent
 
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)
+    # Dual-stack hostname with an IPv4-only Bind listener; no external DNS/network.
+    with Path('/etc/hosts').open('a') as hosts:
+        hosts.write('\n::1 bind-smoke.test\n127.0.0.1 bind-smoke.test\n')
     key = root / 'key.conf'
     key.write_text('key "test" { algorithm hmac-sha256; secret "YWJj"; };')
     rndc = 'include "' + str(key) + '"; options { default-server 127.0.0.1; default-key "test"; };'
@@ -32,7 +35,7 @@ with tempfile.TemporaryDirectory() as directory:
             time.sleep(.1)
         else:
             raise AssertionError('Bind control channel did not start')
-        os.environ.update(NETADMIN_AGENT_TOKEN='synthetic', DNS_UPDATE_KEY='test', DNS_PORT='9153', DNS_MAIN_CONFIG=str(main),
+        os.environ.update(NETADMIN_AGENT_TOKEN='synthetic', DNS_UPDATE_KEY='test', DNS_SERVER='bind-smoke.test', DNS_PORT='9153', DNS_MAIN_CONFIG=str(main),
                           DNS_MANAGED_CONFIG=str(root/'managed.conf'), DNS_ZONE_DIR=str(root/'zones'))
         client = create_dns_agent().test_client()
         headers = {'Authorization':'Bearer synthetic'}
@@ -117,7 +120,7 @@ with tempfile.TemporaryDirectory() as directory:
         os.environ['NETADMIN_AGENT_READ_ONLY'] = 'true'
         assert client.get('/capabilities', headers=headers).json['read_only'] is True
         assert client.post('/zones', headers=headers, json={'name':'blocked.example','content':zone}).status_code == 403
-        print('Real Bind discovery, zone lifecycle, agent record reads/updates/deletes and rollback passed')
+        print('Real Bind hostname transport, discovery, zone lifecycle, agent record reads/updates/deletes and rollback passed')
     finally:
         daemon.terminate()
         daemon.wait(timeout=10)

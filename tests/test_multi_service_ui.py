@@ -27,6 +27,9 @@ def test_multiple_dns_zones_can_be_selected_independently(tmp_path):
     for zone in ("example.net", "other.net"):
         response = client.get("/dns", query_string={"zone": zone})
         assert response.status_code == 200
+        assert 'name="zone" data-dns-zone-select' in response.text
+        assert 'method="get" action="/dns"' in response.text
+        assert "Load live zone" in response.text  # Retain the no-JavaScript fallback.
         assert f'value="{zone}" selected' in response.text
         assert "example.net" in response.text
         assert "other.net" in response.text
