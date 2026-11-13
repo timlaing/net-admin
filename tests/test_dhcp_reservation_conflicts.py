@@ -62,6 +62,31 @@ def test_isc_same_or_unknown_subnet_mac_conflict_names_existing_reservation(
     assert managed.read_text() == ""
 
 
+def test_ambiguous_subnet_discovery_returns_conflict_without_writing_or_reload(
+    reservation_agent, monkeypatch
+):
+    client, main, managed = reservation_agent
+    included = main.parent / "vlan.conf"
+    included.write_text(
+        "subnet 198.51.100.0 netmask 255.255.255.0 {}\nsubnet 192.0.2.0 netmask 255.255.255.0 {}\n"
+    )
+    originals = {path: path.read_bytes() for path in (main, included, managed)}
+
+    def unexpected_install(*_args, **_kwargs):
+        pytest.fail("An ambiguous reservation must not install or reload configuration")
+
+    monkeypatch.setattr("netadmin.agents.dhcp._install_changes", unexpected_install)
+    response = client.post(
+        "/reservations",
+        headers=AUTH,
+        json={"name": "device-two", "mac": "aa:bb:cc:dd:ee:01", "address": "198.51.100.5"},
+    )
+    assert response.status_code == 409
+    assert "Subnet discovery is ambiguous or invalid" in response.json["error"]
+    assert "Resolve subnet definitions" in response.json["error"]
+    assert {path: path.read_bytes() for path in originals} == originals
+
+
 def test_address_conflict_identifies_existing_host_and_mac_without_writing(reservation_agent):
     client, main, managed = reservation_agent
     before = main.read_bytes()

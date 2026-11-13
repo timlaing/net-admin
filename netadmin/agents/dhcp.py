@@ -249,7 +249,15 @@ def _save_reservation() -> Any:
     main_config = _path("DHCP_MAIN")
     all_items = _all_reservations(main_config)
     others = [entry for entry in all_items if entry["name"] != item["name"]]
-    conflict = _reservation_conflict(others, item, main_config)
+    try:
+        conflict = _reservation_conflict(others, item, main_config)
+    except ValueError:
+        return jsonify(
+            {
+                "error": "Subnet discovery is ambiguous or invalid. Resolve subnet "
+                "definitions before reserving a shared MAC address."
+            }
+        ), 409
     if conflict:
         return jsonify({"error": conflict}), 409
     items = [entry for entry in _current(managed) if entry["name"] != item["name"]]
