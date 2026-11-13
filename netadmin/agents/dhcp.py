@@ -148,11 +148,48 @@ def _validate_live(main_config: Path) -> None:
     )
 
 
-def _duplicate(entries: list[dict[str, str]], item: dict[str, str]) -> bool:
-    """True when another reservation already uses this MAC or address."""
-    return any(
-        entry["mac"] == item["mac"] or entry["address"] == item["address"] for entry in entries
+def _reservation_conflict(
+    entries: list[dict[str, str]], item: dict[str, str], main_config: Path
+) -> str | None:
+    """Identify address conflicts and MAC conflicts within the backend's scope."""
+    for entry in entries:
+        if entry["address"] == item["address"]:
+            return (
+                f"IP address {item['address']} is already reserved for {entry['name']} "
+                f"(MAC {entry['mac']}). Update or delete that reservation, or choose another IP."
+            )
+    same_mac = [entry for entry in entries if entry["mac"] == item["mac"]]
+    if not same_mac:
+        return None
+    # Kea currently stores global reservations, where hardware identifiers must
+    # remain unique. ISC can select different host declarations by subnet.
+    networks = (
+        []
+        if _kea()
+        else [
+            ipaddress.IPv4Network(f"{subnet['network']}/{subnet['netmask']}")
+            for subnet in _all_subnets(main_config)
+        ]
     )
+    target = [network for network in networks if ipaddress.IPv4Address(item["address"]) in network]
+    for entry in same_mac:
+        existing = [
+            network for network in networks if ipaddress.IPv4Address(entry["address"]) in network
+        ]
+        # Only permit reuse when both addresses belong to distinct, unambiguous
+        # configured subnets; unknown or overlapping scopes remain conservative.
+        if len(target) == len(existing) == 1 and target != existing:
+            continue
+        return (
+            f"MAC address {item['mac']} is already reserved for {entry['name']} "
+            f"at {entry['address']} in this reservation scope. Update that reservation, "
+            "or use a different configured subnet with a distinct reservation name."
+            if not _kea()
+            else f"MAC address {item['mac']} is already reserved for {entry['name']} "
+            f"at {entry['address']}. Kea global reservations require unique MAC addresses; "
+            "update or delete that reservation."
+        )
+    return None
 
 
 def _external_changes(entries: list[dict[str, str]], managed: Path, name: str) -> dict[Path, str]:
@@ -212,8 +249,9 @@ def _save_reservation() -> Any:
     main_config = _path("DHCP_MAIN")
     all_items = _all_reservations(main_config)
     others = [entry for entry in all_items if entry["name"] != item["name"]]
-    if _duplicate(others, item):
-        return jsonify({"error": "Duplicate MAC or address"}), 409
+    conflict = _reservation_conflict(others, item, main_config)
+    if conflict:
+        return jsonify({"error": conflict}), 409
     items = [entry for entry in _current(managed) if entry["name"] != item["name"]]
     items.append(item)
     changes = {managed: render_reservations(items)}
