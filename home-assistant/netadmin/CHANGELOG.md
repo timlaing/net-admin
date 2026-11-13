@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026.11.2
+
+- Allow the same MAC address to have separate ISC DHCP reservations in distinct configured subnets, using a unique reservation name per VLAN.
+- Show actionable DHCP reservation conflicts while preserving submitted form values; report ambiguous subnet discovery as a conflict without writing or reloading configuration.
+- Harden legacy CA certificate downloads with canonical identifiers, descriptor-relative reads, symlink rejection, regular-file checks and bounded reads. Unsafe and unavailable record lookups return the same response.
+- Preserve authentication, administrator authorization, CSRF protection, read-only restrictions and agent validation/rollback.
+- Upgrade the web app/Home Assistant app and the DHCP and CA agents together to receive all fixes. No live service configuration migration is performed.
+
 ## 2026.11.1
 
 - Fix DNS management with server hostnames, including Docker service names, and bound resolver wait time and concurrent stalled lookups.

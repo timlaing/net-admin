@@ -7,8 +7,10 @@ import hashlib
 import heapq
 import json
 import os
+import stat
 import subprocess  # nosec B404
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +34,7 @@ from netadmin.services.step_ca import (
 CERTIFICATE_FILE = "certificate.pem"
 UNKNOWN_CERTIFICATE = "Unknown certificate"
 REVOCATION_ERROR = "CA revocation failed; check CA state before retrying"
+MAX_CERTIFICATE_BYTES = 1_048_576
 
 
 def _root() -> Path:
@@ -241,19 +244,55 @@ def _revoke_serial() -> Any:
         return jsonify({"error": REVOCATION_ERROR}), 502
 
 
+def _record_certificate(record_id: uuid.UUID) -> bytes:
+    """Read only a regular public certificate within a pinned, non-symlink record."""
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    with ExitStack() as stack:
+        root_fd = os.open(_root(), directory_flags)
+        stack.callback(os.close, root_fd)
+        # UUID.hex creates a canonical path component, not a client-provided path.
+        record_fd = os.open(record_id.hex, directory_flags, dir_fd=root_fd)
+        stack.callback(os.close, record_fd)
+        descriptor = os.open(
+            CERTIFICATE_FILE,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=record_fd,
+        )
+        stack.callback(os.close, descriptor)
+        with os.fdopen(descriptor, "rb", closefd=False) as certificate:
+            info = os.fstat(certificate.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_CERTIFICATE_BYTES:
+                raise OSError("Certificate record is not a bounded regular file")
+            data = certificate.read(MAX_CERTIFICATE_BYTES + 1)
+            if len(data) > MAX_CERTIFICATE_BYTES:
+                raise OSError("Certificate record exceeds the download limit")
+            return data
+
+
 def _download(identifier: str) -> Any:
     if identifier == "root":
-        path = configured_path("STEP_CA_ROOT", "/trust/root_ca.crt")
-    elif len(identifier) == 32 and all(char in "0123456789abcdef" for char in identifier):
-        path = _root() / identifier / CERTIFICATE_FILE
+        try:
+            data = configured_path("STEP_CA_ROOT", "/trust/root_ca.crt").read_bytes()
+        except FileNotFoundError:
+            return jsonify({"error": UNKNOWN_CERTIFICATE}), 404
+        except (OSError, ValueError):
+            return jsonify({"error": "Certificate record unavailable"}), 502
     else:
-        return jsonify({"error": UNKNOWN_CERTIFICATE}), 404
-    if not path.is_file():
-        return jsonify({"error": UNKNOWN_CERTIFICATE}), 404
+        try:
+            record_id = uuid.UUID(hex=identifier)
+            if identifier != record_id.hex:
+                raise ValueError("Certificate ID is not canonical")
+        except ValueError:
+            return jsonify({"error": UNKNOWN_CERTIFICATE}), 404
+        try:
+            data = _record_certificate(record_id)
+        except OSError:
+            # Missing, inaccessible, unsafe and non-regular records look identical.
+            return jsonify({"error": UNKNOWN_CERTIFICATE}), 404
     try:
-        certs = x509.load_pem_x509_certificates(path.read_bytes())
+        certs = x509.load_pem_x509_certificates(data)
         return jsonify({"pem": b"".join(cert.public_bytes(PEM) for cert in certs).decode("ascii")})
-    except (OSError, ValueError):
+    except ValueError:
         return jsonify({"error": "Certificate record unavailable"}), 502
 
 
