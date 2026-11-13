@@ -10,6 +10,7 @@ from typing import Any, cast
 import httpx
 from flask import Blueprint, Response, abort, redirect, render_template, request, url_for
 
+from netadmin.async_web import deletion_response
 from netadmin.auth import admin_required, current_identity, extension
 from netadmin.ca_runtime.store import identifier
 from netadmin.config import Settings
@@ -185,6 +186,8 @@ def mutate(action: str) -> Any:
                 "Cache-Control": "no-store",
             },
         )
+    if action == "delete":
+        return deletion_response(url_for("authorities.index"))
     return redirect(url_for("authorities.index"))
 
 

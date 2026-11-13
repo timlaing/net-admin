@@ -2,9 +2,11 @@
 
 import io
 import json
+import re
 import uuid
 from dataclasses import replace
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -68,6 +70,28 @@ def test_authority_and_issuer_pages_and_public_downloads(web):
     assert b"The agent is read-only" in web.client.get(root + "/issued").data
     web.remote.get = lambda _path: {"authorities": [], "certificates": []}
     assert web.client.get(root + "/issued").status_code == 404
+
+
+def test_deletion_recovery_url_uses_its_own_submitted_operation_id(web):
+    response = web.client.get("/certificates/authorities")
+    assert response.status_code == 200
+    forms = re.findall(r"<form\b[^>]*>.*?</form>", response.text, re.DOTALL)
+    operation_ids = []
+    deletion_forms = 0
+    for form in forms:
+        operation = re.search(r'name="request_id" value="([a-f0-9]{32})"', form)
+        if operation is None:
+            continue
+        operation_ids.append(operation[1])
+        recovery = re.search(r'data-delete-operation-url="([^"]+)"', form)
+        if recovery is not None:
+            deletion_forms += 1
+            assert urlsplit(recovery[1]).path == (
+                "/certificates/authorities/operations/" + operation[1]
+            )
+    assert deletion_forms == len(web.state.store.status()["authorities"])
+    assert deletion_forms > 0
+    assert len(operation_ids) == len(set(operation_ids))
 
 
 def test_leaf_sign_and_revoke_use_selected_issuer_and_never_export_secrets(web):

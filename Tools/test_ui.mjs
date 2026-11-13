@@ -20,7 +20,7 @@ function fixture(id, count) {
   const tools = { querySelector: selector => ({ '[data-page-size]': size, '[data-page-previous]': previous, '[data-page-next]': next, '[data-page-position]': position })[selector] };
   const input = new Element(); input.dataset = { tableFilter: id }; input.closest = () => tools;
   return { input, size, previous, next, position, counter, rows,
-    table: Object.assign(new Element(), { id, querySelectorAll: () => rows }), visible: () => rows.filter(row => !row.hidden) };
+    table: Object.assign(new Element(), { id, dataset: {}, querySelectorAll: () => rows }), visible: () => rows.filter(row => !row.hidden) };
 }
 const leases = fixture('leases', 273), clients = fixture('clients', 4);
 const sortable = fixture('sorted', 24);
@@ -141,3 +141,16 @@ const before = fetchCalls;
 await polling[0]();
 assert.equal(fetchCalls, before);
 console.log('Overview status refresh, failure state and hidden-page pause passed');
+leases.input.value = 'even'; leases.input.fire('input');
+leases.size.value = '10'; leases.size.fire('change');
+leases.next.fire('click');
+const deleted = leases.visible()[0];
+leases.rows.splice(leases.rows.indexOf(deleted), 1);
+leases.table.dispatchEvent(new Event('table-rows-changed'));
+assert.equal(leases.input.value, 'even');
+assert.equal(leases.size.value, '10');
+assert.equal(leases.position.textContent, 'Page 2 of 14');
+leases.table.dataset.page = '3';
+leases.table.dispatchEvent(new Event('table-state-restore'));
+assert.equal(leases.position.textContent, 'Page 3 of 14');
+console.log('Row deletion preserves search/page-size/page, and restored view state is applied');
