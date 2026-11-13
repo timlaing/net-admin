@@ -219,6 +219,12 @@ def test_address_selection_budget_failures_do_not_send_dns_requests(
 
     monkeypatch.setattr(socket, "getaddrinfo", resolve)
     monkeypatch.setattr(socket, "socket", Unreachable)
+    # Test the transport's remaining-budget checks independently of the resolver
+    # worker's own bounded wait (covered by the resolver concurrency tests).
+    monkeypatch.setattr(
+        "netadmin.services.dns._resolve_addresses",
+        lambda host, port, _deadline: resolve(host, port),
+    )
     monkeypatch.setattr(dns.query, "xfr", unexpected)
     monkeypatch.setattr(
         "netadmin.services.dns.time.monotonic",

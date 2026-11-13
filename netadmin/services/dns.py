@@ -7,8 +7,10 @@ import re
 import socket
 import time
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from threading import BoundedSemaphore
 from urllib.parse import urlencode
 
 import dns.exception
@@ -24,11 +26,39 @@ import dns.zone
 from netadmin.services.agents import AgentClient
 
 type _SocketAddress = tuple[str, int] | tuple[str, int, int, int] | tuple[int, bytes]
+type _AddressInfo = tuple[int, int, int, str, _SocketAddress]
+
+_RESOLUTION_LIMIT = 4
+_RESOLUTION_TIMEOUT = "DNS address resolution timed out"
+_RESOLUTION_SLOTS = BoundedSemaphore(_RESOLUTION_LIMIT)
+_RESOLUTION_POOL = ThreadPoolExecutor(
+    max_workers=_RESOLUTION_LIMIT, thread_name_prefix="netadmin-dns"
+)
 
 
-def _reachable_address(
-    addresses: Sequence[tuple[int, int, int, str, _SocketAddress]], deadline: float
-) -> _SocketAddress:
+def _resolve_addresses(server: str, port: int, deadline: float) -> Sequence[_AddressInfo]:
+    """Bound caller wait and all unfinished lookups, including timed-out workers."""
+    if deadline <= time.monotonic():
+        raise TimeoutError(_RESOLUTION_TIMEOUT)
+    slots = _RESOLUTION_SLOTS
+    # A context manager would block and release at caller exit, not lookup completion.
+    if not slots.acquire(blocking=False):  # pylint: disable=consider-using-with
+        raise TimeoutError("DNS hostname resolver is busy")
+    try:
+        future = _RESOLUTION_POOL.submit(socket.getaddrinfo, server, port, type=socket.SOCK_STREAM)
+    except BaseException:
+        slots.release()
+        raise
+    # Timeout does not cancel a running system resolver. Release capacity only
+    # when the actual lookup finishes; capturing slots also binds it to this pool.
+    future.add_done_callback(lambda _completed: slots.release())
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError(_RESOLUTION_TIMEOUT)
+    return future.result(timeout=remaining)
+
+
+def _reachable_address(addresses: Sequence[_AddressInfo], deadline: float) -> _SocketAddress:
     """Probe TCP establishment only, without sending or retrying DNS mutations."""
     selection_deadline = min(deadline, time.monotonic() + 2)
     last_error: OSError | None = None
@@ -56,14 +86,14 @@ def _server_target(server: str, port: int) -> tuple[str, float]:
     else:
         return server, 10
     deadline = time.monotonic() + 9
-    addresses = socket.getaddrinfo(server, port, type=socket.SOCK_STREAM)
+    addresses = _resolve_addresses(server, port, deadline)
     address = addresses[0][4]
     if len(addresses) > 1:
         # Reserve most of the caller's ten-second timeout for DNS transport.
         address = _reachable_address(addresses, deadline)
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        raise TimeoutError("DNS address resolution timed out")
+        raise TimeoutError(_RESOLUTION_TIMEOUT)
     if len(address) == 4 and address[3]:
         return f"{address[0]}%{address[3]}", remaining
     return str(address[0]), remaining
