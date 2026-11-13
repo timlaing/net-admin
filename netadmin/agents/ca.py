@@ -258,7 +258,8 @@ def _record_certificate(record_id: uuid.UUID) -> bytes:
             os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
             dir_fd=record_fd,
         )
-        with os.fdopen(descriptor, "rb") as certificate:
+        stack.callback(os.close, descriptor)
+        with os.fdopen(descriptor, "rb", closefd=False) as certificate:
             info = os.fstat(certificate.fileno())
             if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_CERTIFICATE_BYTES:
                 raise OSError("Certificate record is not a bounded regular file")

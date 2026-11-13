@@ -1,5 +1,6 @@
 """Legacy CA downloads cannot traverse records or follow filesystem links."""
 
+import errno
 import os
 from pathlib import Path
 
@@ -93,6 +94,47 @@ def test_unsafe_and_missing_records_have_identical_lookup_errors(downloads, kind
     response = client.get(f"/certificates/{IDENTIFIER}", headers=AUTH)
     assert response.status_code == 404
     assert response.json == {"error": "Unknown certificate"}
+
+
+@pytest.mark.parametrize("kind", ["success", "directory", "wrapper-failure"])
+def test_all_descriptors_close_even_when_certificate_wrapper_fails(downloads, monkeypatch, kind):
+    client, ledger, pem = downloads
+    record = ledger / IDENTIFIER
+    record.mkdir()
+    certificate = record / "certificate.pem"
+    if kind == "directory":
+        certificate.mkdir()
+    else:
+        certificate.write_bytes(pem)
+    opened = []
+    closed = []
+    original_open = os.open
+    original_close = os.close
+
+    def track_open(path, flags, *args, **kwargs):
+        descriptor = original_open(path, flags, *args, **kwargs)
+        opened.append(descriptor)
+        return descriptor
+
+    def track_close(descriptor):
+        closed.append(descriptor)
+        original_close(descriptor)
+
+    def failed_wrapper(_descriptor, _mode, **_kwargs):
+        raise OSError("synthetic wrapper failure before taking descriptor ownership")
+
+    monkeypatch.setattr("netadmin.agents.ca.os.open", track_open)
+    monkeypatch.setattr("netadmin.agents.ca.os.close", track_close)
+    if kind == "wrapper-failure":
+        monkeypatch.setattr("netadmin.agents.ca.os.fdopen", failed_wrapper)
+    response = client.get(f"/certificates/{IDENTIFIER}", headers=AUTH)
+    assert response.status_code == (200 if kind == "success" else 404)
+    assert len(opened) == 3
+    assert closed == opened[::-1]
+    for descriptor in opened:
+        with pytest.raises(OSError) as error:
+            os.fstat(descriptor)
+        assert error.value.errno == errno.EBADF
 
 
 def test_inaccessible_record_does_not_expose_filesystem_details(downloads, monkeypatch):
