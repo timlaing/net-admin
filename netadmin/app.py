@@ -326,14 +326,23 @@ def dhcp_index() -> Any:
     """List leases and manage reservations through the DHCP agent."""
     client = cast(AgentClient, extension("netadmin_dhcp"))
     form = ReservationForm()
+    reservation_error = None
+    status = 200
     if form.validate_on_submit():
-        client.post(
-            "reservations",
-            {"name": form.name.data, "mac": form.mac.data, "address": form.address.data},
-        )
-        _audit("dhcp.reservation.upsert", form.name.data or "")
-        flash("Reservation saved.", "success")
-        return redirect(url_for(DHCP_INDEX))
+        try:
+            client.post(
+                "reservations",
+                {"name": form.name.data, "mac": form.mac.data, "address": form.address.data},
+            )
+        except httpx.HTTPStatusError as error:
+            status = error.response.status_code
+            if status not in {400, 403, 409, 422}:
+                raise
+            reservation_error = _dhcp_reservation_error(error.response)
+        else:
+            _audit("dhcp.reservation.upsert", form.name.data or "")
+            flash("Reservation saved.", "success")
+            return redirect(url_for(DHCP_INDEX))
     return render_template(
         "dhcp.html",
         form=form,
@@ -343,7 +352,28 @@ def dhcp_index() -> Any:
         subnets=client.get("configuration"),
         backend=_dhcp_backend(client),
         read_only=client.read_only(),
-    )
+        reservation_error=reservation_error,
+    ), status
+
+
+def _dhcp_reservation_error(response: httpx.Response) -> str:
+    """Expose bounded agent input errors, never HTML pages or server diagnostics."""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict) and isinstance(body.get("error"), str) and body["error"].strip():
+        return str(body["error"])[:500]
+    if response.status_code == 409:
+        return (
+            "The MAC or IP address conflicts with an existing reservation. "
+            "Check the reservations below, then update the existing entry or choose another IP."
+        )
+    if response.status_code == 403:
+        return (
+            "The DHCP agent refused this change. Check whether the agent is configured read-only."
+        )
+    return "The DHCP agent rejected the reservation. Check the hostname, MAC and IPv4 address."
 
 
 @web.route("/dhcp/reservations/delete", methods=["POST"])
