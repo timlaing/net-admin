@@ -1,5 +1,5 @@
 name: NetAdmin
-version: "2026.11.0"
+version: "2026.11.1"
 stage: experimental
 slug: netadmin
 description: Secure Bind, DHCP and RADIUS administration

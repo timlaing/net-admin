@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026.11.1
+
+- Fix DNS management with server hostnames, including Docker service names, and bound resolver wait time and concurrent stalled lookups.
+- Load live DNS records automatically when selecting an authoritative zone.
+- Delete DNS records, DHCP reservations/subnets and RADIUS users/clients without reloading the page, preserving filters, sorting and pagination.
+- Add cross-page multiple selection and sequential bulk deletion, stopping safely at unconfirmed results without retrying writes.
+- Update standalone deletion views in place and use matching CA deletion/recovery operation IDs.
+- Retain administrator authorization, CSRF protection, read-only restrictions, confirmations and agent validation/rollback.
+
 ## 2026.11.0
 
 - Add integrated CA service controls and authority deletion safeguards.
