@@ -24,6 +24,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       version: ${{ steps.names.outputs.version }}
+      state_schema: ${{ steps.policy.outputs.state_schema }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -39,6 +40,9 @@ jobs:
           [[ "$version" == "$addon_version" ]] \
             || { echo "Tag v$version does not match add-on version $addon_version"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Validate reviewed state compatibility policy
+        id: policy
+        run: python3 netadmin/release_metadata.py metadata
 
   verify:
     name: Verify
@@ -188,6 +192,8 @@ jobs:
           trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
           printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           docker build --pull -f "$BUILD_DOCKERFILE" \
+            --build-arg "NETADMIN_VERSION=$PUBLISH_VERSION" \
+            --label "org.netadmin.state-schema=${{ needs.prepare.outputs.state_schema }}" \
             --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --label "org.opencontainers.image.version=$PUBLISH_VERSION" \
@@ -196,7 +202,7 @@ jobs:
           for smoke in $SMOKE_SCRIPT; do
             bash "$smoke" "$image:sha-$GITHUB_SHA-$BUILD_ARCH"
           done
-          docker push "$image:sha-$GITHUB_SHA-$BUILD_ARCH"
+          bash Tools/push_image.sh "$image:sha-$GITHUB_SHA-$BUILD_ARCH"
           echo "Published $image:sha-$GITHUB_SHA-$BUILD_ARCH" >> "$GITHUB_STEP_SUMMARY"
 
   publish-addon:
@@ -241,13 +247,13 @@ jobs:
             --label 'org.opencontainers.image.licenses=MIT' \
             -t "$image:$PUBLISH_VERSION" -t "$image:sha-$GITHUB_SHA" .
           bash Tools/smoke_addon.sh "$image:$PUBLISH_VERSION"
-          docker push "$image:$PUBLISH_VERSION"
-          docker push "$image:sha-$GITHUB_SHA"
+          bash Tools/push_image.sh "$image:$PUBLISH_VERSION"
+          bash Tools/push_image.sh "$image:sha-$GITHUB_SHA"
           echo "Published $image:$PUBLISH_VERSION and $image:sha-$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
 
   verify-public-images:
     name: Verify anonymous image access
-    needs: [prepare, manifests]
+    needs: [prepare, manifests, publish-addon]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -262,6 +268,11 @@ jobs:
           PUBLISH_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           IMAGE_OWNER="${IMAGE_OWNER,,}" bash Tools/check_public_images.sh "$PUBLISH_VERSION"
+          for arch in amd64 aarch64; do
+            config="$(mktemp -d)"
+            docker --config "$config" manifest inspect "ghcr.io/${IMAGE_OWNER,,}/$arch-addon-netadmin:$PUBLISH_VERSION" >/dev/null
+            rm -rf "$config"
+          done
 
   publish-installer:
     name: Publish fresh-host installer
@@ -291,9 +302,11 @@ jobs:
           python - <<'PY'
           import json, os
           from pathlib import Path
+          policy = json.loads(Path('.github/release-policy.json').read_text())
           Path('installer-ready.json').write_text(json.dumps({
               'schema': 1, 'version': os.environ['PUBLISH_VERSION'],
               'commit': os.environ['GITHUB_SHA'],
+              **policy,
           }) + '\n')
           PY
           gh release upload "$GITHUB_REF_NAME" installer-ready.json \
@@ -323,8 +336,6 @@ jobs:
           # Keep the GHCR repo segment pinned (see the publish job): image names
           # must not follow a repository rename.
           base="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/netadmin"
-          prerelease=false
-          [[ "$PUBLISH_VERSION" == *-* ]] && prerelease=true
           for suffix in '' '-dhcp-agent' '-dns-agent' '-radius-agent' '-ca-agent' '-ca-runtime' '-dns' '-dhcp' '-dhcp-kea' '-radius'; do
             image="${base}${suffix}"
             sources=()
@@ -335,8 +346,46 @@ jobs:
               -t "$image:sha-$GITHUB_SHA" \
               -t "$image:$PUBLISH_VERSION" \
               "${sources[@]}"
-            if [[ "$prerelease" == false ]]; then
-              docker buildx imagetools create -t "$image:latest" "$image:$PUBLISH_VERSION"
-            fi
             echo "Created multi-arch manifests for $image" >> "$GITHUB_STEP_SUMMARY"
           done
+
+  promote-latest:
+    name: Promote verified stable images
+    needs: [prepare, verify-public-images, publish-installer]
+    if: ${{ !contains(needs.prepare.outputs.version, '-') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: Promote only after anonymous access and installer readiness
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          PUBLISH_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          base="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/netadmin"
+          for suffix in '' '-dhcp-agent' '-dns-agent' '-radius-agent' '-ca-agent' '-ca-runtime' '-dns' '-dhcp' '-dhcp-kea' '-radius'; do
+            docker buildx imagetools create -t "$base$suffix:latest" "$base$suffix:$PUBLISH_VERSION"
+          done
+
+  publication-status:
+    name: Report publication outcome
+    if: always()
+    needs: [prepare, publish, publish-addon, manifests, verify-public-images, publish-installer, promote-latest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Keep release publication state explicit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLICATION_STATE: ${{ (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) && 'failed' || 'ready' }}
+        run: python3 netadmin/release_metadata.py status --tag "$GITHUB_REF_NAME" --state "$PUBLICATION_STATE"

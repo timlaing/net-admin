@@ -54,6 +54,7 @@ from netadmin.preferences import read_env_file
 from netadmin.presentation import display_time
 from netadmin.radius_certificates_web import certificate_web
 from netadmin.radius_modes_web import modes_web
+from netadmin.release_web import release_web
 from netadmin.service_logs_web import logs_web
 from netadmin.services.agents import AgentClient
 from netadmin.services.dns import AgentDnsService, BindService, DnsRecord
@@ -661,6 +662,7 @@ def create_app(settings: Settings | None = None) -> Flask:
     app.teardown_request(end_request)
     app.before_request(load_identity)
     app.register_blueprint(web)
+    app.register_blueprint(release_web)
     app.register_blueprint(logs_web)
     app.register_blueprint(connection_web)
     app.register_blueprint(certificate_web)
