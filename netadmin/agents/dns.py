@@ -315,6 +315,7 @@ def create_dns_agent() -> Flask:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", update_key):
         raise ValueError("Invalid DNS_UPDATE_KEY")
     app = create_agent(__name__)
+    app.add_url_rule("/health", view_func=lambda: jsonify({"status": "ok"}), methods=["GET"])
     register_logs(app, "dns")
     app.config.update(
         MAX_CONTENT_LENGTH=1_048_576,

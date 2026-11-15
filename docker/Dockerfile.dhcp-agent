@@ -1,4 +1,7 @@
 FROM ubuntu:26.04
+ARG NETADMIN_VERSION=unknown
+ENV NETADMIN_VERSION=${NETADMIN_VERSION}
+HEALTHCHECK --interval=30s --timeout=15s --start-period=30s --retries=3 CMD python3 -m netadmin.health --kind dhcp --port 8081
 ENV DEBIAN_FRONTEND=noninteractive
 # isc-dhcp-server backs the default DHCP_SERVER=isc; kea-dhcp4 provides the
 # parser behind DHCP_SERVER=kea validation, matching the service image's Kea.

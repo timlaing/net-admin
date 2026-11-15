@@ -76,6 +76,7 @@
       const message = card.querySelector('[data-connection-message]');
       const checked = card.querySelector('[data-connection-checked]');
       const access = card.querySelector('[data-connection-access]');
+      const build = card.querySelector('[data-connection-version]');
       const update = async () => {
         if (document.hidden) return;
         try {
@@ -86,6 +87,7 @@
           const result = await response.json();
           badge.textContent = result.state;
           if (access) access.textContent = result.state === 'Direct Bind' ? 'Direct Bind' : (result.access_mode || 'Unknown');
+          if (build) build.textContent = `App ${result.app_version || 'unknown'} · agent ${result.version || 'unknown'}${result.version_mismatch ? ' — version mismatch; coordinate upgrades' : ''}${result.ready === false ? ' — not ready' : ''}`;
           badge.classList.toggle('status-success', result.state === 'Connected');
           badge.classList.toggle('status-warning', result.state !== 'Connected');
           message.textContent = result.message;

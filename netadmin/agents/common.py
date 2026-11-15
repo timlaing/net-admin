@@ -14,6 +14,8 @@ from typing import Any
 
 from flask import Flask, abort, jsonify, request
 
+from netadmin.health import ready, version
+
 
 class TransactionPathError(ValueError):
     """A discovered service filename is outside the agent's write boundary."""
@@ -48,6 +50,17 @@ def create_agent(name: str) -> Flask:
     @app.get("/capabilities")
     def capabilities() -> Any:
         return jsonify({"read_only": os.getenv("NETADMIN_AGENT_READ_ONLY", "false") == "true"})
+
+    @app.get("/version")
+    def build_metadata() -> Any:
+        return jsonify({"version": version(), "component": name.rsplit(".", 1)[-1]})
+
+    @app.get("/ready")
+    def readiness() -> Any:
+        healthy = ready(name.rsplit(".", 1)[-1])
+        return jsonify(
+            {"status": "ok" if healthy else "unavailable", "ready": healthy, "version": version()}
+        ), 200 if healthy else 503
 
     @app.errorhandler(TransactionPathError)
     def unsafe_path(_error: TransactionPathError) -> tuple[Any, int]:

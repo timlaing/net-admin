@@ -1,4 +1,7 @@
 FROM alpine:3.24
+ARG NETADMIN_VERSION=unknown
+ENV NETADMIN_VERSION=${NETADMIN_VERSION}
+HEALTHCHECK --interval=30s --timeout=15s --start-period=30s --retries=3 CMD python3 -m netadmin.health --kind dns --port 8083
 RUN apk add --no-cache python3 py3-pip bind
 WORKDIR /app
 COPY pyproject.toml /app/

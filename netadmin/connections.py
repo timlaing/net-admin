@@ -330,6 +330,8 @@ class ConnectionResult:
     state: str
     message: str
     access_mode: str = "Unknown"
+    version: str = "unknown"
+    readiness: bool | None = None
 
 
 def agent_status(settings: Settings, service: str) -> ConnectionResult:
@@ -361,11 +363,14 @@ def agent_status(settings: Settings, service: str) -> ConnectionResult:
         )
         if not valid:
             return ConnectionResult("Unavailable", "Unexpected agent response. Check its URL.")
+        build, readiness = client.deployment_info()
         return ConnectionResult(
-            "Connected",
+            "Not ready" if readiness is False else "Connected",
             "Agent accepted TLS and bearer authentication. "
             "Service operation permissions are checked separately in Settings.",
             client.access_mode(),
+            build,
+            readiness,
         )
     except (httpx.HTTPError, OSError, ValueError, RuntimeError) as error:
         return ConnectionResult("Unavailable", _failure_message(error))
