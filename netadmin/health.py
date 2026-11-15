@@ -21,6 +21,22 @@ def version() -> str:
     return value if re.fullmatch(r"\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?", value) else "unknown"
 
 
+def _ca_ready(kind: str) -> bool:
+    control = os.getenv("CA_CONTROL_SOCKET", "/control/ca.sock" if kind == "runtime" else "")
+    if control:
+        token = Path(os.environ["CA_MANAGEMENT_TOKEN_FILE"]).read_text(encoding="utf-8").strip()
+        with httpx.Client(transport=httpx.HTTPTransport(uds=control), timeout=3) as client:
+            response = client.get(
+                "http://controller/ready", headers={"X-CA-Management-Token": token}
+            )
+            body = response.json() if response.status_code == 200 else None
+            return isinstance(body, dict) and body.get("ready") is True
+    return (
+        Path(os.getenv("STEP_CA_ROOT", "/trust/root_ca.crt")).is_file()
+        and Path(os.getenv("CA_DATA_DIR", "/data")).is_dir()
+    )
+
+
 def ready(kind: str) -> bool:
     """Check required configuration or CA controller/issuer readiness without writes."""
     try:
@@ -50,23 +66,7 @@ def ready(kind: str) -> bool:
                 for key, default in paths
             )
         elif kind in {"ca", "runtime"}:
-            control = os.getenv(
-                "CA_CONTROL_SOCKET", "/control/ca.sock" if kind == "runtime" else ""
-            )
-            if control:
-                token = (
-                    Path(os.environ["CA_MANAGEMENT_TOKEN_FILE"]).read_text(encoding="utf-8").strip()
-                )
-                with httpx.Client(transport=httpx.HTTPTransport(uds=control), timeout=3) as client:
-                    response = client.get(
-                        "http://controller/ready", headers={"X-CA-Management-Token": token}
-                    )
-                    body = response.json() if response.status_code == 200 else None
-                    return isinstance(body, dict) and body.get("ready") is True
-            return (
-                Path(os.getenv("STEP_CA_ROOT", "/trust/root_ca.crt")).is_file()
-                and Path(os.getenv("CA_DATA_DIR", "/data")).is_dir()
-            )
+            return _ca_ready(kind)
         else:
             return False
     except (OSError, ValueError, KeyError, subprocess.SubprocessError, httpx.HTTPError):
