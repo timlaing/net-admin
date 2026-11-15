@@ -43,6 +43,12 @@ Every non-tmpfs service mount must be covered by the declared selection. Named
 volumes outside the checkpoint root require a bind-mounted/exported backup layout
 or native offline volume snapshots; they are refused rather than silently omitted.
 Backup storage must be private and outside the source tree.
+Install `NETADMIN_OPERATIONS_ROOT`, `NETADMIN_BACKUP_DIRECTORY`,
+`NETADMIN_RESTORE_DIRECTORY`, `NETADMIN_RECOVERY_PASSWORD_FILE` and
+`NETADMIN_UPDATE_PLAN` in a private operator environment file. The CLI/plan must
+match those separate boundaries; neither can widen them. The example service
+loads `/etc/netadmin/operations.env`. Restore rehearsals should use the private
+backup directory as the separately configured restore directory.
 
 The coordinator requires a published stable release with all installer assets and
 `installer-ready.json`. It verifies every image version/revision, requires image
