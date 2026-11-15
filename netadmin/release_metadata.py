@@ -13,18 +13,25 @@ from typing import Any
 
 REPO = "timlaing/net-admin"
 ASSETS = {"install.sh", "install.sh.sha256", "compose.yml", "installer-ready.json"}
+CHECKOUT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def metadata(config: Path, policy: Path) -> dict[str, Any]:
     """Read only the add-on version and reviewed persistent-state policy."""
+    expected_config = CHECKOUT_ROOT / "home-assistant/netadmin/config.yaml"
+    expected_policy = CHECKOUT_ROOT / ".github/release-policy.json"
+    if config.absolute() != expected_config or policy.absolute() != expected_policy:
+        raise ValueError("Release metadata paths must match this checkout's fixed inputs")
+    if expected_config.is_symlink() or expected_policy.is_symlink():
+        raise ValueError("Release metadata inputs must not be symlinks")
     match = re.search(
         r'^version:\s*"(\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?)"\s*$',
-        config.read_text(encoding="utf-8"),
+        expected_config.read_text(encoding="utf-8"),
         re.MULTILINE,
     )
     if match is None:
         raise ValueError("Add-on version is missing or invalid")
-    result = json.loads(policy.read_text(encoding="utf-8"))
+    result = json.loads(expected_policy.read_text(encoding="utf-8"))
     if (
         not isinstance(result.get("state_schema"), int)
         or isinstance(result.get("state_schema"), bool)
@@ -61,7 +68,8 @@ def _gh(arguments: list[str], body: str | None = None) -> subprocess.CompletedPr
     executable = shutil.which("gh")
     if executable is None:
         raise RuntimeError("GitHub CLI is required")
-    return subprocess.run(  # noqa: S603 - trusted CLI and fixed API scope, no shell/token arguments
+    # Trusted CLI and fixed API scope, no shell or token arguments.
+    return subprocess.run(  # noqa: S603
         [executable, *arguments],
         input=body,
         text=True,

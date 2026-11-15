@@ -12,10 +12,13 @@ from netadmin import release_metadata as release
 
 
 @pytest.fixture
-def metadata_files(tmp_path):
-    config = tmp_path / "config.yaml"
+def metadata_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(release, "CHECKOUT_ROOT", tmp_path)
+    config = tmp_path / "home-assistant/netadmin/config.yaml"
+    config.parent.mkdir(parents=True)
     config.write_text('version: "2026.11.3"\n')
-    policy = tmp_path / "policy.json"
+    policy = tmp_path / ".github/release-policy.json"
+    policy.parent.mkdir()
     policy.write_text(json.dumps({"state_schema": 1, "image_rollback_safe": False}))
     return config, policy
 
@@ -48,6 +51,12 @@ def test_invalid_addon_version_is_rejected(metadata_files):
     config.write_text('version: "unexpected/path"\n')
     with pytest.raises(ValueError):
         release.metadata(*metadata_files)
+
+
+def test_cli_cannot_select_unrelated_metadata_files(metadata_files, tmp_path):
+    _config, policy = metadata_files
+    with pytest.raises(ValueError, match="fixed inputs"):
+        release.metadata(tmp_path / "unrelated-private-file", policy)
 
 
 def test_publication_is_not_ready_until_final_asset_set():
