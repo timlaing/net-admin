@@ -118,6 +118,7 @@ def test_managed_ca_checks_private_ready_api(tmp_path, monkeypatch):
 @pytest.mark.parametrize("available", [True, False])
 def test_probe_requires_ready_and_running_listener(monkeypatch, available):
     from contextlib import nullcontext
+    from types import SimpleNamespace
 
     from netadmin.health import main
 
@@ -130,12 +131,21 @@ def test_probe_requires_ready_and_running_listener(monkeypatch, available):
         assert kwargs["timeout"] == 3
         if not available:
             raise OSError("unavailable")
-        return nullcontext()
+        return nullcontext(SimpleNamespace(fileno=lambda: 1))
 
     monkeypatch.setattr("netadmin.health.socket.create_connection", connect)
     with pytest.raises(SystemExit) as exit_code:
         main()
     assert exit_code.value.code == (0 if available else 1)
+
+
+def test_probe_rejects_arbitrary_cli_ports_before_connecting(monkeypatch):
+    from netadmin.health import main
+
+    monkeypatch.setattr("sys.argv", ["health", "--kind", "dns", "--port", "2375"])
+    with pytest.raises(SystemExit) as error:
+        main()
+    assert error.value.code == 2
 
 
 def test_dead_managed_issuer_is_not_ready(runtime, monkeypatch):  # noqa: F811

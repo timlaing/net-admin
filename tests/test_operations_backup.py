@@ -9,6 +9,14 @@ from netadmin.operations.backup import create, password_file, restore, verify
 PASSWORD = b"synthetic-recovery-passphrase"
 
 
+@pytest.fixture(autouse=True)
+def boundaries(tmp_path, monkeypatch):
+    monkeypatch.setenv("NETADMIN_OPERATIONS_ROOT", str(tmp_path / "deployment"))
+    monkeypatch.setenv("NETADMIN_BACKUP_DIRECTORY", str(tmp_path))
+    monkeypatch.setenv("NETADMIN_RESTORE_DIRECTORY", str(tmp_path))
+    monkeypatch.setenv("NETADMIN_RECOVERY_PASSWORD_FILE", str(tmp_path / "password"))
+
+
 @pytest.fixture
 def archive(tmp_path):
     root = tmp_path / "deployment"

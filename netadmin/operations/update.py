@@ -16,10 +16,11 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from netadmin.operations import backup
+from netadmin.operations import backup, paths
 
 REPOSITORY = "timlaing/net-admin"
 IMAGE_PREFIX = "ghcr.io/timlaing/netadmin"
+STABLE_VERSION = r"\d+\.\d+\.\d+"
 
 
 def command(arguments: list[str], directory: Path | None = None) -> str:
@@ -34,7 +35,7 @@ def command(arguments: list[str], directory: Path | None = None) -> str:
 
 def release(client: httpx.Client, requested: str | None) -> dict[str, Any]:
     """Require published assets and the final readiness marker before pulling images."""
-    if requested and not re.fullmatch(r"\d+\.\d+\.\d+", requested):
+    if requested and not re.fullmatch(STABLE_VERSION, requested):
         raise ValueError("Use a stable release version")
     suffix = f"tags/v{requested}" if requested else "latest"
     response = client.get(f"https://api.github.com/repos/{REPOSITORY}/releases/{suffix}")
@@ -44,7 +45,7 @@ def release(client: httpx.Client, requested: str | None) -> dict[str, Any]:
     if (
         metadata.get("draft")
         or metadata.get("prerelease")
-        or not re.fullmatch(r"\d+\.\d+\.\d+", version)
+        or not re.fullmatch(STABLE_VERSION, version)
     ):
         raise ValueError("Release is not a published stable version")
     assets = {a["name"]: a for a in metadata.get("assets", []) if a.get("state") == "uploaded"}
@@ -101,13 +102,13 @@ class Project:
 
 def projects(plan: dict[str, Any]) -> list[Project]:
     """Validate unique scopes beneath the explicitly configured deployment root."""
-    root = Path(plan["root"]).resolve(strict=True)
+    root = paths.exact(Path(plan["root"]), "NETADMIN_OPERATIONS_ROOT").resolve(strict=True)
     result = []
     for spec in plan["projects"]:
-        directory = (root / spec["directory"]).resolve(strict=True)
+        directory = paths.existing(root, spec["directory"])
         if not directory.is_relative_to(root):
             raise ValueError("Compose directory is outside the deployment root")
-        file = str(backup._relative(spec["file"]))  # pylint: disable=protected-access
+        file = str(paths.existing(directory, spec["file"]).relative_to(directory))
         name = str(spec["project"])
         services = spec["services"]
         if (
@@ -138,6 +139,71 @@ def _image(repository: str, version: str) -> dict[str, Any]:
     return image
 
 
+def _update_owned(labels: dict[str, str]) -> bool:
+    return (
+        labels.get("wud.trigger.docker.enabled") == "false"
+        and labels.get("wud.trigger.dockercompose.enabled") == "false"
+        and not any(
+            v == "true"
+            for k, v in labels.items()
+            if k.startswith(("wud.trigger.docker.", "wud.trigger.dockercompose."))
+            and k.endswith(".enabled")
+        )
+    )
+
+
+def _baseline(
+    current: dict[str, Any], target: dict[str, Any], adopt: bool
+) -> tuple[str, dict[str, Any]]:
+    if (
+        not current["State"]["Running"]
+        or current["State"].get("Health", {}).get("Status") == "unhealthy"
+    ):
+        raise ValueError("Baseline cohort is not healthy; diagnose it before updating")
+    if not adopt and not _update_owned(current["Config"].get("Labels", {})):
+        raise ValueError("Pause external updaters and explicitly --adopt the cohort once")
+    repository = current["Config"]["Image"].split("@", 1)[0].rsplit(":", 1)[0]
+    if not repository.startswith(IMAGE_PREFIX):
+        raise ValueError("Only NetAdmin release images may enter the cohort")
+    prior: dict[str, Any] = json.loads(command(["docker", "image", "inspect", current["Image"]]))[0]
+    version = prior["Config"].get("Labels", {}).get("org.opencontainers.image.version", "")
+    if not re.fullmatch(STABLE_VERSION, version) or tuple(map(int, version.split("."))) > tuple(
+        map(int, target["version"].split("."))
+    ):
+        raise ValueError("Unknown baseline version or attempted downgrade")
+    return repository, prior
+
+
+def _candidate(repository: str, target: dict[str, Any]) -> dict[str, Any]:
+    image = _image(repository, target["version"])
+    metadata = image["Config"].get("Labels", {})
+    if (
+        metadata.get("org.opencontainers.image.version") != target["version"]
+        or metadata.get("org.opencontainers.image.revision") != target["commit"]
+    ):
+        raise ValueError("Image does not match the complete release")
+    test = image["Config"].get("Healthcheck", {}).get("Test")
+    if not test or test == ["NONE"]:
+        raise ValueError("Cohort images must have health checks")
+    return image
+
+
+def _member(
+    current: dict[str, Any], target: dict[str, Any], adopt: bool
+) -> tuple[str, str, bool, bool]:
+    repository, prior = _baseline(current, target, adopt)
+    image = _candidate(repository, target)
+    metadata = prior["Config"].get("Labels", {})
+    same = (
+        metadata.get("org.opencontainers.image.version") == target["version"]
+        and metadata.get("org.opencontainers.image.revision") == target["commit"]
+    )
+    compatible = metadata.get("org.netadmin.state-schema") == str(
+        target["marker"].get("state_schema")
+    )
+    return _digest(prior, repository), _digest(image, repository), same, compatible
+
+
 def prepare(
     scopes: list[Project], target: dict[str, Any], *, adopt: bool
 ) -> tuple[list[dict[str, str]], list[dict[str, str]], set[str], bool, bool]:
@@ -154,57 +220,10 @@ def prepare(
         new, old = {}, {}
         for service in scope.services:
             current = by_service[service]
-            if (
-                not current["State"]["Running"]
-                or current["State"].get("Health", {}).get("Status") == "unhealthy"
-            ):
-                raise ValueError("Baseline cohort is not healthy; diagnose it before updating")
             identifiers.add(current["Id"])
-            labels = current["Config"].get("Labels", {})
-            if not adopt and (
-                labels.get("wud.trigger.docker.enabled") != "false"
-                or labels.get("wud.trigger.dockercompose.enabled") != "false"
-                or any(
-                    v == "true"
-                    for k, v in labels.items()
-                    if k.startswith(("wud.trigger.docker.", "wud.trigger.dockercompose."))
-                    and k.endswith(".enabled")
-                )
-            ):
-                raise ValueError("Pause external updaters and explicitly --adopt the cohort once")
-            repository = current["Config"]["Image"].split("@", 1)[0].rsplit(":", 1)[0]
-            if not repository.startswith(IMAGE_PREFIX):
-                raise ValueError("Only NetAdmin release images may enter the cohort")
-            prior = json.loads(command(["docker", "image", "inspect", current["Image"]]))[0]
-            prior_version = (
-                prior["Config"].get("Labels", {}).get("org.opencontainers.image.version", "")
-            )
-            if not re.fullmatch(r"\d+\.\d+\.\d+", prior_version) or tuple(
-                map(int, prior_version.split("."))
-            ) > tuple(map(int, target["version"].split("."))):
-                raise ValueError("Unknown baseline version or attempted downgrade")
-            same = (
-                same
-                and prior_version == target["version"]
-                and prior["Config"].get("Labels", {}).get("org.opencontainers.image.revision")
-                == target["commit"]
-            )
-            schema_safe = schema_safe and prior["Config"].get("Labels", {}).get(
-                "org.netadmin.state-schema"
-            ) == str(target["marker"].get("state_schema"))
-            image = _image(repository, target["version"])
-            metadata = image["Config"].get("Labels", {})
-            if (
-                metadata.get("org.opencontainers.image.version") != target["version"]
-                or metadata.get("org.opencontainers.image.revision") != target["commit"]
-            ):
-                raise ValueError("Image does not match the complete release")
-            if not image["Config"].get("Healthcheck", {}).get("Test") or image["Config"][
-                "Healthcheck"
-            ]["Test"] == ["NONE"]:
-                raise ValueError("Cohort images must have health checks")
-            old[service] = _digest(prior, repository)
-            new[service] = _digest(image, repository)
+            old[service], new[service], unchanged, compatible = _member(current, target, adopt)
+            same = same and unchanged
+            schema_safe = schema_safe and compatible
         desired.append(new)
         previous.append(old)
     return desired, previous, identifiers, same, schema_safe
@@ -231,8 +250,8 @@ def _exclusive_writers(root: Path, selected: set[str]) -> None:
 
 
 def _covered_mounts(plan: dict[str, Any], selected: set[str]) -> None:
-    root = Path(plan["root"]).resolve()
-    included = [(root / str(backup._relative(name))).resolve() for name in plan["backup_includes"]]  # pylint: disable=protected-access
+    root = paths.exact(Path(plan["root"]), "NETADMIN_OPERATIONS_ROOT").resolve()
+    included = [paths.existing(root, name) for name in plan["backup_includes"]]
     containers = json.loads(command(["docker", "inspect", *sorted(selected)]))
     for container in containers:
         for mount in container["Mounts"]:
@@ -328,6 +347,28 @@ def _journal(
     os.replace(temporary, path)
 
 
+def _storage(plan: dict[str, Any], root: Path) -> Path:
+    destination = paths.exact(Path(plan["backup_directory"]), "NETADMIN_BACKUP_DIRECTORY").resolve(
+        strict=True
+    )
+    if destination.is_relative_to(root) or destination.stat().st_mode & 0o077:
+        raise ValueError("Backup directory must be private and outside the checkpoint root")
+    for journal in destination.glob("checkpoint-*.json"):
+        if json.loads(journal.read_text(encoding="utf-8")).get("phase") not in {
+            "complete",
+            "rolled-back",
+            "recovered",
+        }:
+            raise ValueError(
+                "A prior update is incomplete; verify manual recovery before continuing"
+            )
+    return destination
+
+
+def _original_overrides(scopes: list[Project]) -> dict[Path, bytes | None]:
+    return {p.override: p.override.read_bytes() if p.override.exists() else None for p in scopes}
+
+
 def apply(
     plan: dict[str, Any],
     target: dict[str, Any],
@@ -341,24 +382,11 @@ def apply(
     desired, previous, selected, same, schema_safe = prepare(scopes, target, adopt=adopt)
     if same and not adopt:
         return {"state": "already-current", "version": target["version"]}
-    root = Path(plan["root"]).resolve()
+    root = paths.exact(Path(plan["root"]), "NETADMIN_OPERATIONS_ROOT").resolve()
     _exclusive_writers(root, selected)
     _covered_mounts(plan, selected)
-    destination = Path(plan["backup_directory"]).resolve(strict=True)
-    if destination.is_relative_to(root) or destination.stat().st_mode & 0o077:
-        raise ValueError("Backup directory must be private and outside the checkpoint root")
-    for previous_journal in destination.glob("checkpoint-*.json"):
-        if json.loads(previous_journal.read_text(encoding="utf-8")).get("phase") not in {
-            "complete",
-            "rolled-back",
-            "recovered",
-        }:
-            raise ValueError(
-                "A prior update is incomplete; verify manual recovery before continuing"
-            )
-    old_overrides = {
-        p.override: p.override.read_bytes() if p.override.exists() else None for p in scopes
-    }
+    destination = _storage(plan, root)
+    old_overrides = _original_overrides(scopes)
     activated = False
     stopped: list[Project] = []
     archive = destination / f"checkpoint-{target['version']}-{os.urandom(6).hex()}.enc"
@@ -411,8 +439,9 @@ def main() -> None:
     parser.add_argument("--allow-image-rollback", action="store_true")
     args = parser.parse_args()
     try:
-        plan = json.loads(args.plan.read_text(encoding="utf-8"))
-        destination = Path(plan["backup_directory"]).resolve(strict=True)
+        plan_file = paths.exact(args.plan, "NETADMIN_UPDATE_PLAN")
+        plan = json.loads(plan_file.read_text(encoding="utf-8"))
+        destination = paths.configured("NETADMIN_BACKUP_DIRECTORY").resolve(strict=True)
         with ExitStack() as stack:
             descriptor = os.open(
                 destination / ".update.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600

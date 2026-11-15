@@ -56,6 +56,11 @@ def deployment(tmp_path, monkeypatch):
     root.mkdir()
     snapshots = tmp_path / "snapshots"
     snapshots.mkdir(mode=0o700)
+    monkeypatch.setenv("NETADMIN_OPERATIONS_ROOT", str(root))
+    monkeypatch.setenv("NETADMIN_BACKUP_DIRECTORY", str(snapshots))
+    monkeypatch.setenv("NETADMIN_RESTORE_DIRECTORY", str(snapshots))
+    monkeypatch.setenv("NETADMIN_UPDATE_PLAN", str(tmp_path / "plan.json"))
+    monkeypatch.setenv("NETADMIN_RECOVERY_PASSWORD_FILE", str(tmp_path / "password"))
     specs = []
     containers = []
     for service in ("dns", "ca-runtime"):

@@ -5,6 +5,7 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
+EnvironmentFile=/etc/netadmin/operations.env
 # Copy/edit this example; Python and plan paths must match your installation.
 ExecStart=/opt/netadmin/.venv/bin/python -m netadmin.operations.update --plan /etc/netadmin/update-plan.json --password-file /etc/netadmin/recovery-passphrase
 UMask=0077
