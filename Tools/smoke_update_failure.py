@@ -1,6 +1,7 @@
 """Linux-only real Docker cohort failure smoke, using disposable stub services/state."""
 
 import json
+import os
 import subprocess  # nosec B404
 import sys
 import tempfile
@@ -19,6 +20,11 @@ def main():
         deployment.mkdir()
         snapshots = root / "snapshots"
         snapshots.mkdir(mode=0o700)
+        os.environ.update(
+            NETADMIN_OPERATIONS_ROOT=str(deployment),
+            NETADMIN_BACKUP_DIRECTORY=str(snapshots),
+            NETADMIN_RESTORE_DIRECTORY=str(snapshots),
+        )
         project = "netadmin-cohort-smoke-" + uuid.uuid4().hex[:12]
         repository = "ghcr.io/timlaing/netadmin-cohort-smoke-" + project.rsplit("-", 1)[-1]
         versions = ("2099.0.1", "2099.0.2")
