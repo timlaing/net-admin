@@ -21,6 +21,7 @@ from netadmin.operations import backup, paths
 REPOSITORY = "timlaing/net-admin"
 IMAGE_PREFIX = "ghcr.io/timlaing/netadmin"
 STABLE_VERSION = r"\d+\.\d+\.\d+"
+VERSION_LABEL = "org.opencontainers.image.version"
 
 
 def command(arguments: list[str], directory: Path | None = None) -> str:
@@ -166,7 +167,7 @@ def _baseline(
     if not repository.startswith(IMAGE_PREFIX):
         raise ValueError("Only NetAdmin release images may enter the cohort")
     prior: dict[str, Any] = json.loads(command(["docker", "image", "inspect", current["Image"]]))[0]
-    version = prior["Config"].get("Labels", {}).get("org.opencontainers.image.version", "")
+    version = prior["Config"].get("Labels", {}).get(VERSION_LABEL, "")
     if not re.fullmatch(STABLE_VERSION, version) or tuple(map(int, version.split("."))) > tuple(
         map(int, target["version"].split("."))
     ):
@@ -178,7 +179,7 @@ def _candidate(repository: str, target: dict[str, Any]) -> dict[str, Any]:
     image = _image(repository, target["version"])
     metadata = image["Config"].get("Labels", {})
     if (
-        metadata.get("org.opencontainers.image.version") != target["version"]
+        metadata.get(VERSION_LABEL) != target["version"]
         or metadata.get("org.opencontainers.image.revision") != target["commit"]
     ):
         raise ValueError("Image does not match the complete release")
@@ -195,7 +196,7 @@ def _member(
     image = _candidate(repository, target)
     metadata = prior["Config"].get("Labels", {})
     same = (
-        metadata.get("org.opencontainers.image.version") == target["version"]
+        metadata.get(VERSION_LABEL) == target["version"]
         and metadata.get("org.opencontainers.image.revision") == target["commit"]
     )
     compatible = metadata.get("org.netadmin.state-schema") == str(
@@ -450,6 +451,7 @@ def main() -> None:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with httpx.Client(timeout=15, follow_redirects=True) as client:
                 target = release(client, args.version)
+            selected_version = target["version"]
             result = apply(
                 plan,
                 target,
@@ -457,7 +459,8 @@ def main() -> None:
                 adopt=args.adopt,
                 allow_image_rollback=args.allow_image_rollback,
             )
-            print(json.dumps(result))
+            state = "already-current" if result.get("state") == "already-current" else "updated"
+            print(json.dumps({"state": state, "version": selected_version}))
     except (
         OSError,
         ValueError,
