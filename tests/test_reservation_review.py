@@ -181,3 +181,51 @@ def test_review_ui_preserves_scope_and_requires_explicit_approval(tmp_path):
     )
     assert response.status_code == 302
     assert calls[-1][1]["exclude_from_pools"] is True
+
+
+@pytest.mark.parametrize("phase", ["review", "install"])
+def test_unexpected_configuration_errors_are_redacted_and_leave_files_unchanged(
+    dhcp_state,  # noqa: F811
+    monkeypatch,
+    phase,
+):
+    state = dhcp_state
+    payload = PAYLOAD | {"preview": True}
+    if phase == "install":
+        token = state.client.post("/reservations", json=payload, headers=AUTH).json["token"]
+        payload = PAYLOAD | {"preview_token": token, "exclude_from_pools": True}
+    original = state.main.read_bytes()
+
+    def failure(*_args, **_kwargs):
+        raise ValueError("synthetic-private-diagnostic /private/config/path SECRET-MATERIAL")
+
+    target = "_all_subnets" if phase == "review" else "_validate_live"
+    monkeypatch.setattr("netadmin.agents.dhcp." + target, failure)
+    response = state.client.post("/reservations", json=payload, headers=AUTH)
+    assert response.status_code == 409
+    assert "synthetic-private-diagnostic" not in response.text
+    assert "/private/config/path" not in response.text
+    assert "SECRET-MATERIAL" not in response.text
+    assert state.main.read_bytes() == original
+    assert state.managed.read_bytes() == b""
+
+
+def test_safe_scope_error_remains_actionable(dhcp_state):  # noqa: F811
+    response = dhcp_state.client.post(
+        "/reservations",
+        headers=AUTH,
+        json=PAYLOAD
+        | {
+            "preview": True,
+            "network": "198.51.100.0",
+        },
+    )
+    assert response.status_code == 409
+    assert "does not belong to the selected subnet/VLAN" in response.json["error"]
+
+
+def test_unknown_validation_code_never_echoes_diagnostics():
+    from netadmin.agents.reservation_review import ReservationInputError
+
+    error = ReservationInputError("synthetic-private-diagnostic")
+    assert "synthetic-private-diagnostic" not in error.safe_message()

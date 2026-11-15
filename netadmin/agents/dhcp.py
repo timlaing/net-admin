@@ -333,7 +333,7 @@ def _review_and_install(
         pool_change = bool(subnet and ranges != subnet["ranges"])
         identity = item | {"network": str(body.get("network", ""))}
     except ValueError as error:
-        return jsonify({"error": str(error)}), 409
+        return jsonify({"error": reservation_review.public_validation_message(error)}), 409
     if _active_lease_conflict(item):
         return jsonify(
             {
@@ -374,7 +374,8 @@ def _review_and_install(
         message = (
             "Configuration changed; review the reservation again"
             if isinstance(error, ConfigurationChanged)
-            else str(error)
+            else "Allocation syntax could not be safely installed. "
+            "Use the native editor or review the reservation again; no changes were applied."
         )
         return jsonify({"error": message}), 409
     return jsonify(item)

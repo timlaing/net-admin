@@ -11,6 +11,39 @@ import time
 from pathlib import Path
 from typing import Any
 
+INPUT_MESSAGES = {
+    "overlap": "Address belongs to overlapping subnets; correct the configuration first",
+    "outside": "Address is outside every configured subnet/VLAN",
+    "selection": "The address does not belong to the selected subnet/VLAN",
+    "unsupported": "Allocation includes or syntax cannot be reviewed safely; "
+    "adjust the pool natively first",
+    "boundary": "A reservation cannot use a network or broadcast address",
+}
+
+
+class ReservationInputError(ValueError):
+    """A trusted validation code, distinct from native/configuration diagnostics."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(self.safe_message())
+
+    def safe_message(self) -> str:
+        """Only known literal messages may cross the agent boundary."""
+        return INPUT_MESSAGES.get(
+            self.code, "Reservation validation failed; review the input again"
+        )
+
+
+def public_validation_message(error: ValueError) -> str:
+    """Never serialize an unexpected native/configuration exception."""
+    if isinstance(error, ReservationInputError):
+        return error.safe_message()
+    return (
+        "Subnet or pool configuration could not be reviewed safely. "
+        "Check the agent configuration; no changes were applied."
+    )
+
 
 def select_subnet(
     subnets: list[dict[str, Any]], address: str, selected: str
@@ -19,21 +52,18 @@ def select_subnet(
     ip = ipaddress.IPv4Address(address)
     matches = [s for s in subnets if ip in ipaddress.IPv4Network(f"{s['network']}/{s['netmask']}")]
     if len(matches) > 1:
-        raise ValueError("Address belongs to overlapping subnets; correct the configuration first")
+        raise ReservationInputError("overlap")
     subnet = matches[0] if matches else None
     if subnets and subnet is None:
-        raise ValueError("Address is outside every configured subnet/VLAN")
+        raise ReservationInputError("outside")
     if selected and (subnet is None or selected != subnet["network"]):
-        raise ValueError("The address does not belong to the selected subnet/VLAN")
+        raise ReservationInputError("selection")
     if subnet:
         if subnet.get("pool_review_supported") is False:
-            raise ValueError(
-                "Allocation includes or syntax cannot be reviewed safely; "
-                "adjust the pool natively first"
-            )
+            raise ReservationInputError("unsupported")
         network = ipaddress.IPv4Network(f"{subnet['network']}/{subnet['netmask']}")
         if ip in (network.network_address, network.broadcast_address):
-            raise ValueError("A reservation cannot use a network or broadcast address")
+            raise ReservationInputError("boundary")
     return subnet
 
 
