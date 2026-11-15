@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
 import re
 import socket
@@ -10,6 +11,8 @@ import subprocess  # nosec B404
 from pathlib import Path
 
 import httpx
+
+PORTS = {"dhcp": 8081, "radius": 8082, "dns": 8083, "ca": 8084}
 
 
 def version() -> str:
@@ -58,7 +61,8 @@ def ready(kind: str) -> bool:
                     response = client.get(
                         "http://controller/ready", headers={"X-CA-Management-Token": token}
                     )
-                    return response.status_code == 200 and response.json().get("ready") is True
+                    body = response.json() if response.status_code == 200 else None
+                    return isinstance(body, dict) and body.get("ready") is True
             return (
                 Path(os.getenv("STEP_CA_ROOT", "/trust/root_ca.crt")).is_file()
                 and Path(os.getenv("CA_DATA_DIR", "/data")).is_dir()
@@ -76,14 +80,16 @@ def main() -> None:
     parser.add_argument("--kind", required=True, choices=("dns", "dhcp", "radius", "ca", "runtime"))
     parser.add_argument("--port", type=int)
     args = parser.parse_args()
+    if args.port is not None and args.port != PORTS.get(args.kind):
+        parser.error("Probe port must match the selected component")
     healthy = ready(args.kind)
     if healthy and args.port:
-        host = os.getenv("AGENT_BIND_ADDRESS", "127.0.0.1")
-        host = "127.0.0.1" if host == "0.0.0.0" else host  # noqa: S104 - connect only, never bind
         try:
-            with socket.create_connection((host, args.port), timeout=3):
-                pass
-        except OSError:
+            address = ipaddress.ip_address(os.getenv("AGENT_BIND_ADDRESS", "127.0.0.1"))
+            host = "127.0.0.1" if address.is_unspecified else str(address)
+            with socket.create_connection((host, PORTS[args.kind]), timeout=3) as connection:
+                healthy = connection.fileno() >= 0
+        except (OSError, ValueError):
             healthy = False
     raise SystemExit(0 if healthy else 1)
 
