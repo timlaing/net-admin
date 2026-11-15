@@ -288,6 +288,24 @@ def _active_lease_conflict(item: dict[str, str]) -> bool:
     )
 
 
+def _reservation_preview(
+    item: dict[str, str],
+    subnet: dict[str, Any] | None,
+    ranges: list[list[str]],
+    changed: bool,
+    token: str,
+) -> dict[str, Any]:
+    scope = subnet or {"network": "", "ranges": []}
+    return {
+        "item": item,
+        "network": scope["network"],
+        "before": scope["ranges"],
+        "after": ranges,
+        "pool_change": changed,
+        "token": token,
+    }
+
+
 def _review_and_install(
     item: dict[str, str],
     body: dict[str, Any],
@@ -320,14 +338,9 @@ def _review_and_install(
         ), 409
     if body.get("preview") is True:
         return jsonify(
-            {
-                "item": item,
-                "network": subnet["network"] if subnet else "",
-                "before": subnet["ranges"] if subnet else [],
-                "after": ranges,
-                "pool_change": pool_change,
-                "token": reservation_review.approval(identity, originals),
-            }
+            _reservation_preview(
+                item, subnet, ranges, pool_change, reservation_review.approval(identity, originals)
+            )
         )
     if pool_change and (
         body.get("exclude_from_pools") is not True
