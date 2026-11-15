@@ -306,6 +306,14 @@ def _reservation_preview(
     }
 
 
+def _configuration_snapshot(main_config: Path, managed: Path) -> dict[Path, bytes | None]:
+    originals: dict[Path, bytes | None] = {
+        p.resolve(): p.read_bytes() for p in _discover(main_config)
+    }
+    originals.setdefault(managed.resolve(), managed.read_bytes() if managed.exists() else None)
+    return originals
+
+
 def _review_and_install(
     item: dict[str, str],
     body: dict[str, Any],
@@ -318,10 +326,7 @@ def _review_and_install(
         subnet = reservation_review.select_subnet(
             _all_subnets(main_config), item["address"], str(body.get("network", ""))
         )
-        originals: dict[Path, bytes | None] = {
-            p.resolve(): p.read_bytes() for p in _discover(main_config)
-        }
-        originals.setdefault(managed.resolve(), managed.read_bytes() if managed.exists() else None)
+        originals = _configuration_snapshot(main_config, managed)
         ranges = (
             reservation_review.adjusted_ranges(subnet["ranges"], item["address"]) if subnet else []
         )
