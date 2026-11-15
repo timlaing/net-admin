@@ -118,6 +118,18 @@ def test_kea_cidr_pool_metadata_survives():
     ]
 
 
+def test_unsupported_allocations_cannot_bypass_pool_review():
+    from netadmin.agents.reservation_review import select_subnet
+
+    text = "subnet 192.0.2.0 netmask 255.255.255.0 { range dynamic-bootp 192.0.2.10 192.0.2.20; }"
+    inventory = dhcp_files.subnets(text)
+    with pytest.raises(ValueError, match="natively"):
+        select_subnet(inventory, "192.0.2.15", "192.0.2.0")
+    text = '{"subnet":"192.0.2.0/24",<?include "pools.json"?>}'
+    with pytest.raises(ValueError, match="natively"):
+        select_subnet(kea_files.subnets(text), "192.0.2.15", "192.0.2.0")
+
+
 def test_pool_edit_cannot_reintroduce_reserved_address(dhcp_state):  # noqa: F811
     s = dhcp_state
     response = s.client.post(

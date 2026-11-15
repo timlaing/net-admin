@@ -228,6 +228,8 @@ def subnets(text: str) -> list[dict[str, Any]]:
                 if isinstance(item, dict) and "name" in item and "data" in item
             },
         }
+        if INCLUDE.search(body):
+            entry["pool_review_supported"] = False
         identifier = _SUBNET_ID.search(body)
         if identifier:
             entry["id"] = int(identifier.group(1))

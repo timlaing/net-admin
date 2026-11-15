@@ -95,11 +95,13 @@ def remove_reservation(text: str, name: str) -> str:
 def subnets(text: str) -> list[dict[str, Any]]:
     """Parse subnet ranges and options for editing/export."""
     result = []
-    for match in SUBNET_START.finditer(text):
-        _, body = _block(text, match.start())
+    masked = re.sub(r'#[^\n]*|"(?:\\.|[^"\\])*"', lambda m: " " * len(m[0]), text)
+    for match in SUBNET_START.finditer(masked):
+        end, plain = _block(masked, match.start())
+        body = text[match.start() : end]
         ranges = [
             [start, finish or start]
-            for start, finish in re.findall(r"\brange\s+([0-9.]+)(?:\s+([0-9.]+))?\s*;", body)
+            for start, finish in re.findall(r"\brange\s+([0-9.]+)(?:\s+([0-9.]+))?\s*;", plain)
         ]
         options = {
             name: value.strip()
@@ -113,6 +115,8 @@ def subnets(text: str) -> list[dict[str, Any]]:
                 "options": options,
             }
         )
+        if len(ranges) != len(re.findall(r"\brange\b", plain)):
+            result[-1]["pool_review_supported"] = False
     return result
 
 

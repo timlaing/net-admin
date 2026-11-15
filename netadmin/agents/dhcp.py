@@ -415,6 +415,10 @@ def _save_configuration() -> Any:
     matches = [item for item in _all_subnets(main_config) if item["network"] == network]
     if not matches:
         return jsonify({"error": "Unknown subnet"}), 404
+    if matches[0].get("pool_review_supported") is False:
+        return jsonify(
+            {"error": "Allocation syntax is not safely editable; use the native editor"}
+        ), 409
     source = Path(matches[0]["source"])
     try:
         _validate_pools(f"{network}/{matches[0]['netmask']}", ranges)

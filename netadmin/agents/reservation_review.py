@@ -26,6 +26,11 @@ def select_subnet(
     if selected and (subnet is None or selected != subnet["network"]):
         raise ValueError("The address does not belong to the selected subnet/VLAN")
     if subnet:
+        if subnet.get("pool_review_supported") is False:
+            raise ValueError(
+                "Allocation includes or syntax cannot be reviewed safely; "
+                "adjust the pool natively first"
+            )
         network = ipaddress.IPv4Network(f"{subnet['network']}/{subnet['netmask']}")
         if ip in (network.network_address, network.broadcast_address):
             raise ValueError("A reservation cannot use a network or broadcast address")
