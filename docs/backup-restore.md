@@ -10,6 +10,21 @@ Supply a separate 16–1024 byte recovery passphrase in a local 0600 file. Keep 
 file separate from the encrypted archive and include it in your offline recovery
 plan. Never put the passphrase in command arguments, release assets or logs.
 
+Install the operation boundaries separately in the operator environment before
+running the CLI. Arguments must match these settings and cannot widen them:
+
+```sh
+export NETADMIN_OPERATIONS_ROOT=/srv/netadmin
+export NETADMIN_BACKUP_DIRECTORY=/secure-backups
+export NETADMIN_RESTORE_DIRECTORY=/srv
+export NETADMIN_RECOVERY_PASSWORD_FILE=/secure/recovery-passphrase
+```
+
+Use dedicated trees, not filesystem `/`. Unrelated credential stores (`.ssh`,
+`.aws`, `.gnupg`, `.kube`, `.docker`) and development trees are rejected. Select
+mounted deployment state from the configured root; archives are confined to the
+backup directory and restore targets are new children of the restore directory.
+
 ```sh
 python -m netadmin.operations.backup create --root /srv/netadmin \
   --include config --include leases --include transport --include ca \

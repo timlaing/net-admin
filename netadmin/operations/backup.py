@@ -16,6 +16,8 @@ from typing import Any
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
+from netadmin.operations import paths
+
 MAGIC = b"NETADMIN-BACKUP-1\n"
 MAX_BYTES = 256 * 1024 * 1024
 MAX_FILES = 100_000
@@ -56,15 +58,37 @@ def _cipher(password: bytes, salt: bytes) -> Fernet:
 
 
 def _relative(name: str) -> PurePosixPath:
-    path = PurePosixPath(name)
-    if (
-        path.is_absolute()
-        or not path.parts
-        or any(p in {"..", "."} for p in path.parts)
-        or "\\" in name
-    ):
-        raise ValueError("Backup paths must be non-traversing relative paths")
-    return path
+    return paths.relative(name)
+
+
+def _selection(root: Path, includes: list[str]) -> set[Path]:
+    selected: set[Path] = set()
+    for name in includes:
+        path = paths.existing(root, name)
+        selected.add(path)
+        if path.is_dir():
+            selected.update(path.rglob("*"))
+    if not selected or len(selected) > MAX_FILES:
+        raise ValueError("Backup selection is empty or too large")
+    return selected
+
+
+def _write_tar(root: Path, includes: list[str]) -> bytes:
+    data = io.BytesIO()
+    total = 0
+    with tarfile.open(fileobj=data, mode="w") as archive:
+        for path in sorted(_selection(root, includes)):
+            info = path.lstat()
+            if stat.S_ISSOCK(info.st_mode):
+                continue
+            _relative(str(path.relative_to(root)))
+            if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                raise ValueError("Backup sources may not contain links or special files")
+            total += info.st_size if path.is_file() else 0
+            if total > MAX_BYTES:
+                raise ValueError("Backup exceeds its safety limit; partition the selection")
+            _add(archive, path, root, info)
+    return data.getvalue()
 
 
 def create(
@@ -73,36 +97,12 @@ def create(
     """Require stopped writers; include full selected config/lease/CA trees, never sockets."""
     if not quiesced:
         raise ValueError("Stop all writers first and confirm --quiesced")
-    root = root.resolve(strict=True)
+    root = paths.exact(root, "NETADMIN_OPERATIONS_ROOT").resolve(strict=True)
+    output = paths.location(output, "NETADMIN_BACKUP_DIRECTORY")
     if output.resolve().is_relative_to(root):
         raise ValueError("Store backup archives outside the source tree")
-    paths: set[Path] = set()
-    for selected in includes:
-        path = root.joinpath(*_relative(selected).parts)
-        if path.is_symlink() or not path.exists():
-            raise ValueError("Selected backup source is missing or a symlink")
-        paths.add(path)
-        if path.is_dir():
-            paths.update(path.rglob("*"))
-    if not paths or len(paths) > MAX_FILES:
-        raise ValueError("Backup selection is empty or too large")
-    data = io.BytesIO()
-    total = 0
-    with tarfile.open(fileobj=data, mode="w") as archive:
-        for path in sorted(paths):
-            info = path.lstat()
-            if stat.S_ISSOCK(info.st_mode):
-                continue
-            if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
-                raise ValueError("Backup sources may not contain links or special files")
-            if not path.resolve().is_relative_to(root):
-                raise ValueError("Backup source escaped the deployment root")
-            total += info.st_size if path.is_file() else 0
-            if total > MAX_BYTES:
-                raise ValueError("Backup exceeds the 256 MiB safety limit; partition the selection")
-            _add(archive, path, root, info)
     salt = os.urandom(16)
-    encrypted = MAGIC + salt + _cipher(password, salt).encrypt(data.getvalue())
+    encrypted = MAGIC + salt + _cipher(password, salt).encrypt(_write_tar(root, includes))
     descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, "wb") as handle:
         handle.write(encrypted)
@@ -112,9 +112,19 @@ def create(
 
 def contents(archive: Path, password: bytes) -> bytes:
     """Authenticate before examining paths or exposing any archived data."""
-    if archive.stat().st_size > 2 * MAX_BYTES:
-        raise ValueError("Encrypted archive is too large")
-    data = archive.read_bytes()
+    archive = paths.location(archive, "NETADMIN_BACKUP_DIRECTORY")
+    if archive.suffix != ".enc":
+        raise ValueError("Use an encrypted backup archive")
+    with ExitStack() as stack:
+        descriptor = os.open(archive, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        stack.callback(os.close, descriptor)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 2 * MAX_BYTES:
+            raise ValueError("Encrypted archive is not a bounded regular file")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            data = handle.read(2 * MAX_BYTES + 1)
+    if len(data) > 2 * MAX_BYTES:
+        raise ValueError("Encrypted archive exceeds its size limit")
     if not data.startswith(MAGIC) or len(data) < len(MAGIC) + 16:
         raise ValueError("Unsupported backup format")
     start = len(MAGIC)
@@ -124,23 +134,26 @@ def contents(archive: Path, password: bytes) -> bytes:
         raise ValueError("Backup authentication failed") from error
 
 
+def _validate_members(members: list[tarfile.TarInfo]) -> None:
+    if len(members) > MAX_FILES or sum(m.size for m in members) > MAX_BYTES:
+        raise ValueError("Backup exceeds restoration limits")
+    names: set[str] = set()
+    files = {str(_relative(m.name)) for m in members if m.isfile()}
+    for member in members:
+        name = str(_relative(member.name))
+        if member.size < 0 or any(str(parent) in files for parent in PurePosixPath(name).parents):
+            raise ValueError("Backup member has an unsafe parent or size")
+        if name in names or not (member.isfile() or member.isdir()):
+            raise ValueError("Backup contains duplicate, linked or special members")
+        names.add(name)
+
+
 def verify(archive: Path, password: bytes) -> dict[str, int]:
     """Check every member before any restore; reject duplicate/link/special entries."""
     with tarfile.open(fileobj=io.BytesIO(contents(archive, password)), mode="r:") as tar:
         members = tar.getmembers()
-        if len(members) > MAX_FILES or sum(m.size for m in members) > MAX_BYTES:
-            raise ValueError("Backup exceeds restoration limits")
-        names = set()
-        files = {str(_relative(m.name)) for m in members if m.isfile()}
+        _validate_members(members)
         for member in members:
-            name = str(_relative(member.name))
-            if member.size < 0 or any(
-                str(parent) in files for parent in PurePosixPath(name).parents
-            ):
-                raise ValueError("Backup member has an unsafe parent or size")
-            if name in names or not (member.isfile() or member.isdir()):
-                raise ValueError("Backup contains duplicate, linked or special members")
-            names.add(name)
             if member.isfile():
                 handle = tar.extractfile(member)
                 if handle is None or len(handle.read()) != member.size:
@@ -151,6 +164,7 @@ def verify(archive: Path, password: bytes) -> dict[str, int]:
 def restore(archive: Path, password: bytes, target: Path) -> dict[str, int]:
     """Restore to a NEW private directory only, preserving modes and root-owned IDs."""
     report = verify(archive, password)
+    target = paths.location(target, "NETADMIN_RESTORE_DIRECTORY")
     target.mkdir(mode=0o700, parents=False, exist_ok=False)
     with tarfile.open(fileobj=io.BytesIO(contents(archive, password)), mode="r:") as tar:
         members = tar.getmembers()
@@ -179,6 +193,7 @@ def restore(archive: Path, password: bytes, target: Path) -> dict[str, int]:
 
 def password_file(path: Path) -> bytes:
     """Recovery material is supplied locally; never copied into manifests or output."""
+    path = paths.exact(path, "NETADMIN_RECOVERY_PASSWORD_FILE")
     if path.is_symlink() or path.stat().st_mode & 0o077:
         raise ValueError("Recovery passphrase file must be private (0600) and not a symlink")
     return path.read_bytes().rstrip(b"\r\n")
