@@ -276,6 +276,18 @@ def _save_reservation() -> Any:
     return _review_and_install(item, body, managed, main_config, all_items)
 
 
+def _active_lease_conflict(item: dict[str, str]) -> bool:
+    path = _path("DHCP_LEASES")
+    if not path.exists():
+        return False
+    return any(
+        lease["address"] == item["address"]
+        and lease["state"] == "active"
+        and lease["mac"].lower() != item["mac"]
+        for lease in parse_leases(path.read_text(encoding="utf-8"))
+    )
+
+
 def _review_and_install(
     item: dict[str, str],
     body: dict[str, Any],
@@ -299,22 +311,13 @@ def _review_and_install(
         identity = item | {"network": str(body.get("network", ""))}
     except ValueError as error:
         return jsonify({"error": str(error)}), 409
-    if _path("DHCP_LEASES").exists():
-        leases = parse_leases(_path("DHCP_LEASES").read_text(encoding="utf-8"))
-        active = [
-            lease
-            for lease in leases
-            if lease["address"] == item["address"]
-            and lease["state"] == "active"
-            and lease["mac"].lower() != item["mac"]
-        ]
-        if active:
-            return jsonify(
-                {
-                    "error": "This IP has an active lease for another device; "
-                    "resolve the lease before reserving it"
-                }
-            ), 409
+    if _active_lease_conflict(item):
+        return jsonify(
+            {
+                "error": "This IP has an active lease for another device; "
+                "resolve the lease before reserving it"
+            }
+        ), 409
     if body.get("preview") is True:
         return jsonify(
             {

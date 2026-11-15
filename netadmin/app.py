@@ -320,6 +320,28 @@ def _dhcp_backend(client: AgentClient) -> str:
     return _settings().dhcp_backend
 
 
+def _reservation_request(client: AgentClient, form: ReservationForm) -> Any:
+    """Forward an explicit preview or approved save without privileged web writes."""
+    payload: dict[str, Any] = {
+        "name": form.name.data,
+        "mac": form.mac.data,
+        "address": form.address.data,
+    }
+    if form.network.data:
+        payload["network"] = form.network.data
+    if request.form.get("action") == "review":
+        preview = client.post("reservations", payload | {"preview": True})
+        form.preview_token.data = preview["token"]
+        form.exclude_from_pools.data = False
+        return preview
+    if form.preview_token.data:
+        payload.update(
+            preview_token=form.preview_token.data, exclude_from_pools=form.exclude_from_pools.data
+        )
+    client.post("reservations", payload)
+    return None
+
+
 @web.route("/dhcp", methods=["GET", "POST"])
 @admin_required
 def dhcp_index() -> Any:
@@ -331,24 +353,7 @@ def dhcp_index() -> Any:
     status = 200
     if form.validate_on_submit():
         try:
-            payload: dict[str, Any] = {
-                "name": form.name.data,
-                "mac": form.mac.data,
-                "address": form.address.data,
-            }
-            if form.network.data:
-                payload["network"] = form.network.data
-            if request.form.get("action") == "review":
-                preview = client.post("reservations", payload | {"preview": True})
-                form.preview_token.data = preview["token"]
-                form.exclude_from_pools.data = False
-            else:
-                if form.preview_token.data:
-                    payload.update(
-                        preview_token=form.preview_token.data,
-                        exclude_from_pools=form.exclude_from_pools.data,
-                    )
-                client.post("reservations", payload)
+            preview = _reservation_request(client, form)
         except httpx.HTTPStatusError as error:
             status = error.response.status_code
             if status not in {400, 403, 409, 422}:
