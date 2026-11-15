@@ -97,7 +97,10 @@ def subnets(text: str) -> list[dict[str, Any]]:
     result = []
     for match in SUBNET_START.finditer(text):
         _, body = _block(text, match.start())
-        ranges = [list(item) for item in re.findall(r"\brange\s+([0-9.]+)\s+([0-9.]+)\s*;", body)]
+        ranges = [
+            [start, finish or start]
+            for start, finish in re.findall(r"\brange\s+([0-9.]+)(?:\s+([0-9.]+))?\s*;", body)
+        ]
         options = {
             name: value.strip()
             for name, value in re.findall(r"(?m)^[ \t]*option\s+([A-Za-z0-9_-]+)\s++([^;]*);", body)
@@ -131,6 +134,36 @@ def global_options(text: str) -> dict[str, str]:
             continue
         result[match.group(1)] = match.group(2).strip().strip('"')
     return result
+
+
+def exclude_address(text: str, network: str, address: str) -> str:
+    """Split only allocation statements; retain pool scopes, ACLs and options."""
+    masked = re.sub(r'#[^\n]*|"(?:\\.|[^"\\])*"', lambda m: " " * len(m[0]), text)
+    for match in SUBNET_START.finditer(masked):
+        if match[1] != network:
+            continue
+        end, body = _block(masked, match.start())
+        pattern = re.compile(r"\brange\s+([0-9.]+)(?:\s+([0-9.]+))?\s*;")
+        matches = list(pattern.finditer(body))
+        if len(matches) != len(re.findall(r"\brange\b", body)):
+            raise ValueError("Unsupported allocation syntax; adjust this pool in the native editor")
+        original = text[match.start() : end]
+        target = int(ipaddress.IPv4Address(address))
+        for allocation in reversed(matches):
+            start = int(ipaddress.IPv4Address(allocation[1]))
+            finish = int(ipaddress.IPv4Address(allocation[2] or allocation[1]))
+            if start <= target <= finish:
+                intervals = [(start, target - 1), (target + 1, finish)]
+                replacement = " ".join(
+                    f"range {ipaddress.IPv4Address(left)} {ipaddress.IPv4Address(right)};"
+                    for left, right in intervals
+                    if left <= right
+                )
+                original = (
+                    original[: allocation.start()] + replacement + original[allocation.end() :]
+                )
+        return text[: match.start()] + original + text[end:]
+    raise ValueError("Unknown subnet")
 
 
 def update_subnet(text: str, network: str, ranges: list[list[str]], options: dict[str, str]) -> str:

@@ -12,7 +12,9 @@ from typing import Any, cast
 
 from flask import Flask, current_app, jsonify
 
+from netadmin.agents import reservation_review
 from netadmin.agents.common import (
+    ConfigurationChanged,
     configured_path,
     create_agent,
     json_object,
@@ -218,13 +220,16 @@ def _reload() -> list[str]:
     return cast(list[str], current_app.config["DHCP_RELOAD"])
 
 
-def _install_changes(changes: dict[Path, str], main_config: Path) -> None:
+def _install_changes(
+    changes: dict[Path, str], main_config: Path, originals: dict[Path, bytes | None] | None = None
+) -> None:
     """Allow writes only in explicitly configured service directories."""
     validated_transaction(
         changes,
         lambda: _validate_live(main_config),
         _reload(),
         allowed_roots=(main_config.parent, _path("DHCP_MANAGED").parent),
+        expected_originals=originals,
     )
 
 
@@ -241,8 +246,9 @@ def _lease_list() -> Any:
 
 
 def _save_reservation() -> Any:
+    body = json_object()
     try:
-        item = _validate_item(json_object())
+        item = _validate_item(body)
     except ValueError:
         return jsonify({"error": "Invalid reservation hostname, MAC address or IPv4 address"}), 400
     managed = _path("DHCP_MANAGED")
@@ -259,12 +265,97 @@ def _save_reservation() -> Any:
             }
         ), 409
     if conflict:
-        return jsonify({"error": conflict}), 409
+        return jsonify(
+            {
+                "error": conflict,
+                "conflicts": [
+                    e for e in others if e["mac"] == item["mac"] or e["address"] == item["address"]
+                ],
+            }
+        ), 409
+    return _review_and_install(item, body, managed, main_config, all_items)
+
+
+def _review_and_install(
+    item: dict[str, str],
+    body: dict[str, Any],
+    managed: Path,
+    main_config: Path,
+    all_items: list[dict[str, str]],
+) -> Any:
+    """Prepare a pool-safe reservation, optionally preview, then atomically install."""
+    try:
+        subnet = reservation_review.select_subnet(
+            _all_subnets(main_config), item["address"], str(body.get("network", ""))
+        )
+        originals: dict[Path, bytes | None] = {
+            p.resolve(): p.read_bytes() for p in _discover(main_config)
+        }
+        originals.setdefault(managed.resolve(), managed.read_bytes() if managed.exists() else None)
+        ranges = (
+            reservation_review.adjusted_ranges(subnet["ranges"], item["address"]) if subnet else []
+        )
+        pool_change = bool(subnet and ranges != subnet["ranges"])
+        identity = item | {"network": str(body.get("network", ""))}
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 409
+    if _path("DHCP_LEASES").exists():
+        leases = parse_leases(_path("DHCP_LEASES").read_text(encoding="utf-8"))
+        active = [
+            lease
+            for lease in leases
+            if lease["address"] == item["address"]
+            and lease["state"] == "active"
+            and lease["mac"].lower() != item["mac"]
+        ]
+        if active:
+            return jsonify(
+                {
+                    "error": "This IP has an active lease for another device; "
+                    "resolve the lease before reserving it"
+                }
+            ), 409
+    if body.get("preview") is True:
+        return jsonify(
+            {
+                "item": item,
+                "network": subnet["network"] if subnet else "",
+                "before": subnet["ranges"] if subnet else [],
+                "after": ranges,
+                "pool_change": pool_change,
+                "token": reservation_review.approval(identity, originals),
+            }
+        )
+    if pool_change and (
+        body.get("exclude_from_pools") is not True
+        or not reservation_review.approved(str(body.get("preview_token", "")), identity, originals)
+    ):
+        return jsonify(
+            {
+                "error": "The IP is inside a dynamic pool. Review the reservation "
+                "and approve the pool exclusion before saving."
+            }
+        ), 409
     items = [entry for entry in _current(managed) if entry["name"] != item["name"]]
     items.append(item)
     changes = {managed: render_reservations(items)}
     changes.update(_external_changes(all_items, managed, item["name"]))
-    _install_changes(changes, main_config)
+    try:
+        if pool_change and subnet:
+            source = Path(subnet["source"])
+            text = changes.get(source, source.read_text(encoding="utf-8"))
+            exclude = kea_files.exclude_address if _kea() else dhcp_files.exclude_address
+            changes[source] = exclude(text, subnet["network"], item["address"])
+        _install_changes(
+            changes, main_config, {p.resolve(): originals[p.resolve()] for p in changes}
+        )
+    except ValueError as error:
+        message = (
+            "Configuration changed; review the reservation again"
+            if isinstance(error, ConfigurationChanged)
+            else str(error)
+        )
+        return jsonify({"error": message}), 409
     return jsonify(item)
 
 
@@ -313,6 +404,18 @@ def _save_configuration() -> Any:
         _validate_pools(f"{network}/{matches[0]['netmask']}", ranges)
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
+    for reservation in _all_reservations(main_config):
+        address = ipaddress.IPv4Address(reservation["address"])
+        if any(
+            ipaddress.IPv4Address(start) <= address <= ipaddress.IPv4Address(end)
+            for start, end in ranges
+        ):
+            return jsonify(
+                {
+                    "error": f"Pool contains reserved IP {address} ({reservation['name']}); "
+                    "exclude it before saving"
+                }
+            ), 409
     updated = _update_subnet(source.read_text(encoding="utf-8"), network, ranges, options)
     _install_changes({source: updated}, main_config)
     return jsonify({"network": network})

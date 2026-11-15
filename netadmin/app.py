@@ -327,32 +327,53 @@ def dhcp_index() -> Any:
     client = cast(AgentClient, extension("netadmin_dhcp"))
     form = ReservationForm()
     reservation_error = None
+    preview = None
     status = 200
     if form.validate_on_submit():
         try:
-            client.post(
-                "reservations",
-                {"name": form.name.data, "mac": form.mac.data, "address": form.address.data},
-            )
+            payload: dict[str, Any] = {
+                "name": form.name.data,
+                "mac": form.mac.data,
+                "address": form.address.data,
+            }
+            if form.network.data:
+                payload["network"] = form.network.data
+            if request.form.get("action") == "review":
+                preview = client.post("reservations", payload | {"preview": True})
+                form.preview_token.data = preview["token"]
+                form.exclude_from_pools.data = False
+            else:
+                if form.preview_token.data:
+                    payload.update(
+                        preview_token=form.preview_token.data,
+                        exclude_from_pools=form.exclude_from_pools.data,
+                    )
+                client.post("reservations", payload)
         except httpx.HTTPStatusError as error:
             status = error.response.status_code
             if status not in {400, 403, 409, 422}:
                 raise
             reservation_error = _dhcp_reservation_error(error.response)
         else:
-            _audit("dhcp.reservation.upsert", form.name.data or "")
-            flash("Reservation saved.", "success")
-            return redirect(url_for(DHCP_INDEX))
+            if preview is None:
+                _audit("dhcp.reservation.upsert", form.name.data or "")
+                flash("Reservation saved.", "success")
+                return redirect(url_for(DHCP_INDEX))
+    subnets = client.get("configuration")
+    form.network.choices = [("", "Match subnet from IP")] + [
+        (s["network"], f"{s['network']}/{s['netmask']}") for s in subnets
+    ]
     return render_template(
         "dhcp.html",
         form=form,
         subnet_form=DhcpSubnetForm(),
         reservations=client.get("reservations"),
         leases=client.get("leases"),
-        subnets=client.get("configuration"),
+        subnets=subnets,
         backend=_dhcp_backend(client),
         read_only=client.read_only(),
         reservation_error=reservation_error,
+        preview=preview,
     ), status
 
 

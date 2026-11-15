@@ -3,6 +3,7 @@
 from flask_wtf import FlaskForm
 from wtforms import (
     BooleanField,
+    HiddenField,
     PasswordField,
     SelectField,
     StringField,
@@ -86,6 +87,11 @@ class ReservationForm(FlaskForm):
         validators=[DataRequired(), Regexp(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")],
     )
     address = StringField("IPv4 address", validators=[DataRequired()])
+    network = SelectField(
+        "Subnet / VLAN", choices=[("", "Match subnet from IP")], validate_choice=False
+    )
+    preview_token = HiddenField(validators=[Optional(), Length(max=100)])
+    exclude_from_pools = BooleanField("I approve removing this IP from the displayed dynamic pools")
     submit = SubmitField("Save reservation")
 
 
