@@ -1,0 +1,21 @@
+# Health and version reporting
+
+Agents expose authenticated `/health` (liveness), `/ready` (read-only readiness)
+and `/version` routes. Existing health responses remain compatible. Readiness
+uses bounded native DHCP/Bind configuration validation, RADIUS file availability,
+and the private CA controller's managed-issuer process state. It does not prove
+every client operation succeeds; use service diagnostics for that.
+
+Agent container probes also check the TCP listener. They do not disable mTLS or
+require additional client/private signing keys. The CA runtime probes its private
+Unix socket with the existing management scope. No agent gains a Docker mount.
+
+Published app/agent/runtime images embed `NETADMIN_VERSION` from the release
+build. Development and older images report **unknown**, never an assumed match.
+The dashboard shows app and agent versions, readiness and mismatches, including
+when the Home Assistant app has not been upgraded with its service agents.
+
+Image changes must pass container smoke tests before release. Deployments needing
+availability during first-time setup should not interpret an unconfigured CA or
+missing service configuration as ready. Health does not automatically authorize
+rollback of migrated persistent data.

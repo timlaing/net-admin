@@ -65,6 +65,9 @@ load-plugins = []
 [tool.pylint.format]
 max-line-length = 100
 
+[tool.pylint.imports]
+known-third-party = ["dns"]
+
 [tool.pylint.messages_control]
 disable = ["duplicate-code", "too-few-public-methods"]
 
