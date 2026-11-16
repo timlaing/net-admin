@@ -9,7 +9,7 @@ import os
 import re
 import subprocess  # nosec B404
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -101,6 +101,30 @@ class Project:
         )
 
 
+@dataclass
+class _RecoveryState:
+    """Only the deployment state needed for controlled failure handling."""
+
+    scopes: list[Project]
+    previous: list[dict[str, str]]
+    originals: dict[Path, bytes | None]
+    stopped: list[Project] = field(default_factory=list)
+    activated: bool = False
+
+
+class UpdateRecoveryError(RuntimeError):
+    """A fixed public failure with native errors retained only for private inspection."""
+
+    def __init__(self, original: Exception) -> None:
+        super().__init__(
+            "Update failed; checkpoint retained if created. Inspect state before manual recovery."
+        )
+        self.original_error = original
+        self.journal_errors: list[Exception] = []
+        self.stop_errors: dict[Path, Exception] = {}
+        self.resume_error: Exception | None = None
+
+
 def projects(plan: dict[str, Any]) -> list[Project]:
     """Validate unique scopes beneath the explicitly configured deployment root."""
     root = paths.exact(Path(plan["root"]), "NETADMIN_OPERATIONS_ROOT").resolve(strict=True)
@@ -158,7 +182,7 @@ def _baseline(
 ) -> tuple[str, dict[str, Any]]:
     if (
         not current["State"]["Running"]
-        or current["State"].get("Health", {}).get("Status") == "unhealthy"
+        or current["State"].get("Health", {}).get("Status") != "healthy"
     ):
         raise ValueError("Baseline cohort is not healthy; diagnose it before updating")
     if not adopt and not _update_owned(current["Config"].get("Labels", {})):
@@ -244,10 +268,16 @@ def _exclusive_writers(root: Path, selected: set[str]) -> None:
         if container["Id"] in selected:
             continue
         if any(
-            m.get("RW") and Path(m["Source"]).resolve().is_relative_to(root)
+            m.get("RW") and _overlapping_source(Path(m["Source"]), root)
             for m in container["Mounts"]
         ):
             raise ValueError("An unselected container can write to the checkpoint root")
+
+
+def _overlapping_source(source: Path, root: Path) -> bool:
+    resolved = source.resolve()
+    root = root.resolve()
+    return resolved.is_relative_to(root) or root.is_relative_to(resolved)
 
 
 def _covered_mounts(plan: dict[str, Any], selected: set[str]) -> None:
@@ -370,6 +400,56 @@ def _original_overrides(scopes: list[Project]) -> dict[Path, bytes | None]:
     return {p.override: p.override.read_bytes() if p.override.exists() else None for p in scopes}
 
 
+def _record_recovery(
+    path: Path,
+    phase: str,
+    target: dict[str, Any],
+    previous: list[dict[str, str]],
+    failure: UpdateRecoveryError,
+) -> None:
+    """Disk/journal failures must never bypass required recovery attempts."""
+    try:
+        _journal(path, phase, target, previous)
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        # Any journal failure must leave recovery independent of storage.
+        failure.journal_errors.append(error)
+
+
+def _stop_all(scopes: list[Project]) -> dict[Path, Exception]:
+    """Attempt every stop, preserving private failures instead of exiting at the first."""
+    errors: dict[Path, Exception] = {}
+    for scope in reversed(scopes):
+        try:
+            scope.compose("stop")
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            # Do not let one project's unexpected failure bypass later stops.
+            errors[scope.directory] = error
+    return errors
+
+
+def _recover(
+    state: _RecoveryState,
+    journal: Path,
+    target: dict[str, Any],
+    original: Exception,
+    compatible: bool,
+) -> UpdateRecoveryError:
+    """Recover independently of journaling, never roll back over a failed stop."""
+    failure = UpdateRecoveryError(original)
+    _record_recovery(journal, "recovery-required", target, state.previous, failure)
+    if state.activated:
+        failure.stop_errors = _stop_all(state.scopes)
+    if not failure.stop_errors and (not state.activated or compatible):
+        try:
+            _resume(state.scopes, state.previous, state.stopped, state.originals)
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            # Preserve both errors without serializing native diagnostics.
+            failure.resume_error = error
+        else:
+            _record_recovery(journal, "rolled-back", target, state.previous, failure)
+    return failure
+
+
 def apply(
     plan: dict[str, Any],
     target: dict[str, Any],
@@ -380,22 +460,20 @@ def apply(
 ) -> dict[str, str]:
     """No state rewind: failures after activation require explicit compatible image rollback."""
     scopes = projects(plan)
+    root = paths.exact(Path(plan["root"]), "NETADMIN_OPERATIONS_ROOT").resolve()
+    destination = _storage(plan, root)
     desired, previous, selected, same, schema_safe = prepare(scopes, target, adopt=adopt)
     if same and not adopt:
         return {"state": "already-current", "version": target["version"]}
-    root = paths.exact(Path(plan["root"]), "NETADMIN_OPERATIONS_ROOT").resolve()
     _exclusive_writers(root, selected)
     _covered_mounts(plan, selected)
-    destination = _storage(plan, root)
-    old_overrides = _original_overrides(scopes)
-    activated = False
-    stopped: list[Project] = []
+    recovery = _RecoveryState(scopes, previous, _original_overrides(scopes))
     archive = destination / f"checkpoint-{target['version']}-{os.urandom(6).hex()}.enc"
     journal = archive.with_suffix(".json")
     _journal(journal, "prepared", target, previous)
     try:
         for scope in reversed(scopes):
-            stopped.append(scope)
+            recovery.stopped.append(scope)
             scope.compose("stop")
         backup.create(root, plan["backup_includes"], archive, password, quiesced=True)
         _journal(journal, "checkpointed", target, previous)
@@ -405,27 +483,18 @@ def apply(
         _journal(journal, "activating", target, previous)
         for scope, images in zip(scopes, desired, strict=True):
             _write_override(scope, images)
-            activated = True
+            recovery.activated = True
             scope.compose(
                 "up", "-d", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "120"
             )
             _healthy(scope, images)
-    except Exception:
-        _journal(journal, "recovery-required", target, previous)
-        if activated:
-            for scope in reversed(scopes):
-                scope.compose("stop")
+    except Exception as error:
         compatible = (
             allow_image_rollback
             and schema_safe
             and target["marker"].get("image_rollback_safe") is True
         )
-        if not activated or compatible:
-            _resume(scopes, previous, stopped, old_overrides)
-            _journal(journal, "rolled-back", target, previous)
-        raise RuntimeError(
-            "Update failed; checkpoint retained. Inspect state before manual recovery."
-        ) from None
+        raise _recover(recovery, journal, target, error, compatible) from error
     _journal(journal, "complete", target, previous)
     return {"state": "updated", "version": target["version"], "checkpoint": archive.name}
 

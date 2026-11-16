@@ -64,6 +64,21 @@ per-instance overrides, while retaining WUD watching/notifications. Include
 longer independently replaces one member of the cohort; the host timer performs
 release-aware automatic updates. Do not enable a second automatic update owner.
 
+The example oneshot unit disables systemd's transaction-wide start deadline.
+Individual network, Docker and Compose commands remain bounded; recovery must
+be allowed to finish rather than being killed at an arbitrary cumulative runtime.
+Every baseline container must already be running and Docker-healthy before
+quiescence. For legacy deployments without health checks, configure and verify
+appropriate health checks or upgrade manually before adopting the coordinator.
+
+Writable mounts are checked for overlap in both directions, including an ancestor
+mount that contains the checkpoint root. Incomplete journals block even an
+otherwise `already-current` run. A failed recovery-journal write cannot skip
+service recovery; failures remain available to private exception inspection and
+the CLI stays redacted. After activation fails, every project receives a stop
+attempt. Any failed stop blocks image rollback and leaves recovery-required state
+for the operator; neither this path nor journaling failure rewinds persistent data.
+
 Install the example `deployment/netadmin-update.service` and `.timer` only after
 editing paths, testing the plan and verifying notification/log monitoring. This
 implementation does **not** modify your live WUD configuration or install a timer.
