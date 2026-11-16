@@ -13,7 +13,7 @@ from tests.test_ca_runtime import runtime  # noqa: F401
 
 def test_authenticated_version_and_readiness(monkeypatch):
     monkeypatch.setenv("NETADMIN_AGENT_TOKEN", "synthetic")
-    monkeypatch.setenv("NETADMIN_VERSION", "2026.11.2")
+    monkeypatch.setenv("NETADMIN_BUILD_VERSION", "2026.11.2")
     monkeypatch.setattr("netadmin.agents.common.ready", lambda kind: kind == "dhcp")
     client = create_agent("netadmin.agents.dhcp").test_client()
     assert client.get("/ready").status_code == 401
@@ -26,8 +26,73 @@ def test_authenticated_version_and_readiness(monkeypatch):
 
 
 def test_version_never_exposes_arbitrary_environment(monkeypatch):
-    monkeypatch.setenv("NETADMIN_VERSION", "private diagnostic /secret/file")
+    monkeypatch.setenv("NETADMIN_BUILD_VERSION", "private diagnostic /secret/file")
     assert version() == "unknown"
+
+
+def test_deployment_tag_does_not_override_build_identity(monkeypatch):
+    monkeypatch.setenv("NETADMIN_VERSION", "2026.11.99")
+    monkeypatch.setenv("NETADMIN_BUILD_VERSION", "2026.11.2")
+    assert version() == "2026.11.2"
+    monkeypatch.delenv("NETADMIN_BUILD_VERSION")
+    assert version() == "unknown"
+
+
+def test_build_metadata_is_wired_to_images_and_publication():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    files = ["Dockerfile"] + [
+        f"docker/Dockerfile.{name}"
+        for name in ("dhcp-agent", "dns-agent", "radius-agent", "ca-agent", "ca-runtime")
+    ]
+    for filename in files:
+        content = (root / filename).read_text()
+        assert "ARG NETADMIN_BUILD_VERSION=unknown" in content
+        assert "ENV NETADMIN_BUILD_VERSION=${NETADMIN_BUILD_VERSION}" in content
+        assert "ENV NETADMIN_VERSION=" not in content
+    assert (
+        "ENV NETADMIN_BUILD_VERSION=${BUILD_VERSION}"
+        in (root / "home-assistant/netadmin/Dockerfile").read_text()
+    )
+    assert (
+        '--build-arg "NETADMIN_BUILD_VERSION=$PUBLISH_VERSION"'
+        in (root / ".github/workflows/publish.yml").read_text()
+    )
+
+
+@pytest.mark.parametrize(
+    "authorities",
+    [
+        [],
+        [{"id": "imported", "managed": False, "endpoint": "https://ca"}],
+        [{"id": "incomplete", "managed": True, "endpoint": ""}],
+    ],
+)
+def test_no_configured_managed_issuer_is_unready(runtime, monkeypatch, authorities):  # noqa: F811
+    app, client, headers = runtime
+    monkeypatch.setattr(app.extensions["ca_store"], "status", lambda: {"authorities": authorities})
+    response = client.get("/ready", headers=headers)
+    assert response.status_code == 503
+    assert response.json["ready"] is False
+
+
+@pytest.mark.parametrize("exit_code,expected", [(None, 200), (1, 503)])
+def test_configured_issuer_readiness_tracks_process(runtime, monkeypatch, exit_code, expected):  # noqa: F811
+    from types import SimpleNamespace
+
+    app, client, headers = runtime
+    monkeypatch.setattr(
+        app.extensions["ca_store"],
+        "status",
+        lambda: {
+            "authorities": [{"id": "issuer", "managed": True, "endpoint": "https://issuer"}],
+        },
+    )
+    app.extensions["ca_issuers"].processes["issuer"] = SimpleNamespace(poll=lambda: exit_code)
+    response = client.get("/ready", headers=headers)
+    assert response.status_code == expected
+    assert response.json["ready"] is (exit_code is None)
 
 
 @pytest.mark.parametrize("kind", ["dns", "dhcp"])
@@ -55,6 +120,7 @@ def test_failed_readiness_keeps_safe_metadata(monkeypatch):
     agent = AgentClient("https://agent.test", "synthetic")
 
     def get(_path, **_kwargs):
+        assert _kwargs["timeout"] == 8
         response = httpx.Response(
             503,
             json={"version": "2026.11.2", "ready": False},
@@ -69,7 +135,9 @@ def test_failed_readiness_keeps_safe_metadata(monkeypatch):
 def test_private_runtime_readiness_requires_management_scope(runtime):  # noqa: F811
     _app, client, headers = runtime
     assert client.get("/ready").status_code == 403
-    assert client.get("/ready", headers=headers).json["ready"] is True
+    response = client.get("/ready", headers=headers)
+    assert response.status_code == 503
+    assert response.json["ready"] is False
 
 
 @pytest.mark.parametrize("kind", ["dns", "dhcp", "kea"])

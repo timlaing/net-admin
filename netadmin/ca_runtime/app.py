@@ -91,10 +91,9 @@ def readiness() -> Any:
     """The private controller is ready only when configured managed issuers are running."""
     state = _store().status()
     processes = current_app.extensions["ca_issuers"].processes
-    healthy = all(
-        a["id"] in processes and processes[a["id"]].poll() is None
-        for a in state["authorities"]
-        if a.get("managed") and a.get("endpoint")
+    configured = [a for a in state["authorities"] if a.get("managed") and a.get("endpoint")]
+    healthy = bool(configured) and all(
+        a["id"] in processes and processes[a["id"]].poll() is None for a in configured
     )
     return jsonify(
         {"ready": healthy, "status": "ok" if healthy else "unavailable", "version": version()}

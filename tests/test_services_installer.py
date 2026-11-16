@@ -391,6 +391,78 @@ def test_ca_only_readiness_reads_compose_status_formats(installer, tmp_path, mon
     assert calls == [("ps", "--all", "--format", "json")]
 
 
+@pytest.mark.parametrize("health", ["starting", "unhealthy"])
+def test_fresh_ca_onboarding_requires_both_authenticated_controllers(
+    installer, tmp_path, monkeypatch, health
+):
+    records = [
+        {"Service": name, "State": "running", "Health": health}
+        for name in ("ca-runtime", "ca-agent")
+    ]
+    calls = []
+
+    def command(_directory, *args, **_kwargs):
+        calls.append(args)
+        if args[0] == "ps":
+            return SimpleNamespace(stdout=json.dumps(records))
+        assert "X-CA-Management-Token" in args[-1]
+        assert "key_ready" in args[-1]
+        assert "state.get('authorities') == []" in args[-1]
+        return SimpleNamespace(stdout=json.dumps({"setup_pending": True}))
+
+    monkeypatch.setattr(installer, "compose", command)
+    installer.check_daemons(
+        tmp_path, {"dns": "no", "dhcp": "none", "radius": "no", "ca": "yes"}, attempts=1
+    )
+    assert [call[2] for call in calls[1:]] == ["ca-runtime", "ca-agent"]
+
+
+@pytest.mark.parametrize("failure", ["configured", "unreachable", "stopped", "agent-unreachable"])
+def test_ca_setup_guard_does_not_mask_failures(installer, tmp_path, monkeypatch, failure):
+    records = [
+        {"Service": name, "State": "running", "Health": "unhealthy"}
+        for name in ("ca-runtime", "ca-agent")
+    ]
+    if failure == "stopped":
+        records[0]["State"] = "exited"
+    calls = []
+
+    def command(_directory, *args, **_kwargs):
+        calls.append(args)
+        if args[0] == "ps":
+            return SimpleNamespace(stdout=json.dumps(records))
+        if failure == "unreachable" or (failure == "agent-unreachable" and args[2] == "ca-agent"):
+            raise subprocess.CalledProcessError(1, args)
+        return SimpleNamespace(stdout=json.dumps({"setup_pending": failure != "configured"}))
+
+    monkeypatch.setattr(installer, "compose", command)
+    with pytest.raises(RuntimeError, match="readiness checks failed"):
+        installer.check_daemons(
+            tmp_path, {"dns": "no", "dhcp": "none", "radius": "no", "ca": "yes"}, attempts=1
+        )
+    if failure == "stopped":
+        assert len(calls) == 1
+
+
+def test_onboarding_cannot_exempt_unhealthy_non_ca_service(installer, tmp_path, monkeypatch):
+    records = [
+        {"Service": name, "State": "running", "Health": "unhealthy"}
+        for name in ("ca-runtime", "ca-agent", "dns")
+    ]
+    records.append({"Service": "dns-agent", "State": "running", "Health": "healthy"})
+
+    def command(_directory, *args, **_kwargs):
+        return SimpleNamespace(
+            stdout=json.dumps(records) if args[0] == "ps" else json.dumps({"setup_pending": True})
+        )
+
+    monkeypatch.setattr(installer, "compose", command)
+    with pytest.raises(RuntimeError, match="dns"):
+        installer.check_daemons(
+            tmp_path, {"dns": "yes", "dhcp": "none", "radius": "no", "ca": "yes"}, attempts=1
+        )
+
+
 def test_printed_python_resume_command_is_accepted(
     installer, tmp_path, monkeypatch, capsys, compose_available
 ):

@@ -1,8 +1,8 @@
 FROM smallstep/step-ca:0.30.2 AS ca
 FROM smallstep/step-cli:0.31.0 AS step
 FROM python:3.14.5-alpine3.22
-ARG NETADMIN_VERSION=unknown
-ENV NETADMIN_VERSION=${NETADMIN_VERSION}
+ARG NETADMIN_BUILD_VERSION=unknown
+ENV NETADMIN_BUILD_VERSION=${NETADMIN_BUILD_VERSION}
 HEALTHCHECK --interval=30s --timeout=15s --start-period=30s --retries=3 CMD python3 -m netadmin.health --kind runtime
 COPY --from=ca /usr/local/bin/step-ca /usr/local/bin/step-ca
 COPY --from=step /usr/local/bin/step /usr/local/bin/step

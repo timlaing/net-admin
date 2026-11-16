@@ -31,6 +31,9 @@ for attempt in range(30):
         if attempt==29:raise
         time.sleep(1)
 before=status.json()['public_key_sha256']
+response=client.get('/ready')
+assert response.status_code==503
+assert response.json()['ready'] is False
 Path('/state/test-key-fingerprint').write_text(before)
 def post(path,**body):
     body.setdefault('request_id',uuid.uuid4().hex)
@@ -44,6 +47,9 @@ for label in ('Servers','Devices'):
                 service_host='localhost',dns_suffixes='example.test' if label=='Servers' else '',ip_ranges='192.168.0.0/16' if label=='Devices' else '',leaf_days=30)['id']
     issuer_ids.append(issuer)
 from netadmin.ca_runtime.issuer import run
+response=client.get('/ready')
+assert response.status_code==200
+assert response.json()['ready'] is True
 for issuer in issuer_ids:
     directory=Path('/state/authorities')/issuer
     metadata=json.loads((directory/'metadata.json').read_text())

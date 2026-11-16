@@ -17,7 +17,7 @@ PORTS = {"dhcp": 8081, "radius": 8082, "dns": 8083, "ca": 8084}
 
 def version() -> str:
     """Report only validated build metadata, not arbitrary environment content."""
-    value = os.getenv("NETADMIN_VERSION", "unknown")
+    value = os.getenv("NETADMIN_BUILD_VERSION", "unknown")
     return value if re.fullmatch(r"\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?", value) else "unknown"
 
 
