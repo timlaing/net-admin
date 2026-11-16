@@ -6,6 +6,7 @@ import ipaddress
 import os
 import re
 import subprocess  # nosec B404
+from collections.abc import Callable
 from itertools import pairwise
 from pathlib import Path
 from typing import Any, cast
@@ -28,6 +29,10 @@ HOST_PATTERN = re.compile(r"host\s+([A-Za-z0-9_-]+)\s*\{(.*?)\}", re.DOTALL)
 MAC_PATTERN = re.compile(r"hardware\s+ethernet\s+([0-9A-Fa-f:]{17})\s*;")
 IP_PATTERN = re.compile(r"fixed-address\s+([0-9.]+)\s*;")
 LEASE_PATTERN = re.compile(r"lease\s+([0-9.]+)\s*\{(.*?)\}", re.DOTALL)
+
+
+class LeaseConflict(ValueError):
+    """A different device acquired the address before the reservation took effect."""
 
 
 def _kea() -> bool:
@@ -151,7 +156,10 @@ def _validate_live(main_config: Path) -> None:
 
 
 def _reservation_conflict(
-    entries: list[dict[str, str]], item: dict[str, str], main_config: Path
+    entries: list[dict[str, str]],
+    item: dict[str, str],
+    main_config: Path,
+    originals: dict[Path, bytes | None] | None = None,
 ) -> str | None:
     """Identify address conflicts and MAC conflicts within the backend's scope."""
     for entry in entries:
@@ -170,7 +178,7 @@ def _reservation_conflict(
         if _kea()
         else [
             ipaddress.IPv4Network(f"{subnet['network']}/{subnet['netmask']}")
-            for subnet in _all_subnets(main_config)
+            for subnet in _all_subnets(main_config, originals)
         ]
     )
     target = [network for network in networks if ipaddress.IPv4Address(item["address"]) in network]
@@ -194,7 +202,12 @@ def _reservation_conflict(
     return None
 
 
-def _external_changes(entries: list[dict[str, str]], managed: Path, name: str) -> dict[Path, str]:
+def _external_changes(
+    entries: list[dict[str, str]],
+    managed: Path,
+    name: str,
+    originals: dict[Path, bytes | None] | None = None,
+) -> dict[Path, str]:
     """Removals of the same host from files the managed file does not own."""
     if _kea():
         # Kea mode has a single NetAdmin-owned include file (the migration
@@ -205,7 +218,10 @@ def _external_changes(entries: list[dict[str, str]], managed: Path, name: str) -
         if existing["name"] == name and Path(existing["source"]) != managed.resolve():
             source = Path(existing["source"])
             changes[source] = dhcp_files.remove_reservation(
-                source.read_text(encoding="utf-8"), name
+                _snapshot_text(originals, source)
+                if originals is not None
+                else source.read_text(encoding="utf-8"),
+                name,
             )
     return changes
 
@@ -221,7 +237,10 @@ def _reload() -> list[str]:
 
 
 def _install_changes(
-    changes: dict[Path, str], main_config: Path, originals: dict[Path, bytes | None] | None = None
+    changes: dict[Path, str],
+    main_config: Path,
+    originals: dict[Path, bytes | None] | None = None,
+    verify_applied: Callable[[], None] | None = None,
 ) -> None:
     """Allow writes only in explicitly configured service directories."""
     validated_transaction(
@@ -230,6 +249,7 @@ def _install_changes(
         _reload(),
         allowed_roots=(main_config.parent, _path("DHCP_MANAGED").parent),
         expected_originals=originals,
+        verify_applied=verify_applied,
     )
 
 
@@ -253,10 +273,11 @@ def _save_reservation() -> Any:
         return jsonify({"error": "Invalid reservation hostname, MAC address or IPv4 address"}), 400
     managed = _path("DHCP_MANAGED")
     main_config = _path("DHCP_MAIN")
-    all_items = _all_reservations(main_config)
-    others = [entry for entry in all_items if entry["name"] != item["name"]]
     try:
-        conflict = _reservation_conflict(others, item, main_config)
+        originals = _configuration_snapshot(main_config, managed)
+        all_items = _snapshot_reservations(originals)
+        others = [entry for entry in all_items if entry["name"] != item["name"]]
+        conflict = _reservation_conflict(others, item, main_config, originals)
     except ValueError:
         return jsonify(
             {
@@ -273,19 +294,25 @@ def _save_reservation() -> Any:
                 ],
             }
         ), 409
-    return _review_and_install(item, body, managed, main_config, all_items)
+    return _review_and_install(item, body, managed, main_config, originals)
 
 
 def _active_lease_conflict(item: dict[str, str]) -> bool:
     path = _path("DHCP_LEASES")
     if not path.exists():
         return False
+    latest = {lease["address"]: lease for lease in parse_leases(path.read_text(encoding="utf-8"))}
     return any(
         lease["address"] == item["address"]
         and lease["state"] == "active"
         and lease["mac"].lower() != item["mac"]
-        for lease in parse_leases(path.read_text(encoding="utf-8"))
+        for lease in latest.values()
     )
+
+
+def _verify_reservation_lease(item: dict[str, str]) -> None:
+    if _active_lease_conflict(item):
+        raise LeaseConflict("Lease conflict after reservation activation")
 
 
 def _reservation_preview(
@@ -307,11 +334,38 @@ def _reservation_preview(
 
 
 def _configuration_snapshot(main_config: Path, managed: Path) -> dict[Path, bytes | None]:
-    originals: dict[Path, bytes | None] = {
-        p.resolve(): p.read_bytes() for p in _discover(main_config)
-    }
-    originals.setdefault(managed.resolve(), managed.read_bytes() if managed.exists() else None)
+    originals: dict[Path, bytes | None] = {}
+
+    def visit(path: Path) -> None:
+        source = path.resolve()
+        if source in originals:
+            return
+        if source == managed.resolve() and not source.exists():
+            originals[source] = None
+            return
+        content = source.read_bytes()
+        originals[source] = content
+        text = content.decode("utf-8")
+        includes = kea_files.INCLUDE.findall(text) if _kea() else dhcp_files.include_names(text)
+        for include in includes:
+            child = Path(include)
+            visit(child if child.is_absolute() else source.parent / child)
+
+    visit(main_config)
+    visit(managed)
     return originals
+
+
+def _snapshot_text(originals: dict[Path, bytes | None], path: Path) -> str:
+    return (originals[path.resolve()] or b"").decode("utf-8")
+
+
+def _snapshot_reservations(originals: dict[Path, bytes | None]) -> list[dict[str, str]]:
+    return [
+        entry
+        for path in originals
+        for entry in _reservations_from(_snapshot_text(originals, path), str(path))
+    ]
 
 
 def _review_and_install(
@@ -319,14 +373,13 @@ def _review_and_install(
     body: dict[str, Any],
     managed: Path,
     main_config: Path,
-    all_items: list[dict[str, str]],
+    originals: dict[Path, bytes | None],
 ) -> Any:
     """Prepare a pool-safe reservation, optionally preview, then atomically install."""
     try:
         subnet = reservation_review.select_subnet(
-            _all_subnets(main_config), item["address"], str(body.get("network", ""))
+            _all_subnets(main_config, originals), item["address"], str(body.get("network", ""))
         )
-        originals = _configuration_snapshot(main_config, managed)
         ranges = (
             reservation_review.adjusted_ranges(subnet["ranges"], item["address"]) if subnet else []
         )
@@ -357,28 +410,40 @@ def _review_and_install(
                 "and approve the pool exclusion before saving."
             }
         ), 409
-    items = [entry for entry in _current(managed) if entry["name"] != item["name"]]
+    items = [
+        entry
+        for entry in parse_reservations(_snapshot_text(originals, managed))
+        if entry["name"] != item["name"]
+    ]
     items.append(item)
     changes = {managed: render_reservations(items)}
-    changes.update(_external_changes(all_items, managed, item["name"]))
+    changes.update(
+        _external_changes(_snapshot_reservations(originals), managed, item["name"], originals)
+    )
     try:
         if pool_change and subnet:
             source = Path(subnet["source"])
-            text = changes.get(source, source.read_text(encoding="utf-8"))
+            text = changes.get(source, _snapshot_text(originals, source))
             exclude = kea_files.exclude_address if _kea() else dhcp_files.exclude_address
             changes[source] = exclude(text, subnet["network"], item["address"])
-        _install_changes(
-            changes, main_config, {p.resolve(): originals[p.resolve()] for p in changes}
-        )
+        _install_changes(changes, main_config, originals, lambda: _verify_reservation_lease(item))
     except ValueError as error:
-        message = (
-            "Configuration changed; review the reservation again"
-            if isinstance(error, ConfigurationChanged)
-            else "Allocation syntax could not be safely installed. "
-            "Use the native editor or review the reservation again; no changes were applied."
-        )
-        return jsonify({"error": message}), 409
+        return jsonify({"error": _installation_error(error)}), 409
     return jsonify(item)
+
+
+def _installation_error(error: ValueError) -> str:
+    if isinstance(error, LeaseConflict):
+        return (
+            "This IP acquired an active lease for another device; "
+            "reservation changes were rolled back."
+        )
+    if isinstance(error, ConfigurationChanged):
+        return "Configuration changed; review the reservation again"
+    return (
+        "Allocation syntax could not be safely installed. "
+        "Use the native editor or review the reservation again; no changes were applied."
+    )
 
 
 def _delete_reservation() -> Any:
@@ -396,12 +461,20 @@ def _configuration() -> Any:
     return jsonify(_all_subnets(_path("DHCP_MAIN")))
 
 
-def _all_subnets(main_config: Path) -> list[dict[str, Any]]:
+def _all_subnets(
+    main_config: Path, originals: dict[Path, bytes | None] | None = None
+) -> list[dict[str, Any]]:
     """Discover subnet definitions across includes without ambiguous identities."""
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for source in _discover(main_config):
-        for subnet in _subnets(source.read_text(encoding="utf-8")):
+    sources = originals if originals is not None else _discover(main_config)
+    for source in sources:
+        text = (
+            _snapshot_text(originals, source)
+            if originals is not None
+            else source.read_text(encoding="utf-8")
+        )
+        for subnet in _subnets(text):
             network = str(subnet["network"])
             if network in seen:
                 raise ValueError(f"Ambiguous subnet definition: {network}")

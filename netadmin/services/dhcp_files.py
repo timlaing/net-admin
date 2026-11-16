@@ -7,13 +7,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-INCLUDE = re.compile(r'^[ \t]*include\s+"([^"]+)"\s*;', re.MULTILINE)
+INCLUDE = re.compile(r'\binclude\s+"([^"]+)"\s*;', re.IGNORECASE)
 HOST_START = re.compile(r"\bhost\s+([A-Za-z0-9_-]+)\s*\{")
-SUBNET_START = re.compile(r"\bsubnet\s+([0-9.]+)\s+netmask\s+([0-9.]+)\s*\{")
+SUBNET_START = re.compile(r"\bsubnet\s+([0-9.]+)\s+netmask\s+([0-9.]+)\s*\{", re.IGNORECASE)
 # Directives anchor on their own line only ([ \t], never \n) so the patterns
 # stay linear for the regex analyzer; blank lines directly above a directive
 # are consumed by _remove_directives, matching the old ^\s* behaviour.
-_RANGE_LINE = re.compile(r"(?m)^[ \t]*range\s+[0-9.]+\s+[0-9.]+\s*;\s*\n?")
+_RANGE_LINE = re.compile(r"(?m)^[ \t]*range\s+[0-9.]+(?:\s+[0-9.]+)?\s*;\s*\n?", re.IGNORECASE)
 _OPTION_LINE = re.compile(r"(?m)^[ \t]*option\s+[A-Za-z0-9_-]+\s++[^;]*;\s*\n?")
 _OPTION_STATEMENT = re.compile(r"(?m)^[ \t]*option\s+([A-Za-z0-9_-]+)\s++([^;]*);")
 
@@ -57,11 +57,17 @@ def discover_files(main: Path) -> list[Path]:
         if resolved in found or not resolved.exists():
             return
         found.append(resolved)
-        for include in INCLUDE.findall(resolved.read_text(encoding="utf-8")):
+        for include in include_names(resolved.read_text(encoding="utf-8")):
             visit(Path(include) if Path(include).is_absolute() else resolved.parent / include)
 
     visit(main)
     return found
+
+
+def include_names(text: str) -> list[str]:
+    """Find include directives, ignoring comments and unrelated quoted strings."""
+    tokens = re.compile(r'#[^\n]*|\binclude\s+"([^"\n]+)"\s*;|"(?:\\.|[^"\\])*"', re.IGNORECASE)
+    return [match[1] for match in tokens.finditer(text) if match[1] is not None]
 
 
 def reservations(text: str, source: str) -> list[dict[str, str]]:
@@ -101,7 +107,9 @@ def subnets(text: str) -> list[dict[str, Any]]:
         body = text[match.start() : end]
         ranges = [
             [start, finish or start]
-            for start, finish in re.findall(r"\brange\s+([0-9.]+)(?:\s+([0-9.]+))?\s*;", plain)
+            for start, finish in re.findall(
+                r"\brange\s+([0-9.]+)(?:\s+([0-9.]+))?\s*;", plain, re.IGNORECASE
+            )
         ]
         options = {
             name: value.strip()
@@ -115,7 +123,9 @@ def subnets(text: str) -> list[dict[str, Any]]:
                 "options": options,
             }
         )
-        if len(ranges) != len(re.findall(r"\brange\b", plain)):
+        if len(ranges) != len(re.findall(r"\brange\b", plain, re.IGNORECASE)) or re.search(
+            r"\binclude\b", plain, re.IGNORECASE
+        ):
             result[-1]["pool_review_supported"] = False
     return result
 
@@ -147,9 +157,11 @@ def exclude_address(text: str, network: str, address: str) -> str:
         if match[1] != network:
             continue
         end, body = _block(masked, match.start())
-        pattern = re.compile(r"\brange\s+([0-9.]+)(?:\s+([0-9.]+))?\s*;")
+        pattern = re.compile(r"\brange\s+([0-9.]+)(?:\s+([0-9.]+))?\s*;", re.IGNORECASE)
         matches = list(pattern.finditer(body))
-        if len(matches) != len(re.findall(r"\brange\b", body)):
+        if len(matches) != len(re.findall(r"\brange\b", body, re.IGNORECASE)) or re.search(
+            r"\binclude\b", body, re.IGNORECASE
+        ):
             raise ValueError("Unsupported allocation syntax; adjust this pool in the native editor")
         original = text[match.start() : end]
         target = int(ipaddress.IPv4Address(address))

@@ -14,3 +14,14 @@ ISC permits distinct reservation names for the same MAC across different subnets
 Kea global reservations still require unique MACs. Pool-specific policies are
 preserved when splitting pools; unsupported syntax requires native editing.
 Removing a reservation does not automatically expand the dynamic pool again.
+
+Preview, conflict checks and candidate generation use the same captured configuration
+bytes signed by the approval token. The agent checks the entire safety read set
+before installation, including unchanged include files. ISC allocation keywords
+are matched case-insensitively; subnet-local includes are rejected rather than
+guessing which pools they supply. Singleton pools can be removed by the editor.
+
+Active-lease checks use the last declaration for each address. After applying the
+configuration and reloading, the agent checks again: a newly conflicting lease
+causes configuration rollback and a reload of the restored configuration. The
+lease database is preserved; resolve the other device's lease before retrying.
