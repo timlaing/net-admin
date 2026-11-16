@@ -207,7 +207,8 @@ def test_lease_acquired_during_reload_rolls_back_and_reloads_originals(state, mo
     assert "rolled back" in response.json["error"]
     assert state.main.read_bytes() == original
     assert state.managed.read_bytes() == b""
-    assert len(reloads) == 2 and reloads[-1] == original
+    assert len(reloads) == 2
+    assert reloads[-1] == original
     assert state.leases.read_text() == lease("aa:bb:cc:dd:ee:09")
 
 

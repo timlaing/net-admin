@@ -113,7 +113,7 @@ def validated_transaction(
         if expected_originals is not None
         else originals
     )
-    if not changes.keys() <= expected.keys():
+    if changes.keys() - expected.keys():
         raise ConfigurationChanged("Write set is not covered by the safety snapshot")
     _check_originals(expected)
     candidates: dict[Path, Path] = {}
