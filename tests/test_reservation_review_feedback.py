@@ -289,8 +289,9 @@ def test_mixed_case_range_requires_approval_and_is_excluded(state, keyword):
         state.main.read_text()
         .replace("subnet", "SUBNET")
         .replace("netmask", "NETMASK")
-        .replace("range", keyword)
+        .replace("range 192.0.2.10", f"{keyword} 192.0.2.10")
     )
+    assert f'include "{state.managed}";' in state.main.read_text()
     assert state.client.post("/reservations", headers=AUTH, json=PAYLOAD).status_code == 409
     plan = state.client.post("/reservations", headers=AUTH, json=PAYLOAD | {"preview": True}).json
     assert plan["pool_change"] is True
