@@ -64,6 +64,38 @@ def _skip(text: str, position: int) -> int | None:
     return None
 
 
+def include_directives(text: str) -> list[str]:
+    """Return include paths referenced outside of comments and string literals.
+
+    Kea allows ``#``, ``//`` and ``/* */`` comments plus quoted strings. A
+    directive like ``# <?include "/retired.conf"?>`` must be ignored even
+    though a naive regex would still extract ``/retired.conf``. Missing active
+    includes remain errors for ``visit()`` to surface.
+    """
+    includes: list[str] = []
+    position = 0
+    marker = "<?include"
+    while position < len(text):
+        skipped = _skip(text, position)
+        if skipped is not None:
+            position = skipped
+            continue
+        if text.startswith(marker, position):
+            start = text.find('"', position + len(marker))
+            if start < 0:
+                position += 1
+                continue
+            end = text.find('"', start + 1)
+            if end < 0:
+                position += 1
+                continue
+            includes.append(text[start + 1 : end])
+            position = end + 1
+            continue
+        position += 1
+    return includes
+
+
 def _match_block(text: str, opening: int, opener: str, closer: str) -> int:
     """Index after the bracket matching text[opening], ignoring strings/comments."""
     depth = 0
@@ -142,7 +174,7 @@ def discover_files(main: Path) -> list[Path]:
         if resolved in found or not resolved.exists():
             return
         found.append(resolved)
-        for include in INCLUDE.findall(resolved.read_text(encoding="utf-8")):
+        for include in include_directives(resolved.read_text(encoding="utf-8")):
             visit(Path(include) if Path(include).is_absolute() else resolved.parent / include)
 
     visit(main)

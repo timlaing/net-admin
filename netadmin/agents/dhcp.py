@@ -315,13 +315,31 @@ def _active_lease_conflict(item: dict[str, str]) -> bool:
     path = _path("DHCP_LEASES")
     if not path.exists():
         return False
-    latest = {lease["address"]: lease for lease in parse_leases(path.read_text(encoding="utf-8"))}
+    latest: dict[str, dict[str, str]] = {}
+    for lease in _all_leases(path):
+        # The last declaration for an address is the current lease state.
+        latest[lease["address"]] = lease
     return any(
         lease["address"] == item["address"]
         and lease["state"] == "active"
         and lease["mac"].lower() != item["mac"]
         for lease in latest.values()
     )
+
+
+def _all_leases(path: Path) -> list[dict[str, str]]:
+    """Read complete Kea lease state, including rotation/cleanup siblings.
+
+    Kea memfile cleanup moves unexpired records out of the current lease file
+    into a sibling cleanup file. Reading only the current file can miss an
+    active lease, so rotation-consistent reads merge every sibling file.
+    """
+    leases = parse_leases(path.read_text(encoding="utf-8"))
+    if _kea():
+        for sibling in sorted(path.parent.glob(f"{path.name}.cleanup*")):
+            if sibling.is_file():
+                leases.extend(parse_leases(sibling.read_text(encoding="utf-8")))
+    return leases
 
 
 def _verify_reservation_lease(item: dict[str, str]) -> None:
@@ -360,7 +378,7 @@ def _configuration_snapshot(main_config: Path, managed: Path) -> dict[Path, byte
         content = source.read_bytes()
         originals[source] = content
         text = content.decode("utf-8")
-        includes = kea_files.INCLUDE.findall(text) if _kea() else dhcp_files.include_names(text)
+        includes = kea_files.include_directives(text) if _kea() else dhcp_files.include_names(text)
         for include in includes:
             child = Path(include)
             visit(child if child.is_absolute() else source.parent / child)

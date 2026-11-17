@@ -10,6 +10,8 @@ from typing import Any
 INCLUDE = re.compile(r'\binclude\s+"([^"]+)"\s*;', re.IGNORECASE)
 HOST_START = re.compile(r"\bhost\s+([A-Za-z0-9_-]+)\s*\{")
 SUBNET_START = re.compile(r"\bsubnet\s+([0-9.]+)\s+netmask\s+([0-9.]+)\s*\{", re.IGNORECASE)
+_SHARED_NETWORK_START = re.compile(r"\bshared-network\s+[A-Za-z0-9_-]+\s*\{", re.IGNORECASE)
+_POOL_START = re.compile(r"\bpool\s*\{", re.IGNORECASE)
 # Directives anchor on their own line only ([ \t], never \n) so the patterns
 # stay linear for the regex analyzer; blank lines directly above a directive
 # are consumed by _remove_directives, matching the old ^\s* behaviour.
@@ -102,6 +104,20 @@ def subnets(text: str) -> list[dict[str, Any]]:
     """Parse subnet ranges and options for editing/export."""
     result = []
     masked = re.sub(r'#[^\n]*|"(?:\\.|[^"\\])*"', lambda m: " " * len(m[0]), text)
+
+    # ISC permits IPv4 pools at shared-network scope. Collect those pools so
+    # subnets inside a shared-network that declares pool-level ranges are
+    # flagged as unsupported for agent-managed pool review (the agent cannot
+    # safely edit pools outside the subnet block).
+    shared_pool_networks: set[str] = set()
+    for sn_match in _SHARED_NETWORK_START.finditer(masked):
+        _sn_end, sn_block = _block(masked, sn_match.start())
+        has_pool = _POOL_START.search(sn_block) is not None
+        if not has_pool:
+            continue
+        for subnet_match in SUBNET_START.finditer(sn_block):
+            shared_pool_networks.add(subnet_match.group(1))
+
     for match in SUBNET_START.finditer(masked):
         end, plain = _block(masked, match.start())
         body = text[match.start() : end]
@@ -115,18 +131,19 @@ def subnets(text: str) -> list[dict[str, Any]]:
             name: value.strip()
             for name, value in re.findall(r"(?m)^[ \t]*option\s+([A-Za-z0-9_-]+)\s++([^;]*);", body)
         }
-        result.append(
-            {
-                "network": match.group(1),
-                "netmask": match.group(2),
-                "ranges": ranges,
-                "options": options,
-            }
-        )
-        if len(ranges) != len(re.findall(r"\brange\b", plain, re.IGNORECASE)) or re.search(
-            r"\binclude\b", plain, re.IGNORECASE
+        entry: dict[str, Any] = {
+            "network": match.group(1),
+            "netmask": match.group(2),
+            "ranges": ranges,
+            "options": options,
+        }
+        if (
+            len(ranges) != len(re.findall(r"\brange\b", plain, re.IGNORECASE))
+            or re.search(r"\binclude\b", plain, re.IGNORECASE)
+            or match.group(1) in shared_pool_networks
         ):
-            result[-1]["pool_review_supported"] = False
+            entry["pool_review_supported"] = False
+        result.append(entry)
     return result
 
 
