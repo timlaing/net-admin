@@ -47,7 +47,18 @@ for label in ('Servers','Devices'):
                 service_host='localhost',dns_suffixes='example.test' if label=='Servers' else '',ip_ranges='192.168.0.0/16' if label=='Devices' else '',leaf_days=30)['id']
     issuer_ids.append(issuer)
 from netadmin.ca_runtime.issuer import run
-response=client.get('/ready')
+def wait_for_issuers():
+    for attempt in range(30):
+        try:
+            response=client.get('/ready',timeout=3)
+            if response.status_code==200 and response.json().get('ready') is True:
+                return response
+        except (httpx.HTTPError,ValueError):
+            pass
+        if attempt<29:
+            time.sleep(1)
+    raise RuntimeError('Managed CA issuers did not become ready within the startup budget')
+response=wait_for_issuers()
 assert response.status_code==200
 assert response.json()['ready'] is True
 for issuer in issuer_ids:
