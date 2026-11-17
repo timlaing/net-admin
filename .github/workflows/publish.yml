@@ -375,7 +375,7 @@ jobs:
   publication-status:
     name: Report publication outcome
     if: always()
-    needs: [prepare, publish, publish-addon, manifests, verify-public-images, publish-installer, promote-latest]
+    needs: [prepare, verify, lint, publish, publish-addon, manifests, verify-public-images, publish-installer, promote-latest]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -387,5 +387,16 @@ jobs:
       - name: Keep release publication state explicit
         env:
           GH_TOKEN: ${{ github.token }}
-          PUBLICATION_STATE: ${{ (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) && 'failed' || 'ready' }}
+          PUBLICATION_STATE: >-
+            ${{ needs.prepare.result == 'success' &&
+                needs.verify.result == 'success' &&
+                needs.lint.result == 'success' &&
+                needs.publish.result == 'success' &&
+                needs.publish-addon.result == 'success' &&
+                needs.manifests.result == 'success' &&
+                needs.verify-public-images.result == 'success' &&
+                needs.publish-installer.result == 'success' &&
+                (needs.promote-latest.result == 'success' ||
+                 (contains(needs.prepare.outputs.version, '-') &&
+                  needs.promote-latest.result == 'skipped')) && 'ready' || 'failed' }}
         run: python3 netadmin/release_metadata.py status --tag "$GITHUB_REF_NAME" --state "$PUBLICATION_STATE"

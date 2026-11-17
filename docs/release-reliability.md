@@ -27,3 +27,9 @@ assets. Administrators can inspect `/releases/status` on demand; the app reports
 **published-not-ready**, **publication-failed**, or **ready**, rather than treating
 the existence of a GitHub release as successful delivery. Unknown/network failures
 remain unknown. No registry credentials are sent to this readonly endpoint.
+
+Publication is reported ready only when preparation, verification, lint, both
+publishers, manifests, anonymous-access checks and installer publication all
+succeed. Each gate is a direct dependency of the status job. Latest promotion
+must also succeed for stable releases; only prereleases may skip it. Missing,
+skipped, cancelled or failed mandatory jobs cannot produce a ready note.
