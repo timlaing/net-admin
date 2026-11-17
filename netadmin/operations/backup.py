@@ -10,7 +10,8 @@ import os
 import shutil
 import stat
 import tarfile
-from contextlib import ExitStack
+from collections.abc import Generator, Iterator
+from contextlib import ExitStack, closing, contextmanager, suppress
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -64,6 +65,18 @@ def _relative(name: str) -> PurePosixPath:
     return paths.relative(name)
 
 
+def _iter_tree(root: Path) -> Generator[Path, None, None]:
+    """Enumerate selected trees without swallowing errors or following directory links."""
+    pending = [root]
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                child = Path(entry.path)
+                yield child
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(child)
+
+
 def _selection(root: Path, includes: list[str]) -> set[Path]:
     selected: set[Path] = set()
     for name in includes:
@@ -71,9 +84,10 @@ def _selection(root: Path, includes: list[str]) -> set[Path]:
         selected.add(path)
         _selection_limit(selected)
         if path.is_dir():
-            for child in path.rglob("*"):
-                selected.add(child)
-                _selection_limit(selected)
+            with closing(_iter_tree(path)) as descendants:
+                for child in descendants:
+                    selected.add(child)
+                    _selection_limit(selected)
     _selection_limit(selected)
     return selected
 
@@ -88,6 +102,8 @@ def _write_tar(root: Path, includes: list[str]) -> bytes:
     total = 0
     with tarfile.open(fileobj=data, mode="w") as archive:
         for path in sorted(_selection(root, includes)):
+            if path == root:
+                continue  # Never restore archive metadata onto the private target root.
             info = path.lstat()
             if stat.S_ISSOCK(info.st_mode):
                 continue
@@ -204,7 +220,11 @@ def _validate_members(members: list[tarfile.TarInfo]) -> None:
 
 def verify(archive: Path, password: bytes) -> dict[str, int]:
     """Check every member before any restore; reject duplicate/link/special entries."""
-    with tarfile.open(fileobj=io.BytesIO(contents(archive, password)), mode="r:") as tar:
+    return _verify_data(contents(archive, password))
+
+
+def _verify_data(data: bytes) -> dict[str, int]:
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as tar:
         members = tar.getmembers()
         _validate_members(members)
         for member in members:
@@ -217,69 +237,123 @@ def verify(archive: Path, password: bytes) -> dict[str, int]:
 
 def restore(archive: Path, password: bytes, target: Path) -> dict[str, int]:
     """Restore to a NEW private directory only, preserving modes and root-owned IDs."""
-    report = verify(archive, password)
+    data = contents(archive, password)
+    report = _verify_data(data)
     target = paths.location(target, "NETADMIN_RESTORE_DIRECTORY")
-    target.mkdir(mode=0o700, parents=False, exist_ok=False)
-    identity = target.lstat()
-    try:
-        _restore_members(archive, password, target)
-    except BaseException:
-        _cleanup_restore(target, identity)
-        raise
+    with ExitStack() as stack:
+        parent = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        stack.callback(os.close, parent)
+        parent_info = os.fstat(parent)
+        if parent_info.st_uid != os.geteuid() or parent_info.st_mode & 0o022:
+            raise OperationInputError("restore_parent")
+        os.mkdir(target.name, 0o700, dir_fd=parent)
+        identity = os.stat(target.name, dir_fd=parent, follow_symlinks=False)
+        own = os.open(target.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        stack.callback(os.close, own)
+        if _identity(os.fstat(own)) != _identity(identity):
+            raise OperationInputError("restore_changed")
+        try:
+            _restore_members(data, own)
+            if not _target_matches(parent, target.name, own):
+                raise OperationInputError("restore_changed")
+        except BaseException:
+            _cleanup_restore(parent, target.name, own)
+            raise
     return report
 
 
-def _cleanup_restore(target: Path, identity: os.stat_result) -> None:
+def _identity(info: os.stat_result) -> tuple[int, int]:
+    return info.st_dev, info.st_ino
+
+
+def _target_matches(parent: int, name: str, own: int) -> bool:
+    try:
+        return _identity(os.stat(name, dir_fd=parent, follow_symlinks=False)) == _identity(
+            os.fstat(own)
+        )
+    except FileNotFoundError:
+        return False
+
+
+def _cleanup_restore(parent: int, name: str, own: int) -> None:
     """Remove only the new restore tree, using descriptor-relative symlink-safe cleanup."""
     if not shutil.rmtree.avoids_symlink_attacks:
         return
     try:
-        with ExitStack() as stack:
-            parent = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            stack.callback(os.close, parent)
-            own = os.open(target.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
-            stack.callback(os.close, own)
-            actual = os.fstat(own)
-            if (actual.st_dev, actual.st_ino) != (identity.st_dev, identity.st_ino):
-                return
+        with suppress(OSError):
             os.fchmod(own, 0o700)
-            with os.scandir(own) as entries:
-                for entry in entries:
-                    if entry.is_dir(follow_symlinks=False):
-                        shutil.rmtree(entry.name, dir_fd=own)
-                    else:
-                        os.unlink(entry.name, dir_fd=own)
-            current = os.stat(target.name, dir_fd=parent, follow_symlinks=False)
-            if (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino):
-                os.rmdir(target.name, dir_fd=parent)
+        with os.scandir(own) as entries:
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False):
+                    shutil.rmtree(entry.name, dir_fd=own)
+                else:
+                    os.unlink(entry.name, dir_fd=own)
+        if _target_matches(parent, name, own):
+            os.rmdir(name, dir_fd=parent)
     except OSError:
         # Keep failed cleanup private; documentation describes manual recovery.
         pass
 
 
-def _restore_members(archive: Path, password: bytes, target: Path) -> None:
-    with tarfile.open(fileobj=io.BytesIO(contents(archive, password)), mode="r:") as tar:
+@contextmanager
+def _directory_descriptor(root: int, parts: tuple[str, ...], *, make_dirs: bool) -> Iterator[int]:
+    """Walk each component relative to a retained root, refusing intermediate symlinks."""
+    descriptor = os.dup(root)
+    try:
+        for part in parts:
+            if make_dirs:
+                with suppress(FileExistsError):
+                    os.mkdir(part, 0o700, dir_fd=descriptor)
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+def _restore_members(data: bytes, target: int) -> None:
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as tar:
         members = tar.getmembers()
         for member in members:
-            path = target.joinpath(*_relative(member.name).parts)
-            if member.isdir():
-                path.mkdir(mode=0o700, parents=True, exist_ok=True)
-            else:
-                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                handle = tar.extractfile(member)
-                if handle is None:
-                    raise OperationInputError("member_incomplete")
-                descriptor = os.open(
-                    path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
-                )
-                with os.fdopen(descriptor, "wb") as destination:
-                    destination.write(handle.read())
+            _restore_member(tar, member, target)
         # Apply directories last: restoring restrictive modes early blocks children.
         for member in sorted(members, key=lambda m: len(PurePosixPath(m.name).parts), reverse=True):
-            path = target.joinpath(*_relative(member.name).parts)
-            if os.geteuid() == 0:
-                os.chown(path, member.uid, member.gid)
-            path.chmod(member.mode & 0o777)
+            _restore_metadata(member, target)
+
+
+def _restore_member(tar: tarfile.TarFile, member: tarfile.TarInfo, target: int) -> None:
+    parts = _relative(member.name).parts
+    if member.isdir():
+        with _directory_descriptor(target, parts, make_dirs=True):
+            return
+    handle = tar.extractfile(member)
+    if handle is None:
+        raise OperationInputError("member_incomplete")
+    with _directory_descriptor(target, parts[:-1], make_dirs=True) as parent, ExitStack() as stack:
+        descriptor = os.open(
+            parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent
+        )
+        stack.callback(os.close, descriptor)
+        with os.fdopen(descriptor, "wb", closefd=False) as destination:
+            destination.write(handle.read())
+
+
+def _restore_metadata(member: tarfile.TarInfo, target: int) -> None:
+    parts = _relative(member.name).parts
+    with _directory_descriptor(target, parts[:-1], make_dirs=False) as parent, ExitStack() as stack:
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        if member.isdir():
+            flags |= os.O_DIRECTORY
+        descriptor = os.open(parts[-1], flags, dir_fd=parent)
+        stack.callback(os.close, descriptor)
+        mode = os.fstat(descriptor).st_mode
+        valid = stat.S_ISDIR(mode) if member.isdir() else stat.S_ISREG(mode)
+        if not valid:
+            raise OperationInputError("member_type")
+        if os.geteuid() == 0:
+            os.fchown(descriptor, member.uid, member.gid)
+        os.fchmod(descriptor, member.mode & 0o1777)
 
 
 def password_file(path: Path) -> bytes:
