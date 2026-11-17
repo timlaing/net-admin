@@ -176,3 +176,21 @@ def test_global_options_ignore_subnet_and_host_blocks() -> None:
         "domain-name-servers": "192.0.2.1, 192.0.2.2",
     }
     assert global_options("host pi { option routers 192.0.2.1; }") == {}
+
+
+def test_shared_network_quoted_name_flags_enclosed_subnet_unsupported() -> None:
+    """A quoted shared-network name is masked to spaces. The shared-network
+    start pattern must not depend on the name token, so subnets inside a
+    shared-network that declares pool-level ranges stay unsupported for
+    per-subnet pool review (the address stays in the dynamic pool)."""
+    text = (
+        'shared-network "office" {\n'
+        "  range 192.0.2.10 192.0.2.20;\n"
+        "  subnet 192.0.2.0 netmask 255.255.255.0 {\n"
+        "    range 192.0.2.100 192.0.2.200;\n"
+        "  }\n"
+        "}\n"
+    )
+    parsed = subnets(text)
+    assert len(parsed) == 1
+    assert parsed[0]["pool_review_supported"] is False

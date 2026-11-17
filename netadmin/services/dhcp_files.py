@@ -10,7 +10,7 @@ from typing import Any
 INCLUDE = re.compile(r'\binclude\s+"([^"]+)"\s*;', re.IGNORECASE)
 HOST_START = re.compile(r"\bhost\s+([A-Za-z0-9_-]+)\s*\{")
 SUBNET_START = re.compile(r"\bsubnet\s+([0-9.]+)\s+netmask\s+([0-9.]+)\s*\{", re.IGNORECASE)
-_SHARED_NETWORK_START = re.compile(r"\bshared-network\s+[A-Z0-9_-]+\s*\{", re.IGNORECASE)
+_SHARED_NETWORK_START = re.compile(r"\bshared-network\b[^{};]*\{", re.IGNORECASE)
 _POOL_START = re.compile(r"\bpool\s*\{", re.IGNORECASE)
 _COMMENTS_AND_STRINGS = re.compile(r'#[^\n]*|"(?:\\.|[^"\\])*"')
 _SHARED_NETWORK_RANGE = re.compile(r"\brange\s+[0-9.]+(?:\s+[0-9.]+)?\s*;", re.IGNORECASE)
