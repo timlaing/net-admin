@@ -9,6 +9,7 @@ import subprocess  # nosec B404 - commands are fixed by the operator
 import tempfile
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -127,13 +128,17 @@ def validated_transaction(
     try:
         for path, content in changes.items():
             descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
             candidate = Path(name)
-            candidate.chmod(0o640)
             candidates[path] = candidate
+            # Register cleanup before wrapping/writing: failures at either point
+            # must not leak a descriptor or leave a secret-bearing candidate.
+            with ExitStack() as stack:
+                stack.callback(os.close, descriptor)
+                with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as handle:
+                    handle.write(content)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                candidate.chmod(0o640)
         current = {path: path.read_bytes() if path.exists() else None for path in changes}
         if current != originals:
             raise ConfigurationChanged("Configuration changed before installation")
