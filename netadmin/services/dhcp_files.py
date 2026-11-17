@@ -16,9 +16,13 @@ _SHARED_NETWORK_RANGE = re.compile(r"\brange\s+[0-9.]+(?:\s+[0-9.]+)?\s*;", re.I
 # Directives anchor on their own line only ([ \t], never \n) so the patterns
 # stay linear for the regex analyzer; blank lines directly above a directive
 # are consumed by _remove_directives, matching the old ^\s* behaviour.
-_RANGE_LINE = re.compile(r"(?m)^[ \t]*range\s+[0-9.]+(?:\s+[0-9.]+)?\s*;\s*\n?", re.IGNORECASE)
+_RANGE_STATEMENT = re.compile(r"\brange\s++[0-9.]++(?:\s++[0-9.]++)?\s*+;", re.IGNORECASE)
 _OPTION_LINE = re.compile(r"(?m)^[ \t]*option\s+[A-Za-z0-9_-]+\s++[^;]*;\s*\n?")
 _OPTION_STATEMENT = re.compile(r"(?m)^[ \t]*option\s+([A-Za-z0-9_-]+)\s++([^;]*);")
+
+
+class PoolScopeEditError(ValueError):
+    """A whole-subnet rewrite would discard pool-specific allocation policy."""
 
 
 def _remove_directives(body: str, pattern: re.Pattern[str]) -> str:
@@ -179,6 +183,10 @@ def subnets(text: str) -> list[dict[str, Any]]:
             "ranges": ranges,
             "options": options,
         }
+        if _POOL_START.search(plain):
+            # Excluding one reserved address preserves the pool block/ACL, but
+            # whole-subnet rewrites would move allocations outside that policy.
+            entry["pool_edit_supported"] = False
         if (
             len(ranges) != len(re.findall(r"\brange\b", plain, re.IGNORECASE))
             or re.search(r"\binclude\b", plain, re.IGNORECASE)
@@ -243,11 +251,18 @@ def exclude_address(text: str, network: str, address: str) -> str:
 
 def update_subnet(text: str, network: str, ranges: list[list[str]], options: dict[str, str]) -> str:
     """Replace ranges and option statements inside one subnet block."""
-    for match in SUBNET_START.finditer(text):
+    masked = re.sub(r'#[^\n]*|"(?:\\.|[^"\\])*"', lambda m: " " * len(m[0]), text)
+    for match in SUBNET_START.finditer(masked):
         if match.group(1) != network:
             continue
-        end, body = _block(text, match.start())
-        body = _remove_directives(body, _RANGE_LINE)
+        end, plain = _block(masked, match.start())
+        if _POOL_START.search(plain):
+            raise PoolScopeEditError("Pool-scoped allocation policies require the native editor")
+        body = text[match.start() : end]
+        # Remove complete allocation statements even on compact/inline subnets,
+        # without matching commented or quoted examples of range syntax.
+        for allocation in reversed(list(_RANGE_STATEMENT.finditer(plain))):
+            body = body[: allocation.start()] + body[allocation.end() :]
         body = _remove_directives(body, _OPTION_LINE)
         insertion = "".join(f"  range {start} {finish};\n" for start, finish in ranges)
         insertion += "".join(

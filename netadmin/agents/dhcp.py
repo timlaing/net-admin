@@ -528,7 +528,10 @@ def _save_configuration() -> Any:
     matches = [item for item in _all_subnets(main_config) if item["network"] == network]
     if not matches:
         return jsonify({"error": "Unknown subnet"}), 404
-    if matches[0].get("pool_review_supported") is False:
+    if (
+        matches[0].get("pool_review_supported") is False
+        or matches[0].get("pool_edit_supported") is False
+    ):
         return jsonify(
             {"error": "Allocation syntax is not safely editable; use the native editor"}
         ), 409
@@ -549,7 +552,19 @@ def _save_configuration() -> Any:
                     "exclude it before saving"
                 }
             ), 409
-    updated = _update_subnet(source.read_text(encoding="utf-8"), network, ranges, options)
+    return _apply_subnet_configuration(source, network, ranges, options, main_config)
+
+
+def _apply_subnet_configuration(
+    source: Path, network: str, ranges: list[list[str]], options: dict[str, str], main_config: Path
+) -> Any:
+    """Install only a candidate whose allocation policy can be preserved safely."""
+    try:
+        updated = _update_subnet(source.read_text(encoding="utf-8"), network, ranges, options)
+    except dhcp_files.PoolScopeEditError:
+        # A cooperating writer is locked, but a native editor may have changed
+        # the source since discovery. Never expose arbitrary native diagnostics.
+        return jsonify({"error": "Pool-scoped allocation policies require the native editor"}), 409
     _install_changes({source: updated}, main_config)
     return jsonify({"network": network})
 

@@ -37,3 +37,9 @@ Native editors must cooperate with that same advisory lock, or operate only whil
 agent writers are stopped. Snapshot checks still detect many external edits, but
 an advisory lock cannot serialize an editor that ignores it. Offline migration and
 restore procedures must continue to stop all service/agent writers first.
+
+Whole-subnet pool/options edits are rejected when a subnet contains scoped
+`pool { ... }` policies, whether inline or multiline, standalone or inside a
+shared network. Use the native editor for those changes; NetAdmin never moves new
+ranges outside an existing pool ACL. Reservation exclusion remains available
+where supported because it splits ranges inside their original pool blocks.
