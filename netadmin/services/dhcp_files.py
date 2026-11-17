@@ -12,6 +12,7 @@ HOST_START = re.compile(r"\bhost\s+([A-Za-z0-9_-]+)\s*\{")
 SUBNET_START = re.compile(r"\bsubnet\s+([0-9.]+)\s+netmask\s+([0-9.]+)\s*\{", re.IGNORECASE)
 _SHARED_NETWORK_START = re.compile(r"\bshared-network\s+[A-Z0-9_-]+\s*\{", re.IGNORECASE)
 _POOL_START = re.compile(r"\bpool\s*\{", re.IGNORECASE)
+_SHARED_NETWORK_RANGE = re.compile(r"\brange\s+[0-9.]+(?:\s+[0-9.]+)?\s*;", re.IGNORECASE)
 # Directives anchor on their own line only ([ \t], never \n) so the patterns
 # stay linear for the regex analyzer; blank lines directly above a directive
 # are consumed by _remove_directives, matching the old ^\s* behaviour.
@@ -100,6 +101,38 @@ def remove_reservation(text: str, name: str) -> str:
     return text
 
 
+def _shared_network_owns_pool(masked: str, start: int) -> bool:
+    """True when a shared-network declares pools at its own scope.
+
+    ISC permits ``range`` statements directly inside a shared-network, not only
+    inside nested ``pool { }`` blocks; those pools apply to every enclosed
+    subnet, so the agent cannot review them per-subnet. Only allocations at the
+    shared-network's own brace depth count: ranges inside nested subnet or pool
+    blocks belong to those narrower scopes.
+    """
+    try:
+        opening = masked.index("{", start)
+    except ValueError:
+        return False
+    depth = 1
+    index = opening + 1
+    direct: list[str] = []
+    while index < len(masked):
+        char = masked[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        elif depth == 1:
+            direct.append(char)
+        index += 1
+    else:
+        return False
+    return _SHARED_NETWORK_RANGE.search("".join(direct)) is not None
+
+
 def subnets(text: str) -> list[dict[str, Any]]:
     """Parse subnet ranges and options for editing/export."""
     result = []
@@ -112,7 +145,9 @@ def subnets(text: str) -> list[dict[str, Any]]:
     shared_pool_networks: set[str] = set()
     for sn_match in _SHARED_NETWORK_START.finditer(masked):
         _sn_end, sn_block = _block(masked, sn_match.start())
-        has_pool = _POOL_START.search(sn_block) is not None
+        has_pool = _POOL_START.search(sn_block) is not None or _shared_network_owns_pool(
+            sn_block, 0
+        )
         if not has_pool:
             continue
         for subnet_match in SUBNET_START.finditer(sn_block):

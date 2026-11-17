@@ -353,3 +353,67 @@ def test_include_words_in_comments_and_strings_do_not_disable_review():
     )
     assert dhcp_files.subnets(text)[0].get("pool_review_supported", True)
     assert dhcp_files.include_names(text) == []
+
+
+def test_shared_network_bare_range_flags_enclosed_subnet_unsupported():
+    text = (
+        "shared-network office {\n"
+        "  subnet 192.0.2.0 netmask 255.255.255.0 {\n"
+        "  }\n"
+        "  range 192.0.2.10 192.0.2.20;\n"
+        "}\n"
+    )
+    assert dhcp_files.subnets(text)[0]["pool_review_supported"] is False
+
+
+def test_shared_network_pool_block_flags_enclosed_subnet_unsupported():
+    text = (
+        "shared-network office {\n"
+        "  subnet 192.0.2.0 netmask 255.255.255.0 {\n"
+        "  }\n"
+        "  pool { range 192.0.2.10 192.0.2.20; }\n"
+        "}\n"
+    )
+    assert dhcp_files.subnets(text)[0]["pool_review_supported"] is False
+
+
+def test_shared_network_without_pools_keeps_subnet_reviewable():
+    text = (
+        "shared-network office {\n"
+        "  subnet 192.0.2.0 netmask 255.255.255.0 {\n"
+        "    range 192.0.2.10 192.0.2.20;\n"
+        "  }\n"
+        "}\n"
+    )
+    assert dhcp_files.subnets(text)[0].get("pool_review_supported", True) is True
+
+
+def test_top_level_subnet_stays_reviewable_next_to_shared_network():
+    text = (
+        "shared-network office {\n"
+        "  subnet 192.0.2.0 netmask 255.255.255.0 {\n"
+        "  }\n"
+        "  range 192.0.2.10 192.0.2.20;\n"
+        "}\n"
+        "subnet 198.51.100.0 netmask 255.255.255.0 { range 10.0.0.10 10.0.0.20; }\n"
+    )
+    entries = dhcp_files.subnets(text)
+    assert entries[0]["pool_review_supported"] is False
+    assert entries[1].get("pool_review_supported", True) is True
+
+
+def test_shared_network_bare_pool_rejects_reservation_without_approval(state):
+    state.main.write_text(
+        "shared-network office {\n"
+        "  subnet 192.0.2.0 netmask 255.255.255.0 {\n"
+        "  }\n"
+        "  range 192.0.2.10 192.0.2.20;\n"
+        "}\n"
+        f'include "{state.managed}";\n'
+    )
+    before = state.main.read_bytes()
+    assert state.client.post("/reservations", headers=AUTH, json=PAYLOAD).status_code == 409
+    plan = state.client.post("/reservations", headers=AUTH, json=PAYLOAD | {"preview": True})
+    assert plan.status_code == 409
+    assert state.main.read_bytes() == before
+    assert state.managed.read_bytes() == b""
