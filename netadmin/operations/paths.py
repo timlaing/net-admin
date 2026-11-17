@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from pathlib import Path, PurePosixPath
+
+from netadmin.operations.errors import OperationInputError
 
 FORBIDDEN = {".ssh", ".aws", ".gnupg", ".kube", ".git", ".docker", ".venv"}
 
@@ -12,10 +15,10 @@ FORBIDDEN = {".ssh", ".aws", ".gnupg", ".kube", ".git", ".docker", ".venv"}
 def configured(name: str) -> Path:
     """Trust a separately installed operator setting, never a supplied plan/CLI path."""
     if name not in os.environ:
-        raise ValueError("Install the trusted operation boundary before invoking this CLI")
+        raise OperationInputError("boundary_missing")
     value = Path(os.environ[name])
     if not value.is_absolute() or ".." in value.parts or value == Path("/"):
-        raise ValueError("Operation boundary must be an absolute, dedicated path")
+        raise OperationInputError("boundary_invalid")
     return value
 
 
@@ -23,7 +26,7 @@ def exact(requested: Path, setting: str) -> Path:
     """Return the configured path, not the original argument, after exact lexical matching."""
     trusted = configured(setting)
     if ".." in requested.parts or requested.absolute() != trusted:
-        raise ValueError("Argument does not match the configured operation boundary")
+        raise OperationInputError("boundary_mismatch")
     return trusted
 
 
@@ -37,23 +40,26 @@ def relative(name: str) -> PurePosixPath:
         or "\\" in name
         or set(path.parts) & FORBIDDEN
     ):
-        raise ValueError("Unsafe or unrelated credential-store path")
+        raise OperationInputError("relative_unsafe")
     return path
 
 
 def existing(root: Path, name: str) -> Path:
-    """Select from server-enumerated paths; never probe an argument-constructed filename."""
+    """Walk only selected parents using enumerated entries, never root-wide recursion."""
     if name in {"", "."}:
         return root
-    wanted = str(relative(name))
-    for count, candidate in enumerate(root.rglob("*")):
-        if count >= 100_000:
-            raise ValueError("Operation tree exceeds its selection limit")
-        if str(candidate.relative_to(root)) == wanted:
-            if candidate.is_symlink():
-                raise ValueError("Operation selection may not follow a symlink")
-            return candidate
-    raise ValueError("Operation selection is unavailable")
+    current = root
+    for part in relative(name).parts:
+        if not stat.S_ISDIR(current.lstat().st_mode):
+            raise OperationInputError("selection_missing")
+        with os.scandir(current) as entries:
+            candidate = next((Path(entry.path) for entry in entries if entry.name == part), None)
+        if candidate is None:
+            raise OperationInputError("selection_missing")
+        if stat.S_ISLNK(candidate.lstat().st_mode):
+            raise OperationInputError("selection_symlink")
+        current = candidate
+    return current
 
 
 def location(requested: Path, setting: str) -> Path:
@@ -66,5 +72,5 @@ def location(requested: Path, setting: str) -> Path:
         or ".." in requested.parts
         or requested.parent.absolute() != root
     ):
-        raise ValueError("Destination is outside the configured operation boundary")
+        raise OperationInputError("destination_invalid")
     return root / name

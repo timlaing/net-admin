@@ -92,7 +92,8 @@ class AgentClient:
     def deployment_info(self) -> tuple[str, bool | None]:
         """Older agents remain usable; missing metadata never implies matching versions."""
         try:
-            body = self.get("ready", timeout=3)
+            # Native readiness checks are bounded at 5s; include response overhead.
+            body = self.get("ready", timeout=8)
         except httpx.HTTPStatusError as error:
             if error.response.status_code != 503:
                 return "unknown", None

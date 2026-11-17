@@ -7,6 +7,7 @@ import base64
 import io
 import json
 import os
+import shutil
 import stat
 import tarfile
 from contextlib import ExitStack
@@ -17,8 +18,10 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 from netadmin.operations import paths
+from netadmin.operations.errors import OperationInputError
 
-MAGIC = b"NETADMIN-BACKUP-1\n"
+MAGIC = b"NETADMIN-BACKUP-2\n"
+LEGACY_MAGIC = b"NETADMIN-BACKUP-1\n"
 MAX_BYTES = 256 * 1024 * 1024
 MAX_FILES = 100_000
 
@@ -44,16 +47,16 @@ def _add(archive: tarfile.TarFile, path: Path, root: Path, info: os.stat_result)
             info.st_ino,
             info.st_size,
         ):
-            raise ValueError("Backup source changed during capture")
+            raise OperationInputError("source_changed")
         member.size = actual.st_size
         with os.fdopen(descriptor, "rb", closefd=False) as source:
             archive.addfile(member, source)
 
 
-def _cipher(password: bytes, salt: bytes) -> Fernet:
+def _cipher(password: bytes, salt: bytes, *, legacy: bool = False) -> Fernet:
     if not 16 <= len(password) <= 1024:
-        raise ValueError("Recovery passphrase must contain 16-1024 bytes")
-    key = Scrypt(salt=salt, length=32, n=2**15, r=8, p=1).derive(password)
+        raise OperationInputError("password_length")
+    key = Scrypt(salt=salt, length=32, n=2**15 if legacy else 2**17, r=8, p=1).derive(password)
     return Fernet(base64.urlsafe_b64encode(key))
 
 
@@ -66,11 +69,18 @@ def _selection(root: Path, includes: list[str]) -> set[Path]:
     for name in includes:
         path = paths.existing(root, name)
         selected.add(path)
+        _selection_limit(selected)
         if path.is_dir():
-            selected.update(path.rglob("*"))
-    if not selected or len(selected) > MAX_FILES:
-        raise ValueError("Backup selection is empty or too large")
+            for child in path.rglob("*"):
+                selected.add(child)
+                _selection_limit(selected)
+    _selection_limit(selected)
     return selected
+
+
+def _selection_limit(selected: set[Path]) -> None:
+    if not selected or len(selected) > MAX_FILES:
+        raise OperationInputError("selection_limit")
 
 
 def _write_tar(root: Path, includes: list[str]) -> bytes:
@@ -83,10 +93,10 @@ def _write_tar(root: Path, includes: list[str]) -> bytes:
                 continue
             _relative(str(path.relative_to(root)))
             if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
-                raise ValueError("Backup sources may not contain links or special files")
+                raise OperationInputError("source_type")
             total += info.st_size if path.is_file() else 0
             if total > MAX_BYTES:
-                raise ValueError("Backup exceeds its safety limit; partition the selection")
+                raise OperationInputError("capture_limit")
             _add(archive, path, root, info)
     return data.getvalue()
 
@@ -96,55 +106,99 @@ def create(
 ) -> None:
     """Require stopped writers; include full selected config/lease/CA trees, never sockets."""
     if not quiesced:
-        raise ValueError("Stop all writers first and confirm --quiesced")
+        raise OperationInputError("quiescence")
     root = paths.exact(root, "NETADMIN_OPERATIONS_ROOT").resolve(strict=True)
     output = paths.location(output, "NETADMIN_BACKUP_DIRECTORY")
     if output.resolve().is_relative_to(root):
-        raise ValueError("Store backup archives outside the source tree")
+        raise OperationInputError("archive_location")
     salt = os.urandom(16)
     encrypted = MAGIC + salt + _cipher(password, salt).encrypt(_write_tar(root, includes))
-    descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "wb") as handle:
-        handle.write(encrypted)
-        handle.flush()
-        os.fsync(handle.fileno())
+    _publish_archive(output, encrypted)
+
+
+def _unlink_owned(name: str, directory: int, identity: os.stat_result) -> None:
+    """Failure cleanup may remove only the file this operation created."""
+    try:
+        info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if (info.st_dev, info.st_ino) == (identity.st_dev, identity.st_ino):
+            os.unlink(name, dir_fd=directory)
+    except OSError:
+        # Preserve the original failure; private storage may need manual cleanup.
+        pass
+
+
+def _publish_archive(output: Path, encrypted: bytes) -> None:
+    """Publish a fsynced complete file without replacing any existing final name."""
+    with ExitStack() as stack:
+        directory = os.open(output.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        stack.callback(os.close, directory)
+        temporary = f".{output.name}.{os.urandom(8).hex()}.partial"
+        descriptor = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory
+        )
+        stack.callback(os.close, descriptor)
+        identity = os.fstat(descriptor)
+        stack.callback(_unlink_owned, temporary, directory, identity)
+        published = False
+        try:
+            with os.fdopen(descriptor, "wb", closefd=False) as handle:
+                handle.write(encrypted)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.link(
+                temporary,
+                output.name,
+                src_dir_fd=directory,
+                dst_dir_fd=directory,
+                follow_symlinks=False,
+            )
+            published = True
+            os.unlink(temporary, dir_fd=directory)
+            os.fsync(directory)
+        except BaseException:
+            if published:
+                _unlink_owned(output.name, directory, identity)
+            raise
 
 
 def contents(archive: Path, password: bytes) -> bytes:
     """Authenticate before examining paths or exposing any archived data."""
     archive = paths.location(archive, "NETADMIN_BACKUP_DIRECTORY")
     if archive.suffix != ".enc":
-        raise ValueError("Use an encrypted backup archive")
+        raise OperationInputError("archive_extension")
     with ExitStack() as stack:
         descriptor = os.open(archive, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         stack.callback(os.close, descriptor)
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or info.st_size > 2 * MAX_BYTES:
-            raise ValueError("Encrypted archive is not a bounded regular file")
+            raise OperationInputError("archive_type")
         with os.fdopen(descriptor, "rb", closefd=False) as handle:
             data = handle.read(2 * MAX_BYTES + 1)
     if len(data) > 2 * MAX_BYTES:
-        raise ValueError("Encrypted archive exceeds its size limit")
-    if not data.startswith(MAGIC) or len(data) < len(MAGIC) + 16:
-        raise ValueError("Unsupported backup format")
+        raise OperationInputError("archive_limit")
+    legacy = data.startswith(LEGACY_MAGIC)
+    if not (data.startswith(MAGIC) or legacy) or len(data) < len(MAGIC) + 16:
+        raise OperationInputError("archive_format")
     start = len(MAGIC)
     try:
-        return _cipher(password, data[start : start + 16]).decrypt(data[start + 16 :])
+        return _cipher(password, data[start : start + 16], legacy=legacy).decrypt(
+            data[start + 16 :]
+        )
     except InvalidToken as error:
-        raise ValueError("Backup authentication failed") from error
+        raise OperationInputError("authentication") from error
 
 
 def _validate_members(members: list[tarfile.TarInfo]) -> None:
     if len(members) > MAX_FILES or sum(m.size for m in members) > MAX_BYTES:
-        raise ValueError("Backup exceeds restoration limits")
+        raise OperationInputError("restore_limit")
     names: set[str] = set()
     files = {str(_relative(m.name)) for m in members if m.isfile()}
     for member in members:
         name = str(_relative(member.name))
         if member.size < 0 or any(str(parent) in files for parent in PurePosixPath(name).parents):
-            raise ValueError("Backup member has an unsafe parent or size")
+            raise OperationInputError("member_parent")
         if name in names or not (member.isfile() or member.isdir()):
-            raise ValueError("Backup contains duplicate, linked or special members")
+            raise OperationInputError("member_type")
         names.add(name)
 
 
@@ -157,7 +211,7 @@ def verify(archive: Path, password: bytes) -> dict[str, int]:
             if member.isfile():
                 handle = tar.extractfile(member)
                 if handle is None or len(handle.read()) != member.size:
-                    raise ValueError("Backup member is incomplete")
+                    raise OperationInputError("member_incomplete")
         return {"files": len(members), "bytes": sum(m.size for m in members)}
 
 
@@ -166,6 +220,44 @@ def restore(archive: Path, password: bytes, target: Path) -> dict[str, int]:
     report = verify(archive, password)
     target = paths.location(target, "NETADMIN_RESTORE_DIRECTORY")
     target.mkdir(mode=0o700, parents=False, exist_ok=False)
+    identity = target.lstat()
+    try:
+        _restore_members(archive, password, target)
+    except BaseException:
+        _cleanup_restore(target, identity)
+        raise
+    return report
+
+
+def _cleanup_restore(target: Path, identity: os.stat_result) -> None:
+    """Remove only the new restore tree, using descriptor-relative symlink-safe cleanup."""
+    if not shutil.rmtree.avoids_symlink_attacks:
+        return
+    try:
+        with ExitStack() as stack:
+            parent = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            stack.callback(os.close, parent)
+            own = os.open(target.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            stack.callback(os.close, own)
+            actual = os.fstat(own)
+            if (actual.st_dev, actual.st_ino) != (identity.st_dev, identity.st_ino):
+                return
+            os.fchmod(own, 0o700)
+            with os.scandir(own) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        shutil.rmtree(entry.name, dir_fd=own)
+                    else:
+                        os.unlink(entry.name, dir_fd=own)
+            current = os.stat(target.name, dir_fd=parent, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino):
+                os.rmdir(target.name, dir_fd=parent)
+    except OSError:
+        # Keep failed cleanup private; documentation describes manual recovery.
+        pass
+
+
+def _restore_members(archive: Path, password: bytes, target: Path) -> None:
     with tarfile.open(fileobj=io.BytesIO(contents(archive, password)), mode="r:") as tar:
         members = tar.getmembers()
         for member in members:
@@ -176,7 +268,7 @@ def restore(archive: Path, password: bytes, target: Path) -> dict[str, int]:
                 path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                 handle = tar.extractfile(member)
                 if handle is None:
-                    raise ValueError("Backup member is incomplete")
+                    raise OperationInputError("member_incomplete")
                 descriptor = os.open(
                     path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
                 )
@@ -188,15 +280,30 @@ def restore(archive: Path, password: bytes, target: Path) -> dict[str, int]:
             if os.geteuid() == 0:
                 os.chown(path, member.uid, member.gid)
             path.chmod(member.mode & 0o777)
-    return report
 
 
 def password_file(path: Path) -> bytes:
     """Recovery material is supplied locally; never copied into manifests or output."""
     path = paths.exact(path, "NETADMIN_RECOVERY_PASSWORD_FILE")
-    if path.is_symlink() or path.stat().st_mode & 0o077:
-        raise ValueError("Recovery passphrase file must be private (0600) and not a symlink")
-    return path.read_bytes().rstrip(b"\r\n")
+    with ExitStack() as stack:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        stack.callback(os.close, descriptor)
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_mode & 0o077
+            or info.st_uid != os.geteuid()
+            or info.st_size > 4096
+        ):
+            raise OperationInputError("password_file")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            content = handle.read(4097)
+        if len(content) > 4096:
+            raise OperationInputError("password_file")
+        password = content.rstrip(b"\r\n")
+        if not 16 <= len(password) <= 1024:
+            raise OperationInputError("password_length")
+        return password
 
 
 def main() -> None:
@@ -215,16 +322,18 @@ def main() -> None:
         report: dict[str, Any]
         if args.action == "create":
             if args.root is None:
-                raise ValueError("--root is required")
+                raise OperationInputError("root_required")
             create(args.root, args.include, args.archive, password, quiesced=args.quiesced)
             report = verify(args.archive, password)
         elif args.action == "restore":
             if args.target is None:
-                raise ValueError("--target must name a new directory")
+                raise OperationInputError("target_required")
             report = restore(args.archive, password, args.target)
         else:
             report = verify(args.archive, password)
         print(json.dumps({"verified": True, **report}))
+    except OperationInputError as error:
+        parser.exit(1, error.public_message() + "\n")
     except (OSError, ValueError, tarfile.TarError):
         parser.exit(1, "Backup operation failed; private diagnostics were suppressed.\n")
 
