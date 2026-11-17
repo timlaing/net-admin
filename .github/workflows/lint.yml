@@ -26,7 +26,7 @@ jobs:
 
       - name: 🔍 Install actionlint
         env:
-          ACTIONLINT_VERSION: '1.7.12'
+          ACTIONLINT_VERSION: "1.7.12"
         run: |
           set -euo pipefail
           curl --proto =https --proto-redir =https -fsSLo /tmp/actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
@@ -70,3 +70,26 @@ jobs:
         with:
           path: home-assistant/netadmin
           community: false
+
+  validation-result:
+    name: Validate lint
+    needs:
+      - actionlint
+      - shellcheck
+      - addon
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every validation job to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os
+          results = json.loads(os.environ['RESULTS'])
+          failed = [name for name, job in results.items() if job['result'] != 'success']
+          if failed:
+              raise SystemExit('Validation incomplete: ' + ', '.join(failed))
+          PY
