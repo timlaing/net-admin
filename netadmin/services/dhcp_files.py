@@ -12,6 +12,7 @@ HOST_START = re.compile(r"\bhost\s+([A-Za-z0-9_-]+)\s*\{")
 SUBNET_START = re.compile(r"\bsubnet\s+([0-9.]+)\s+netmask\s+([0-9.]+)\s*\{", re.IGNORECASE)
 _SHARED_NETWORK_START = re.compile(r"\bshared-network\s+[A-Z0-9_-]+\s*\{", re.IGNORECASE)
 _POOL_START = re.compile(r"\bpool\s*\{", re.IGNORECASE)
+_COMMENTS_AND_STRINGS = re.compile(r'#[^\n]*|"(?:\\.|[^"\\])*"')
 _SHARED_NETWORK_RANGE = re.compile(r"\brange\s+[0-9.]+(?:\s+[0-9.]+)?\s*;", re.IGNORECASE)
 # Directives anchor on their own line only ([ \t], never \n) so the patterns
 # stay linear for the regex analyzer; blank lines directly above a directive
@@ -149,7 +150,7 @@ def _shared_network_owns_pool(masked: str, start: int) -> bool:
 def subnets(text: str) -> list[dict[str, Any]]:
     """Parse subnet ranges and options for editing/export."""
     result = []
-    masked = re.sub(r'#[^\n]*|"(?:\\.|[^"\\])*"', lambda m: " " * len(m[0]), text)
+    masked = _COMMENTS_AND_STRINGS.sub(lambda m: " " * len(m[0]), text)
 
     # ISC permits IPv4 pools at shared-network scope. Collect those pools so
     # subnets inside a shared-network that declares pool-level ranges are
@@ -219,7 +220,7 @@ def global_options(text: str) -> dict[str, str]:
 
 def exclude_address(text: str, network: str, address: str) -> str:
     """Split only allocation statements; retain pool scopes, ACLs and options."""
-    masked = re.sub(r'#[^\n]*|"(?:\\.|[^"\\])*"', lambda m: " " * len(m[0]), text)
+    masked = _COMMENTS_AND_STRINGS.sub(lambda m: " " * len(m[0]), text)
     for match in SUBNET_START.finditer(masked):
         if match[1] != network:
             continue
@@ -251,7 +252,7 @@ def exclude_address(text: str, network: str, address: str) -> str:
 
 def update_subnet(text: str, network: str, ranges: list[list[str]], options: dict[str, str]) -> str:
     """Replace ranges and option statements inside one subnet block."""
-    masked = re.sub(r'#[^\n]*|"(?:\\.|[^"\\])*"', lambda m: " " * len(m[0]), text)
+    masked = _COMMENTS_AND_STRINGS.sub(lambda m: " " * len(m[0]), text)
     for match in SUBNET_START.finditer(masked):
         if match.group(1) != network:
             continue
