@@ -102,6 +102,65 @@ def test_kea_export_places_hosts_by_subnet() -> None:
     assert [host["hostname"] for host in snapshot["Dhcp4"]["reservations"]] == ["orphan"]
 
 
+def test_subnet_in_shared_network_with_subnet_local_pool_stays_supported() -> None:
+    # A pool declared inside a nested subnet must not mark the shared network
+    # as pool-scoped; the subnet stays reviewable (no false positive).
+    text = """shared-network office {
+  subnet 192.0.2.0 netmask 255.255.255.0 {
+    pool {
+      range 192.0.2.10 192.0.2.20;
+    }
+  }
+}"""
+    entries = subnets(text)
+    assert len(entries) == 1
+    assert entries[0].get("pool_review_supported") is None
+
+
+def test_subnet_in_shared_network_with_direct_range_unsupported() -> None:
+    # A bare range declared directly in the shared network scopes every subnet.
+    text = """shared-network office {
+  range 10.0.0.1 10.0.0.2;
+  subnet 192.0.2.0 netmask 255.255.255.0 {
+    range 192.0.2.10 192.0.2.20;
+  }
+}"""
+    entries = subnets(text)
+    assert len(entries) == 1
+    assert entries[0].get("pool_review_supported") is False
+
+
+def test_subnet_in_shared_network_with_direct_pool_block_unsupported() -> None:
+    # A pool block declared directly in the shared network scopes every subnet.
+    text = """shared-network office {
+  pool {
+    range 10.0.0.1 10.0.0.2;
+  }
+  subnet 192.0.2.0 netmask 255.255.255.0 {
+    range 192.0.2.10 192.0.2.20;
+  }
+}"""
+    entries = subnets(text)
+    assert len(entries) == 1
+    assert entries[0].get("pool_review_supported") is False
+
+
+def test_shared_network_with_both_direct_and_subnet_pool_unsupported() -> None:
+    text = """shared-network office {
+  pool {
+    range 10.0.0.1 10.0.0.2;
+  }
+  subnet 192.0.2.0 netmask 255.255.255.0 {
+    pool {
+      range 192.0.2.10 192.0.2.20;
+    }
+  }
+}"""
+    entries = subnets(text)
+    assert len(entries) == 1
+    assert entries[0].get("pool_review_supported") is False
+
+
 def test_global_options_ignore_subnet_and_host_blocks() -> None:
     text = (
         'option domain-name "lan.example";\n'

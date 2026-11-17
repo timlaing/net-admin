@@ -120,6 +120,11 @@ def _shared_network_owns_pool(masked: str, start: int) -> bool:
     while index < len(masked):
         char = masked[index]
         if char == "{":
+            if depth == 1:
+                # A block opened directly in the shared network (e.g. ``pool {
+                # {``) scopes the shared network to pool-level allocations and
+                # makes every enclosed subnet unsupported for per-subnet review.
+                direct.append(char)
             depth += 1
         elif char == "}":
             depth -= 1
@@ -130,7 +135,11 @@ def _shared_network_owns_pool(masked: str, start: int) -> bool:
         index += 1
     else:
         return False
-    return _SHARED_NETWORK_RANGE.search("".join(direct)) is not None
+    direct_text = "".join(direct)
+    return (
+        _SHARED_NETWORK_RANGE.search(direct_text) is not None
+        or _POOL_START.search(direct_text) is not None
+    )
 
 
 def subnets(text: str) -> list[dict[str, Any]]:
@@ -145,9 +154,7 @@ def subnets(text: str) -> list[dict[str, Any]]:
     shared_pool_networks: set[str] = set()
     for sn_match in _SHARED_NETWORK_START.finditer(masked):
         _sn_end, sn_block = _block(masked, sn_match.start())
-        has_pool = _POOL_START.search(sn_block) is not None or _shared_network_owns_pool(
-            sn_block, 0
-        )
+        has_pool = _shared_network_owns_pool(sn_block, 0)
         if not has_pool:
             continue
         for subnet_match in SUBNET_START.finditer(sn_block):
