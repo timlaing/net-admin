@@ -23,6 +23,8 @@ MESSAGES = {
     "archive_format": "Unsupported backup format",
     "authentication": "Backup authentication failed",
     "restore_limit": "Backup exceeds restoration limits",
+    "restore_parent": "Restore directory must be operator-owned and not group/other-writable",
+    "restore_changed": "Restore target changed during recovery; inspect private restore storage",
     "member_parent": "Backup member has an unsafe parent or size",
     "member_type": "Backup contains duplicate, linked or special members",
     "member_incomplete": "Backup member is incomplete",

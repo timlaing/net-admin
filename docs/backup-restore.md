@@ -56,6 +56,19 @@ switch mount paths while all services are stopped. Run restoration as root when
 original issuer ownership must be preserved. Directory/file modes are preserved
 without restoring setuid/setgid bits. Root directory is private by default.
 
+The configured restore parent must be owned by the effective operator and not
+writable by group/others. Restore retains its parent and new-root descriptors,
+walks every member component with no-follow directory opens, and performs writes,
+ownership and mode changes relative to those descriptors. A renamed/replaced
+target is reported as failure rather than falsely reporting its replacement ready.
+Sticky permission bits are preserved; setuid/setgid remain stripped. Root archive
+members are always rejected, so the newly created target stays private.
+
+Whole-root selections (`--include .`) capture descendants without recording the
+selection root itself. Any directory-enumeration error aborts capture instead of
+silently producing an incomplete archive. Restore verifies and extracts the same
+authenticated bytes, never a reopened archive that may have changed in between.
+
 Archives are written to an exclusive 0600 temporary file, then published without
 overwriting only after the file is fsynced; the containing directory is fsynced too.
 Selection limits apply during enumeration, not after traversing an unbounded tree.

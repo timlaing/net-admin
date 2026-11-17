@@ -60,16 +60,19 @@ def test_format_downgrade_cannot_authenticate_new_archive(sample):
 
 
 def test_selection_stops_without_exhausting_large_tree(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
     root = tmp_path / "deployment"
     root.mkdir()
     discovered = []
 
-    def descendants(_path, _pattern):
+    def descendants():
         for index in range(100):
             discovered.append(index)
-            yield root / str(index)
+            yield SimpleNamespace(path=str(root / str(index)), is_dir=lambda **_kwargs: False)
 
-    monkeypatch.setattr(Path, "rglob", descendants)
+    monkeypatch.setattr(backup.os, "scandir", lambda _path: nullcontext(descendants()))
     monkeypatch.setattr(backup, "MAX_FILES", 3)
     with pytest.raises(OperationInputError, match="too large"):
         backup._selection(root, ["."])
@@ -168,14 +171,17 @@ def test_failed_restore_removes_owned_partial_tree_and_can_retry(
         monkeypatch.setattr(tarfile.TarFile, "extractfile", missing_member)
         error = ValueError
     else:
-        chmod = Path.chmod
+        chmod = os.fchmod
+        failed = False
 
-        def denied(path, *args, **kwargs):
-            if path.is_relative_to(target):
+        def denied(descriptor, *args):
+            nonlocal failed
+            if not failed:
+                failed = True
                 raise OSError("synthetic permission failure")
-            return chmod(path, *args, **kwargs)
+            return chmod(descriptor, *args)
 
-        monkeypatch.setattr(Path, "chmod", denied)
+        monkeypatch.setattr(backup.os, "fchmod", denied)
         error = OSError
     with pytest.raises(error):
         backup.restore(encrypted, PASSWORD, target)
@@ -183,7 +189,7 @@ def test_failed_restore_removes_owned_partial_tree_and_can_retry(
     if failure == "extract":
         monkeypatch.setattr(tarfile.TarFile, "extractfile", extract)
     else:
-        monkeypatch.setattr(Path, "chmod", chmod)
+        monkeypatch.setattr(backup.os, "fchmod", chmod)
     backup.restore(encrypted, PASSWORD, target)
     assert (target / "ca/state").read_bytes() == b"synthetic-ca"
 
@@ -196,10 +202,18 @@ def test_restore_cleanup_does_not_follow_symlinks(sample, tmp_path, monkeypatch)
     marker = outside / "retained"
     marker.write_bytes(b"protected")
 
-    def failure(_archive, _password, destination):
-        (destination / "owned").mkdir()
-        (destination / "owned/state").write_bytes(b"synthetic state")
-        (destination / "link").symlink_to(outside, target_is_directory=True)
+    def failure(_data, destination):
+        os.mkdir("owned", dir_fd=destination)
+        owned = os.open("owned", os.O_RDONLY | os.O_DIRECTORY, dir_fd=destination)
+        try:
+            descriptor = os.open("state", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=owned)
+            try:
+                os.write(descriptor, b"synthetic state")
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(owned)
+        os.symlink(outside, "link", dir_fd=destination, target_is_directory=True)
         raise OSError("synthetic failure")
 
     monkeypatch.setattr(backup, "_restore_members", failure)
@@ -213,10 +227,10 @@ def test_restore_cleanup_preserves_replaced_target(sample, tmp_path, monkeypatch
     _root, encrypted = sample
     target = tmp_path / "restore"
 
-    def failure(_archive, _password, destination):
-        destination.rename(tmp_path / "owned-partial")
-        destination.mkdir()
-        (destination / "protected").write_bytes(b"external replacement")
+    def failure(_data, _destination):
+        target.rename(tmp_path / "owned-partial")
+        target.mkdir()
+        (target / "protected").write_bytes(b"external replacement")
         raise OSError("synthetic failure")
 
     monkeypatch.setattr(backup, "_restore_members", failure)
