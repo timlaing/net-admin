@@ -10,7 +10,8 @@ import os
 import shutil
 import stat
 import tarfile
-from contextlib import ExitStack
+from collections.abc import Generator
+from contextlib import ExitStack, suppress
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -64,6 +65,15 @@ def _relative(name: str) -> PurePosixPath:
     return paths.relative(name)
 
 
+def _iter_tree(root: Path) -> Generator[Path, None, None]:
+    """Yield directory entries recursively, propagating enumeration errors."""
+    with os.scandir(root) as entries:
+        for entry in entries:
+            yield Path(entry.path)
+            if entry.is_dir(follow_symlinks=False):
+                yield from _iter_tree(Path(entry.path))
+
+
 def _selection(root: Path, includes: list[str]) -> set[Path]:
     selected: set[Path] = set()
     for name in includes:
@@ -71,8 +81,8 @@ def _selection(root: Path, includes: list[str]) -> set[Path]:
         selected.add(path)
         _selection_limit(selected)
         if path.is_dir():
-            for child in path.rglob("*"):
-                selected.add(child)
+            for child_path in _iter_tree(path):
+                selected.add(Path(child_path))
                 _selection_limit(selected)
     _selection_limit(selected)
     return selected
@@ -88,6 +98,9 @@ def _write_tar(root: Path, includes: list[str]) -> bytes:
     total = 0
     with tarfile.open(fileobj=data, mode="w") as archive:
         for path in sorted(_selection(root, includes)):
+            # Skip the root member itself; its descendants remain archived.
+            if path == root:
+                continue
             info = path.lstat()
             if stat.S_ISSOCK(info.st_mode):
                 continue
@@ -242,7 +255,8 @@ def _cleanup_restore(target: Path, identity: os.stat_result) -> None:
             actual = os.fstat(own)
             if (actual.st_dev, actual.st_ino) != (identity.st_dev, identity.st_ino):
                 return
-            os.fchmod(own, 0o700)
+            with suppress(OSError):
+                os.fchmod(own, 0o700)
             with os.scandir(own) as entries:
                 for entry in entries:
                     if entry.is_dir(follow_symlinks=False):
@@ -258,28 +272,73 @@ def _cleanup_restore(target: Path, identity: os.stat_result) -> None:
 
 
 def _restore_members(archive: Path, password: bytes, target: Path) -> None:
+    """Restore members using descriptor-relative, symlink-safe traversal."""
     with tarfile.open(fileobj=io.BytesIO(contents(archive, password)), mode="r:") as tar:
         members = tar.getmembers()
-        for member in members:
-            path = target.joinpath(*_relative(member.name).parts)
-            if member.isdir():
-                path.mkdir(mode=0o700, parents=True, exist_ok=True)
-            else:
-                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # Retain a validated descriptor for the target directory so pathname
+        # substitution of the target component cannot redirect writes.
+        target_fd = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fstat(target_fd)
+        except OSError:
+            os.close(target_fd)
+            raise
+        try:
+
+            def descend(parent_fd: int, part: str) -> int:
+                try:
+                    fd = os.open(
+                        part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd
+                    )
+                except FileNotFoundError:
+                    os.mkdir(part, mode=0o700, dir_fd=parent_fd)
+                    fd = os.open(
+                        part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd
+                    )
+                info = os.fstat(fd)
+                if not stat.S_ISDIR(info.st_mode):
+                    os.close(fd)
+                    raise OperationInputError("member_type")
+                return fd
+
+            # First pass: create directories and write file contents.
+            for member in members:
+                parts = list(_relative(member.name).parts)
+                parent_fd = target_fd
+                # Descend into / create every directory component before the leaf.
+                for part in parts[:-1]:
+                    parent_fd = descend(parent_fd, part)
+                if member.isdir():
+                    descend(parent_fd, parts[-1])
+                    continue
                 handle = tar.extractfile(member)
                 if handle is None:
                     raise OperationInputError("member_incomplete")
                 descriptor = os.open(
-                    path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
+                    parts[-1],
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=parent_fd,
                 )
                 with os.fdopen(descriptor, "wb") as destination:
                     destination.write(handle.read())
-        # Apply directories last: restoring restrictive modes early blocks children.
-        for member in sorted(members, key=lambda m: len(PurePosixPath(m.name).parts), reverse=True):
-            path = target.joinpath(*_relative(member.name).parts)
-            if os.geteuid() == 0:
-                os.chown(path, member.uid, member.gid)
-            path.chmod(member.mode & 0o777)
+
+            # Second pass: apply directory modes last, deepest first.
+            for member in sorted(
+                (m for m in members if m.isdir()),
+                key=lambda m: len(PurePosixPath(m.name).parts),
+                reverse=True,
+            ):
+                parts = list(_relative(member.name).parts)
+                parent_fd = target_fd
+                for part in parts:
+                    parent_fd = descend(parent_fd, part)
+                if os.geteuid() == 0:
+                    os.fchown(parent_fd, member.uid, member.gid)
+                os.fchmod(parent_fd, member.mode & 0o1777)
+                os.close(parent_fd)
+        finally:
+            os.close(target_fd)
 
 
 def password_file(path: Path) -> bytes:

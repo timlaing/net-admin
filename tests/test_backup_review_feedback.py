@@ -64,12 +64,12 @@ def test_selection_stops_without_exhausting_large_tree(tmp_path, monkeypatch):
     root.mkdir()
     discovered = []
 
-    def descendants(_path, _pattern):
+    def descendants(_root):
         for index in range(100):
             discovered.append(index)
             yield root / str(index)
 
-    monkeypatch.setattr(Path, "rglob", descendants)
+    monkeypatch.setattr(backup, "_iter_tree", descendants)
     monkeypatch.setattr(backup, "MAX_FILES", 3)
     with pytest.raises(OperationInputError, match="too large"):
         backup._selection(root, ["."])
@@ -168,14 +168,12 @@ def test_failed_restore_removes_owned_partial_tree_and_can_retry(
         monkeypatch.setattr(tarfile.TarFile, "extractfile", missing_member)
         error = ValueError
     else:
-        chmod = Path.chmod
+        fchmod = os.fchmod
 
-        def denied(path, *args, **kwargs):
-            if path.is_relative_to(target):
-                raise OSError("synthetic permission failure")
-            return chmod(path, *args, **kwargs)
+        def denied(_fd, _mode):
+            raise OSError("synthetic permission failure")
 
-        monkeypatch.setattr(Path, "chmod", denied)
+        monkeypatch.setattr(backup.os, "fchmod", denied)
         error = OSError
     with pytest.raises(error):
         backup.restore(encrypted, PASSWORD, target)
@@ -183,7 +181,7 @@ def test_failed_restore_removes_owned_partial_tree_and_can_retry(
     if failure == "extract":
         monkeypatch.setattr(tarfile.TarFile, "extractfile", extract)
     else:
-        monkeypatch.setattr(Path, "chmod", chmod)
+        monkeypatch.setattr(backup.os, "fchmod", fchmod)
     backup.restore(encrypted, PASSWORD, target)
     assert (target / "ca/state").read_bytes() == b"synthetic-ca"
 
