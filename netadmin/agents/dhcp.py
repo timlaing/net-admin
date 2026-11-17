@@ -7,6 +7,7 @@ import os
 import re
 import subprocess  # nosec B404
 from collections.abc import Callable
+from functools import wraps
 from itertools import pairwise
 from pathlib import Path
 from typing import Any, cast
@@ -21,6 +22,7 @@ from netadmin.agents.common import (
     json_object,
     validated_transaction,
 )
+from netadmin.agents.dhcp_state import configuration_lock
 from netadmin.agents.service_logs import register_logs
 from netadmin.services import dhcp_files, kea_files, subnet_files
 from netadmin.services.dhcp_files import kea_export
@@ -236,6 +238,17 @@ def _reload() -> list[str]:
     return cast(list[str], current_app.config["DHCP_RELOAD"])
 
 
+def _configuration_locked(operation: Callable[[], Any]) -> Callable[[], Any]:
+    """Every DHCP writer must lock before reading any configuration used to mutate it."""
+
+    @wraps(operation)
+    def serialized() -> Any:
+        with configuration_lock(_path("DHCP_MAIN")):
+            return operation()
+
+    return serialized
+
+
 def _install_changes(
     changes: dict[Path, str],
     main_config: Path,
@@ -265,6 +278,7 @@ def _lease_list() -> Any:
     return jsonify(parse_leases(_path("DHCP_LEASES").read_text(encoding="utf-8")))
 
 
+@_configuration_locked
 def _save_reservation() -> Any:
     body = json_object()
     try:
@@ -446,6 +460,7 @@ def _installation_error(error: ValueError) -> str:
     )
 
 
+@_configuration_locked
 def _delete_reservation() -> Any:
     name = str(json_object().get("name", ""))
     managed = _path("DHCP_MANAGED")
@@ -483,6 +498,7 @@ def _all_subnets(
     return result
 
 
+@_configuration_locked
 def _save_configuration() -> Any:
     body = json_object()
     network = str(body.get("network", ""))
@@ -541,6 +557,7 @@ def _validate_pools(cidr: str, ranges: list[Any]) -> None:
         raise ValueError("Pools cannot overlap")
 
 
+@_configuration_locked
 def _create_subnet() -> Any:
     """Create a subnet through daemon validation without copying existing pools."""
     main_config = _path("DHCP_MAIN")
@@ -566,6 +583,7 @@ def _create_subnet() -> Any:
     return jsonify({"created": str(network)}), 201
 
 
+@_configuration_locked
 def _remove_subnet() -> Any:
     """Stop serving a subnet, preserving the lease database and an original copy."""
     main_config = _path("DHCP_MAIN")
