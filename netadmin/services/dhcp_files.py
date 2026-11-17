@@ -10,7 +10,7 @@ from typing import Any
 INCLUDE = re.compile(r'\binclude\s+"([^"]+)"\s*;', re.IGNORECASE)
 HOST_START = re.compile(r"\bhost\s+([A-Za-z0-9_-]+)\s*\{")
 SUBNET_START = re.compile(r"\bsubnet\s+([0-9.]+)\s+netmask\s+([0-9.]+)\s*\{", re.IGNORECASE)
-_SHARED_NETWORK_START = re.compile(r"\bshared-network\s+[A-Za-z0-9_-]+\s*\{", re.IGNORECASE)
+_SHARED_NETWORK_START = re.compile(r"\bshared-network\s+[A-Z0-9_-]+\s*\{", re.IGNORECASE)
 _POOL_START = re.compile(r"\bpool\s*\{", re.IGNORECASE)
 # Directives anchor on their own line only ([ \t], never \n) so the patterns
 # stay linear for the regex analyzer; blank lines directly above a directive
