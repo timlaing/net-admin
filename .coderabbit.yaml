@@ -4,7 +4,7 @@ reviews:
     enabled: true
     allow_author_approval: false
   auto_review:
-    enabled: true
-    auto_incremental_review: true
+    enabled: false
+    auto_incremental_review: false
     description_keyword: ""
 inheritance: true
