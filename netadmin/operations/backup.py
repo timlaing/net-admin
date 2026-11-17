@@ -65,22 +65,7 @@ def _relative(name: str) -> PurePosixPath:
     return paths.relative(name)
 
 
-def _selection(root: Path, includes: list[str]) -> set[Path]:
-    selected: set[Path] = set()
-    for name in includes:
-        path = paths.existing(root, name)
-        selected.add(path)
-        _selection_limit(selected)
-        if path.is_dir():
-            with closing(_descendants(path)) as descendants:
-                for child in descendants:
-                    selected.add(child)
-                    _selection_limit(selected)
-    _selection_limit(selected)
-    return selected
-
-
-def _descendants(root: Path) -> Generator[Path, None, None]:
+def _iter_tree(root: Path) -> Generator[Path, None, None]:
     """Enumerate selected trees without swallowing errors or following directory links."""
     pending = [root]
     while pending:
@@ -90,6 +75,21 @@ def _descendants(root: Path) -> Generator[Path, None, None]:
                 yield child
                 if entry.is_dir(follow_symlinks=False):
                     pending.append(child)
+
+
+def _selection(root: Path, includes: list[str]) -> set[Path]:
+    selected: set[Path] = set()
+    for name in includes:
+        path = paths.existing(root, name)
+        selected.add(path)
+        _selection_limit(selected)
+        if path.is_dir():
+            with closing(_iter_tree(path)) as descendants:
+                for child in descendants:
+                    selected.add(child)
+                    _selection_limit(selected)
+    _selection_limit(selected)
+    return selected
 
 
 def _selection_limit(selected: set[Path]) -> None:
@@ -280,7 +280,8 @@ def _cleanup_restore(parent: int, name: str, own: int) -> None:
     if not shutil.rmtree.avoids_symlink_attacks:
         return
     try:
-        os.fchmod(own, 0o700)
+        with suppress(OSError):
+            os.fchmod(own, 0o700)
         with os.scandir(own) as entries:
             for entry in entries:
                 if entry.is_dir(follow_symlinks=False):
