@@ -580,6 +580,44 @@ def check_agents(directory, state, *, attempts=30):
     raise RuntimeError("Authenticated agent checks failed: " + ", ".join(pending))
 
 
+def ca_setup_pending(directory):
+    """Permit first-run onboarding only when both authenticated controllers agree."""
+    code = """
+import json, os
+from pathlib import Path
+import httpx
+with httpx.Client(transport=httpx.HTTPTransport(uds='/control/ca.sock'), timeout=3) as client:
+    response = client.get('http://controller/authorities', headers={
+        'X-CA-Management-Token': Path(os.environ['CA_MANAGEMENT_TOKEN_FILE']).read_text().strip()
+    })
+    response.raise_for_status()
+    state = response.json()
+pending = state.get('state') == 'key_ready' and state.get('authorities') == []
+print(json.dumps({'setup_pending': pending}))
+"""
+    for service in ("ca-runtime", "ca-agent"):
+        output = compose(
+            directory, "exec", "-T", service, "python", "-c", code, capture_output=True, timeout=5
+        ).stdout
+        if json.loads(output).get("setup_pending") is not True:
+            return False
+    return True
+
+
+def ca_onboarding_services(directory, records):
+    """An unhealthy fresh CA can be configured; never exempt a stopped or configured CA."""
+    services = {"ca-runtime", "ca-agent"}
+    running = {
+        record["Service"]
+        for record in records
+        if record.get("State") == "running"
+        and record.get("Health") in (None, "", "healthy", "starting", "unhealthy")
+    }
+    if services <= running and ca_setup_pending(directory):
+        return services
+    return set()
+
+
 def check_daemons(directory, state, *, attempts=30):
     """Require selected containers and native daemons, including ISC's idle state."""
     selected = set()
@@ -623,6 +661,8 @@ def check_daemons(directory, state, *, attempts=30):
                 if record.get("State") == "running"
                 and record.get("Health") in (None, "", "healthy")
             }
+            if state["ca"] == "yes" and {"ca-runtime", "ca-agent"} - ready:
+                ready.update(ca_onboarding_services(directory, records))
             missing = sorted(selected - ready)
             if missing:
                 pending = ", ".join(missing)
