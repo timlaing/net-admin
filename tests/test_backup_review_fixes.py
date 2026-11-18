@@ -102,3 +102,31 @@ def test_sticky_bit_preserved_on_restored_directory(backup_env, tmp_path):
     assert mode & stat.S_ISVTX, f"sticky bit lost: mode {oct(mode)}"
     assert not (mode & stat.S_ISUID), f"setuid should be excluded: mode {oct(mode)}"
     assert not (mode & stat.S_ISGID), f"setgid should be excluded: mode {oct(mode)}"
+
+
+def test_create_rejects_unsupported_archive_suffix_before_capture(backup_env, tmp_path):
+    """create validates the .enc suffix before capture or publication."""
+    root = Path(paths.configured("NETADMIN_OPERATIONS_ROOT"))
+    backup_dir = Path(paths.configured("NETADMIN_BACKUP_DIRECTORY"))
+    (root / "config").mkdir()
+    (root / "config" / "settings.json").write_text("{}")
+    archive = backup_dir / "snapshot.bak"
+    password = backup.password_file(tmp_path / "recovery.pass")
+    with pytest.raises(backup.OperationInputError):
+        backup.create(root, ["config"], archive, password, quiesced=True)
+    assert not archive.exists()
+    assert list(backup_dir.iterdir()) == []
+
+
+def test_create_rejects_oversized_encoded_archive_before_publish(backup_env, tmp_path, monkeypatch):
+    """create checks encoded size against the reader's existing limit before publishing."""
+    root = Path(paths.configured("NETADMIN_OPERATIONS_ROOT"))
+    backup_dir = Path(paths.configured("NETADMIN_BACKUP_DIRECTORY"))
+    (root / "config").mkdir()
+    (root / "config" / "settings.json").write_text("{}")
+    archive = backup_dir / "snapshot.enc"
+    password = backup.password_file(tmp_path / "recovery.pass")
+    monkeypatch.setattr(backup, "MAX_BYTES", 16)
+    with pytest.raises(backup.OperationInputError):
+        backup.create(root, ["config"], archive, password, quiesced=True)
+    assert not archive.exists()
