@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from netadmin.agents.common import validated_transaction
+from netadmin.agents.common import _write_candidate, _write_candidates, validated_transaction
 
 
 def test_transaction_rolls_back_validation_failure(tmp_path: Path) -> None:
@@ -55,3 +55,28 @@ def test_transaction_supports_nested_includes(tmp_path: Path) -> None:
     target = nested / "pool.conf"
     validated_transaction({target: "new pool"}, lambda: None, [], allowed_roots=(tmp_path,))
     assert target.read_text() == "new pool"
+
+
+def test_write_candidates_removes_accumulated_on_later_failure(tmp_path: Path, monkeypatch) -> None:
+    """A later _write_candidate failure must not leave earlier candidates staged."""
+    first = tmp_path / "first.conf"
+    second = tmp_path / "second.conf"
+    first.write_text("original-one")
+    second.write_text("original-two")
+
+    order: list[str] = []
+
+    def flaky(path: Path, content: str) -> Path:
+        order.append(path.name)
+        if len(order) == 2:
+            raise OSError("staging failed")
+        return _write_candidate(path, content)
+
+    monkeypatch.setattr("netadmin.agents.common._write_candidate", flaky)
+
+    with pytest.raises(OSError, match="staging failed"):
+        _write_candidates({first: "changed-one", second: "changed-two"})
+
+    assert order == ["first.conf", "second.conf"]
+    leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".first.conf.")]
+    assert not leftovers
