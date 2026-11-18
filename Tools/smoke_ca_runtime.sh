@@ -31,6 +31,9 @@ for attempt in range(30):
         if attempt==29:raise
         time.sleep(1)
 before=status.json()['public_key_sha256']
+response=client.get('/ready')
+assert response.status_code==503
+assert response.json()['ready'] is False
 Path('/state/test-key-fingerprint').write_text(before)
 def post(path,**body):
     body.setdefault('request_id',uuid.uuid4().hex)
@@ -44,6 +47,20 @@ for label in ('Servers','Devices'):
                 service_host='localhost',dns_suffixes='example.test' if label=='Servers' else '',ip_ranges='192.168.0.0/16' if label=='Devices' else '',leaf_days=30)['id']
     issuer_ids.append(issuer)
 from netadmin.ca_runtime.issuer import run
+def wait_for_issuers():
+    for attempt in range(30):
+        try:
+            response=client.get('/ready',timeout=3)
+            if response.status_code==200 and response.json().get('ready') is True:
+                return response
+        except (httpx.HTTPError,ValueError):
+            pass
+        if attempt<29:
+            time.sleep(1)
+    raise RuntimeError('Managed CA issuers did not become ready within the startup budget')
+response=wait_for_issuers()
+assert response.status_code==200
+assert response.json()['ready'] is True
 for issuer in issuer_ids:
     directory=Path('/state/authorities')/issuer
     metadata=json.loads((directory/'metadata.json').read_text())

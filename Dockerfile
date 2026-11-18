@@ -1,4 +1,6 @@
 FROM python:3.14.5-alpine3.22
+ARG NETADMIN_BUILD_VERSION=unknown
+ENV NETADMIN_BUILD_VERSION=${NETADMIN_BUILD_VERSION}
 RUN apk add --no-cache bind-tools freeradius-utils libstdc++
 WORKDIR /app
 COPY pyproject.toml /app/

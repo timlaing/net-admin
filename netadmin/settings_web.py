@@ -39,6 +39,7 @@ from netadmin.connections import (
     settings_with_connections,
     test_connection,
 )
+from netadmin.health import version
 from netadmin.pairing import enroll
 from netadmin.pairing_credentials import retire
 from netadmin.preferences import read_env_file, write_env_file
@@ -137,6 +138,12 @@ def connection_status(service: str) -> Any:
             "message": result.message,
             "checked_at": now,
             "access_mode": result.access_mode,
+            "version": result.version,
+            "ready": result.readiness,
+            "app_version": version(),
+            "version_mismatch": version() != "unknown"
+            and result.version != "unknown"
+            and version() != result.version,
         }
         cache[service] = entry
     response = jsonify(entry)

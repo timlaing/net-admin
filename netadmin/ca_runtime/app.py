@@ -21,6 +21,7 @@ from werkzeug.serving import make_server
 from netadmin.ca_runtime import issuer
 from netadmin.ca_runtime.certificates import CAInputError
 from netadmin.ca_runtime.store import AuthorityStore, identifier
+from netadmin.health import version
 from netadmin.services.radius_certificates import certificate_info
 
 controller = Blueprint("ca_controller", __name__)
@@ -83,6 +84,20 @@ def authorities() -> Any:
         process = processes.get(authority["id"])
         authority["running"] = bool(process and process.poll() is None)
     return jsonify(state)
+
+
+@controller.get("/ready")
+def readiness() -> Any:
+    """The private controller is ready only when configured managed issuers are running."""
+    state = _store().status()
+    processes = current_app.extensions["ca_issuers"].processes
+    configured = [a for a in state["authorities"] if a.get("managed") and a.get("endpoint")]
+    healthy = bool(configured) and all(
+        a["id"] in processes and processes[a["id"]].poll() is None for a in configured
+    )
+    return jsonify(
+        {"ready": healthy, "status": "ok" if healthy else "unavailable", "version": version()}
+    ), 200 if healthy else 503
 
 
 @controller.get("/operations/<operation_id>")

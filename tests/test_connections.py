@@ -452,6 +452,7 @@ def test_overview_agent_status_is_cached_and_separate_from_service_permissions(
     assert client.get(path).json == first.json
     assert calls == [
         ("zones" if service == "dns" else "health", {"timeout": 3}),
+        ("ready", {"timeout": 8}),
         ("capabilities", {"timeout": 3}),
     ]
     assert first.json["access_mode"] == "Unknown"
@@ -462,7 +463,31 @@ def test_overview_agent_status_is_cached_and_separate_from_service_permissions(
     assert "Connected" in page.text
     client.application.extensions["netadmin_agent_results"][service]["checked_at"] -= 31
     client.get(path)
-    assert len(calls) == 4
+    assert len(calls) == 6
+
+
+def test_slow_readiness_failure_is_not_reported_as_connected(agent_settings, monkeypatch):
+    import httpx
+
+    from netadmin.connections import agent_status
+
+    def get(_client, path, **kwargs):
+        if path == "ready":
+            # Model a native check taking five seconds, without sleeping in tests.
+            assert kwargs["timeout"] > 5
+            response = httpx.Response(
+                503,
+                json={"ready": False, "version": "2026.11.2"},
+                request=httpx.Request("GET", "https://agent.test/ready"),
+            )
+            response.raise_for_status()
+        return {"read_only": False} if path == "capabilities" else {"status": "ok"}
+
+    monkeypatch.setattr("netadmin.services.agents.AgentClient.get", get)
+    result = agent_status(agent_settings, "dhcp")
+    assert result.state == "Not ready"
+    assert result.readiness is False
+    assert result.version == "2026.11.2"
 
 
 @pytest.mark.parametrize("role,expected", [(None, 302), ("standard", 403)])

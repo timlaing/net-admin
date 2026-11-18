@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import ssl
 from pathlib import Path
 from typing import Any
@@ -87,3 +88,24 @@ class AgentClient:
             if error.response.status_code != 404:
                 raise
             return False
+
+    def deployment_info(self) -> tuple[str, bool | None]:
+        """Older agents remain usable; missing metadata never implies matching versions."""
+        try:
+            # Native readiness checks are bounded at 5s; include response overhead.
+            body = self.get("ready", timeout=8)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 503:
+                return "unknown", None
+            try:
+                body = error.response.json()
+            except ValueError:
+                return "unknown", False
+        except (httpx.HTTPError, OSError, ValueError):
+            return "unknown", None
+        if not isinstance(body, dict):
+            return "unknown", None
+        build = body.get("version", "")
+        valid = isinstance(build, str) and re.fullmatch(r"\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?", build)
+        readiness = body.get("ready")
+        return build if valid else "unknown", readiness if isinstance(readiness, bool) else None
