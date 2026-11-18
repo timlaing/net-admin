@@ -158,10 +158,20 @@ def validated_transaction(
 
 
 def _write_candidates(changes: dict[Path, str]) -> dict[Path, Path]:
-    """Write each candidate file to a temp file in the target's directory."""
+    """Write each candidate file to a temp file in the target's directory.
+
+    If a later candidate fails to stage, every candidate written so far is
+    removed before propagating, so nothing is left staged outside the
+    transaction once this function raises.
+    """
     candidates: dict[Path, Path] = {}
-    for path, content in changes.items():
-        candidates[path] = _write_candidate(path, content)
+    try:
+        for path, content in changes.items():
+            candidates[path] = _write_candidate(path, content)
+    except Exception:
+        for candidate in candidates.values():
+            candidate.unlink(missing_ok=True)
+        raise
     return candidates
 
 

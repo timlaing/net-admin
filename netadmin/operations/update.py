@@ -316,10 +316,16 @@ def _write_override(scope: Project, images: dict[str, str]) -> None:
         services[service] = {"image": image, "labels": labels | deny}
     path = scope.override.with_suffix(".tmp")
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        json.dump({"x-netadmin-managed": True, "services": services}, handle, indent=2)
-        handle.flush()
-        os.fsync(handle.fileno())
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as handle:
+            json.dump({"x-netadmin-managed": True, "services": services}, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        os.close(descriptor)
+        path.unlink(missing_ok=True)
+        raise
+    os.close(descriptor)
     os.replace(path, scope.override)
 
 
@@ -349,13 +355,29 @@ def _resume(
             path.unlink(missing_ok=True)
         else:
             path.write_bytes(original)
+    failures: dict[Path, Exception] = {}
     for scope, images in zip(scopes, previous, strict=True):
         if scope in stopped:
-            _write_override(scope, images)
-            scope.compose(
-                "up", "-d", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "120"
-            )
-            _healthy(scope, images, baseline=True)
+            try:
+                _write_override(scope, images)
+                scope.compose(
+                    "up",
+                    "-d",
+                    "--no-build",
+                    "--no-deps",
+                    "--pull",
+                    "never",
+                    "--wait",
+                    "--wait-timeout",
+                    "120",
+                )
+                _healthy(scope, images, baseline=True)
+            except Exception as error:  # pylint: disable=broad-exception-caught
+                # One project's restore failure must not skip later independent projects.
+                failures[scope.directory] = error
+    if failures:
+        first = next(iter(failures.values()))
+        raise UpdateRecoveryError(first) from first
 
 
 def _journal(
@@ -486,8 +508,20 @@ def apply(
             _write_override(scope, images)
             recovery.activated = True
             scope.compose(
-                "up", "-d", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "120"
+                "up",
+                "-d",
+                "--no-build",
+                "--no-deps",
+                "--pull",
+                "never",
+                "--wait",
+                "--wait-timeout",
+                "120",
             )
+            _healthy(scope, images)
+        # A project can pass its immediate check, then degrade while later
+        # projects activate. Recheck every cohort member before marking complete.
+        for scope, images in zip(scopes, desired, strict=True):
             _healthy(scope, images)
     except Exception as error:
         compatible = (
