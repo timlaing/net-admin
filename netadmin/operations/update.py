@@ -317,16 +317,14 @@ def _write_override(scope: Project, images: dict[str, str]) -> None:
     path = scope.override.with_suffix(".tmp")
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as handle:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump({"x-netadmin-managed": True, "services": services}, handle, indent=2)
             handle.flush()
             os.fsync(handle.fileno())
-    except Exception:
-        os.close(descriptor)
+        os.replace(path, scope.override)
+    except BaseException:
         path.unlink(missing_ok=True)
         raise
-    os.close(descriptor)
-    os.replace(path, scope.override)
 
 
 def _healthy(scope: Project, images: dict[str, str], *, baseline: bool = False) -> None:

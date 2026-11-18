@@ -80,6 +80,52 @@ def test_restore_rehearsal_failure_prevents_activation(deployment, monkeypatch):
     assert next(directory.glob("checkpoint-*.json")).read_text().find("rolled-back") >= 0
 
 
+def test_write_override_replace_failure_closes_descriptor_and_removes_staged_file(
+    tmp_path, monkeypatch
+):
+    directory = tmp_path / "project"
+    directory.mkdir()
+    (directory / "compose.json").write_text("{}")
+    scope = update.Project(directory, "compose.json", "synthetic", ["dns"])
+    override = scope.override
+    temporary = override.with_suffix(".tmp")
+    images = {"dns": "ghcr.io/timlaing/netadmin-dns:2026.11.3"}
+
+    def config(*_args, **_kwargs):
+        return json.dumps({"services": {"dns": {"labels": {}}}})
+
+    monkeypatch.setattr(update, "command", config)
+
+    replaced = []
+
+    def failing_replace(source, destination):
+        replaced.append((source, destination))
+        raise OSError("synthetic staged replace failure")
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+
+    descriptors = []
+    real_open = os.open
+
+    def recording_open(path, flags, mode=0o600, *args, **kwargs):
+        descriptor = real_open(path, flags, mode, *args, **kwargs)
+        descriptors.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(os, "open", recording_open)
+
+    with pytest.raises(OSError, match="synthetic staged replace failure"):
+        update._write_override(scope, images)  # pylint: disable=protected-access
+
+    assert replaced == [(temporary, override)]
+    assert not temporary.exists()
+    assert not override.exists()
+    assert len(descriptors) == 1
+    with pytest.raises(OSError) as error:
+        os.fstat(descriptors[0])
+    assert error.value.errno == errno.EBADF
+
+
 def test_health_disabled_in_compose_is_not_accepted(monkeypatch, tmp_path):
     project = update.Project(tmp_path, "compose.json", "synthetic", ["dns"])
     monkeypatch.setattr(project, "compose", lambda *_args, **_kwargs: "id")
