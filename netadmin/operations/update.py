@@ -366,31 +366,43 @@ def _healthy(scope: Project, images: dict[str, str], *, baseline: bool = False) 
             raise RuntimeError("Cohort member failed the immutable-image health gate")
 
 
-def _read_override(path: Path) -> dict[str, Any]:
-    """Return the managed override as a dict, or an empty managed skeleton."""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+def _read_override(path: Path, captured: bytes | None = None) -> dict[str, Any]:
+    """Return the managed override as a dict, or an empty managed skeleton.
+
+    ``captured`` holds the override bytes captured before quiescence and is
+    parsed instead of re-reading the disk: a restored override that can no
+    longer be read must not silently discard the original service settings.
+    Use the empty override only when the captured value is None (the override
+    did not exist before quiescence). If the captured bytes cannot be parsed,
+    raise so the project restore failure is reported instead of publishing an
+    image-only override or reporting a successful rollback.
+    """
+    if captured is None:
         return {"x-netadmin-managed": True, "services": {}}
+    try:
+        data = json.loads(captured.decode("utf-8"))
+    except ValueError as error:
+        raise ValueError(f"unparseable override at {path}: {error}") from error
     return data if isinstance(data, dict) else {"x-netadmin-managed": True, "services": {}}
 
 
-def _merge_images_into_override(path: Path, images: dict[str, str]) -> dict[str, Any]:
+def _merge_images_into_override(
+    path: Path, images: dict[str, str], *, captured: bytes | None = None
+) -> dict[str, Any]:
     """Pin previous images while retaining each service's original settings.
 
     Per-instance trigger opt-outs and labels from the original override are kept;
-    only ``image`` is updated for recovery.
+    only ``image`` is updated for recovery. The complete original mapping is
+    returned with only its ``services`` entries replaced, so top-level settings
+    survive recovery instead of being discarded for an image-only override.
     """
-    previous = _read_override(path)
+    previous = _read_override(path, captured=captured)
     services = dict(previous.get("services", {}))
     for service, image in images.items():
         entry = dict(services.get(service, {}))
         entry["image"] = image
         services[service] = entry
-    return {
-        "x-netadmin-managed": previous.get("x-netadmin-managed", True),
-        "services": services,
-    }
+    return {**previous, "services": services}
 
 
 def _write_recovery_override(scope: Project, override: dict[str, Any]) -> None:
@@ -444,7 +456,9 @@ def _resume(
             try:
                 # Restore baseline image identity while preserving each service's
                 # original managed-activation settings.
-                override = _merge_images_into_override(scope.override, images)
+                override = _merge_images_into_override(
+                    scope.override, images, captured=originals.get(scope.override)
+                )
                 _write_recovery_override(scope, override)
                 scope.compose(
                     "up",

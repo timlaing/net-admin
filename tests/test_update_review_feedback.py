@@ -352,3 +352,109 @@ def test_resume_preserves_service_settings_while_pin_image(tmp_path, monkeypatch
             "120",
         )
     ]
+
+
+def test_resume_parses_captured_bytes_instead_of_rereading_disk(tmp_path, monkeypatch):
+    """A restored override the disk can no longer serve still recovers from the
+    bytes captured before quiescence, keeping per-instance trigger opt-outs."""
+    directory = tmp_path / "project"
+    directory.mkdir()
+    scope = update.Project(directory, "compose.json", "dns", ["dns"])
+    override = scope.override
+    captured = (
+        b'{"x-netadmin-managed": true, "services": {"dns": {"labels": {"wud.trigger'
+        b'.docker.enabled": "false"}}}}'
+    )
+    calls = []
+
+    def compose(*_args, **_kwargs):
+        calls.append(_args)
+        return ""
+
+    monkeypatch.setattr(scope, "compose", compose)
+    monkeypatch.setattr(update, "_healthy", lambda *a, **k: None)
+    monkeypatch.setattr(update.os, "fsync", lambda fd: None)
+
+    update._resume(
+        [scope],
+        [{"dns": "pinned-image"}],
+        [scope],
+        {override: captured},
+    )
+
+    result = json.loads(override.read_text(encoding="utf-8"))
+    assert result == {
+        "x-netadmin-managed": True,
+        "services": {
+            "dns": {
+                "image": "pinned-image",
+                "labels": {"wud.trigger.docker.enabled": "false"},
+            }
+        },
+    }
+
+
+def test_resume_unparseable_captured_override_raises_rather_than_rolling_back(
+    tmp_path, monkeypatch
+):
+    """Undecodable captured bytes are a project restore failure: UpdateRecoveryError
+    propagates, the journal stays recovery-required, and no image-only override is
+    published in place of the original."""
+    directory = tmp_path / "project"
+    directory.mkdir()
+    scope = update.Project(directory, "compose.json", "dns", ["dns"])
+    override = scope.override
+    calls = []
+
+    def compose(*_args, **_kwargs):
+        calls.append(_args)
+        return ""
+
+    monkeypatch.setattr(scope, "compose", compose)
+    monkeypatch.setattr(update, "_healthy", lambda *a, **k: None)
+    monkeypatch.setattr(update.os, "fsync", lambda fd: None)
+
+    with pytest.raises(update.UpdateRecoveryError):
+        update._resume(
+            [scope],
+            [{"dns": "pinned-image"}],
+            [scope],
+            {override: b"{not valid json"},
+        )
+
+    assert override.read_bytes() == b"{not valid json"
+
+
+def test_resume_preserves_top_level_settings_when_pinning_images(tmp_path, monkeypatch):
+    """Recovery returns the complete original mapping with only the services
+    entries replaced: unrelated top-level settings survive."""
+    directory = tmp_path / "project"
+    directory.mkdir()
+    scope = update.Project(directory, "compose.json", "dns", ["dns"])
+    override = scope.override
+    captured = (
+        b'{"x-netadmin-managed": true, "custom": "keep", "services": {"dns": {"image": "old"}}}'
+    )
+    calls = []
+
+    def compose(*_args, **_kwargs):
+        calls.append(_args)
+        return ""
+
+    monkeypatch.setattr(scope, "compose", compose)
+    monkeypatch.setattr(update, "_healthy", lambda *a, **k: None)
+    monkeypatch.setattr(update.os, "fsync", lambda fd: None)
+
+    update._resume(
+        [scope],
+        [{"dns": "pinned-image"}],
+        [scope],
+        {override: captured},
+    )
+
+    result = json.loads(override.read_text(encoding="utf-8"))
+    assert result == {
+        "x-netadmin-managed": True,
+        "custom": "keep",
+        "services": {"dns": {"image": "pinned-image"}},
+    }
