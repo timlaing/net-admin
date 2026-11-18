@@ -323,16 +323,17 @@ def _write_override(scope: Project, images: dict[str, str]) -> None:
     os.replace(path, scope.override)
 
 
-def _healthy(scope: Project, images: dict[str, str]) -> None:
+def _healthy(scope: Project, images: dict[str, str], *, baseline: bool = False) -> None:
+    """Require the pinned image everywhere; baseline restores waive the health check itself."""
     ids = scope.compose("ps", "-q").split()
     containers = json.loads(command(["docker", "inspect", *ids])) if ids else []
     if len(containers) != len(images):
         raise RuntimeError("Cohort member is missing after activation")
     for container in containers:
         service = container["Config"]["Labels"]["com.docker.compose.service"]
-        if container["State"].get("Health", {}).get("Status") != "healthy" or container["Config"][
-            "Image"
-        ] != images.get(service):
+        if container["Config"]["Image"] != images.get(service):
+            raise RuntimeError("Cohort member failed the immutable-image health gate")
+        if not baseline and container["State"].get("Health", {}).get("Status") != "healthy":
             raise RuntimeError("Cohort member failed the immutable-image health gate")
 
 
@@ -354,7 +355,7 @@ def _resume(
             scope.compose(
                 "up", "-d", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "120"
             )
-            _healthy(scope, images)
+            _healthy(scope, images, baseline=True)
 
 
 def _journal(

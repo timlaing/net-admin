@@ -9,7 +9,6 @@ import subprocess  # nosec B404 - commands are fixed by the operator
 import tempfile
 import time
 from collections.abc import Callable
-from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -135,18 +134,7 @@ def validated_transaction(
     reload_started = False
     try:
         for path, content in changes.items():
-            descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-            candidate = Path(name)
-            candidates[path] = candidate
-            # Register cleanup before wrapping/writing: failures at either point
-            # must not leak a descriptor or leave a secret-bearing candidate.
-            with ExitStack() as stack:
-                stack.callback(os.close, descriptor)
-                with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as handle:
-                    handle.write(content)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                candidate.chmod(0o640)
+            candidates[path] = _write_candidate(path, content)
         current = {path: path.read_bytes() if path.exists() else None for path in changes}
         if current != originals:
             raise ConfigurationChanged("Configuration changed before installation")
@@ -169,6 +157,27 @@ def validated_transaction(
     finally:
         for candidate in candidates.values():
             candidate.unlink(missing_ok=True)
+
+
+def _write_candidate(path: Path, content: str) -> Path:
+    """Render one flushed, fsynced mode-0640 temp candidate and close its descriptor.
+
+    Any failure removes the candidate so nothing is staged outside the transaction.
+    """
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    candidate = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        candidate.chmod(0o640)
+    except Exception:
+        os.close(descriptor)
+        candidate.unlink(missing_ok=True)
+        raise
+    os.close(descriptor)
+    return candidate
 
 
 def _check_originals(expected: dict[Path, bytes | None]) -> None:
