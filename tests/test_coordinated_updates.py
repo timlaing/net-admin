@@ -50,6 +50,117 @@ def test_complete_release_marker_is_bound_to_version_and_commit():
         assert update.release(client, None)["commit"] == "b" * 40
 
 
+def test_release_rejects_draft_or_prerelease():
+    for flag in ("draft", "prerelease"):
+
+        def handler(request, flag=flag):
+            return httpx.Response(
+                200,
+                json={
+                    "tag_name": "v2026.11.3",
+                    flag: True,
+                    "assets": [],
+                },
+            )
+
+        with (
+            httpx.Client(transport=httpx.MockTransport(handler)) as client,
+            pytest.raises(ValueError, match="not a published stable version"),
+        ):
+            update.release(client, "2026.11.3")
+
+
+def test_release_rejects_invalid_readiness_asset():
+    marker_url = (
+        "https://github.com/timlaing/net-admin/releases/download/v2026.11.3/installer-ready.json"
+    )
+    assets = [
+        {"name": name, "state": "uploaded", "size": 100, "browser_download_url": marker_url}
+        for name in ("installer-ready.json", "install.sh", "install.sh.sha256", "compose.yml")
+    ]
+
+    def handler(request):
+        if str(request.url) == marker_url:
+            return httpx.Response(
+                200, json={"schema": 1, "version": "2026.11.3", "commit": "b" * 40}
+            )
+        return httpx.Response(
+            200,
+            json={
+                "tag_name": "v2026.11.3",
+                "draft": False,
+                "prerelease": False,
+                "assets": [dict(a, size=9000) for a in assets],
+            },
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(ValueError, match="Invalid release readiness asset"),
+    ):
+        update.release(client, "2026.11.3")
+
+
+def test_release_rejects_oversized_marker():
+    marker_url = (
+        "https://github.com/timlaing/net-admin/releases/download/v2026.11.3/installer-ready.json"
+    )
+    assets = [
+        {"name": name, "state": "uploaded", "size": 100, "browser_download_url": marker_url}
+        for name in ("installer-ready.json", "install.sh", "install.sh.sha256", "compose.yml")
+    ]
+
+    def handler(request):
+        if str(request.url) == marker_url:
+            return httpx.Response(200, content=b"x" * 5000)
+        return httpx.Response(
+            200,
+            json={
+                "tag_name": "v2026.11.3",
+                "draft": False,
+                "prerelease": False,
+                "assets": assets,
+            },
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(ValueError, match="exceeds its limit"),
+    ):
+        update.release(client, "2026.11.3")
+
+
+def test_release_rejects_unidentified_marker():
+    marker_url = (
+        "https://github.com/timlaing/net-admin/releases/download/v2026.11.3/installer-ready.json"
+    )
+    assets = [
+        {"name": name, "state": "uploaded", "size": 100, "browser_download_url": marker_url}
+        for name in ("installer-ready.json", "install.sh", "install.sh.sha256", "compose.yml")
+    ]
+
+    def handler(request):
+        if str(request.url) == marker_url:
+            return httpx.Response(
+                200, json={"schema": 1, "version": "2026.11.3", "commit": "not-a-sha"}
+            )
+        return httpx.Response(
+            200,
+            json={
+                "tag_name": "v2026.11.3",
+                "draft": False,
+                "prerelease": False,
+                "assets": assets,
+            },
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(ValueError, match="does not identify the release"),
+    ):
+        update.release(client, "2026.11.3")
+
+
 @pytest.fixture
 def deployment(tmp_path, monkeypatch):
     root = tmp_path / "deployment"
