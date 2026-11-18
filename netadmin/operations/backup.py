@@ -125,10 +125,14 @@ def create(
         raise OperationInputError("quiescence")
     root = paths.exact(root, "NETADMIN_OPERATIONS_ROOT").resolve(strict=True)
     output = paths.location(output, "NETADMIN_BACKUP_DIRECTORY")
+    if output.suffix != ".enc":
+        raise OperationInputError("archive_extension")
     if output.resolve().is_relative_to(root):
         raise OperationInputError("archive_location")
     salt = os.urandom(16)
     encrypted = MAGIC + salt + _cipher(password, salt).encrypt(_write_tar(root, includes))
+    if len(encrypted) > 2 * MAX_BYTES:
+        raise OperationInputError("archive_limit")
     _publish_archive(output, encrypted)
 
 
