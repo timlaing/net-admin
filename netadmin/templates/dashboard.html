@@ -14,6 +14,7 @@
   <div class="metric"><strong>Agent</strong><span>DHCP connection</span></div>
 </div>
 <div class="section-heading"><h2>Network services</h2><span class="form-text">Agent connections refresh automatically every 30 seconds</span></div>
+<p class="form-text"><a href="{{ url_for('release_status.status') }}">Verify release publication status</a> — a published tag alone does not mean images and installer assets are ready.</p>
 <div class="service-grid">
 {% for title, text, endpoint, address in [('DNS','Names & records','web.dns_index', service_settings.dns_agent_url if service_settings.dns_use_agent else service_settings.dns_server),('DHCP','Addresses & reservations','web.dhcp_index', service_settings.dhcp_agent_url),('RADIUS','Users & access','web.radius_index', service_settings.radius_agent_url),('CA','Authorities & certificates','authorities.index', service_settings.ca_agent_url)] %}
 {% set key = title|lower %}{% set enabled = service_settings.service_enabled(key) %}{% set check = checks.get(key) %}{% set agent_check = agent_checks.get(key) %}
