@@ -280,6 +280,21 @@ def _overlapping_source(source: Path, root: Path) -> bool:
     return resolved.is_relative_to(root) or root.is_relative_to(resolved)
 
 
+def _directory_fsync_supported(path: Path) -> bool:
+    """Return True if the directory entry can be persisted durably via fsync."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return False
+    try:
+        os.fsync(descriptor)
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(descriptor)
+
+
 def _covered_mounts(plan: dict[str, Any], selected: set[str]) -> None:
     root = paths.exact(Path(plan["root"]), "NETADMIN_OPERATIONS_ROOT").resolve()
     included = [paths.existing(root, name) for name in plan["backup_includes"]]
@@ -357,7 +372,13 @@ def _resume(
     stopped: list[Project],
     originals: dict[Path, bytes | None],
 ) -> None:
-    """Restore only container images/configuration, never checkpointed persistent data."""
+    """Restore baseline containers from the original override, without republishing.
+
+    The previous images are written back as a plain override (file write + replace,
+    no directory fsync) so recovery can restart the baseline cohort even when the
+    filesystem rejects durable directory fsync. Candidate activation keeps the
+    mandatory post-rename directory fsync in ``_write_override``.
+    """
     for path, original in originals.items():
         if original is None:
             path.unlink(missing_ok=True)
@@ -367,7 +388,12 @@ def _resume(
     for scope, images in zip(scopes, previous, strict=True):
         if scope in stopped:
             try:
-                _write_override(scope, images)
+                # Restore baseline image identity without _write_override's directory fsync.
+                override = {
+                    "x-netadmin-managed": True,
+                    "services": {service: {"image": image} for service, image in images.items()},
+                }
+                scope.override.write_text(json.dumps(override, indent=2), encoding="utf-8")
                 scope.compose(
                     "up",
                     "-d",
@@ -502,6 +528,14 @@ def apply(
     archive = destination / f"checkpoint-{target['version']}-{os.urandom(6).hex()}.enc"
     journal = archive.with_suffix(".json")
     _journal(journal, "prepared", target, previous)
+    # Fail closed before any disruption: recovery must be able to persist the
+    # override directory entry durably. If directory fsync is unsupported, do
+    # not stop the cohort; the baseline keeps running.
+    for scope in scopes:
+        if not _directory_fsync_supported(scope.override.parent):
+            raise ValueError(
+                "Override directory does not support durable fsync; refusing to update"
+            )
     try:
         for scope in reversed(scopes):
             recovery.stopped.append(scope)

@@ -256,9 +256,11 @@ def deployment(tmp_path, monkeypatch):
                 failures.remove("health")
                 raise RuntimeError("synthetic unhealthy cohort")
             if "up" in args:
-                override = json.loads((directory / "netadmin-release.override.json").read_text())
-                current = next(c for c in containers if c["Id"] == service)
-                current["Config"]["Image"] = override["services"][service]["image"]
+                override_path = directory / "netadmin-release.override.json"
+                if override_path.exists():
+                    override = json.loads(override_path.read_text())
+                    current = next(c for c in containers if c["Id"] == service)
+                    current["Config"]["Image"] = override["services"][service]["image"]
         return ""
 
     monkeypatch.setattr(update, "command", command)

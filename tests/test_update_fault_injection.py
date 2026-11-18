@@ -126,6 +126,16 @@ def test_write_override_replace_failure_closes_descriptor_and_removes_staged_fil
     assert error.value.errno == errno.EBADF
 
 
+def test_update_refuses_to_start_when_directory_fsync_unsupported(deployment, monkeypatch):  # noqa: F811
+    """Fail closed before any disruption: if the override directory cannot fsync
+    durably, the cohort is never stopped and the baseline keeps running."""
+    plan, calls, _failures, _directory = deployment
+    monkeypatch.setattr(update, "_directory_fsync_supported", lambda _path: False)
+    with pytest.raises(ValueError, match="durable fsync"):
+        update.apply(plan, TARGET, PASSWORD)
+    assert not any("stop" in args for args in calls)
+
+
 def test_health_disabled_in_compose_is_not_accepted(monkeypatch, tmp_path):
     project = update.Project(tmp_path, "compose.json", "synthetic", ["dns"])
     monkeypatch.setattr(project, "compose", lambda *_args, **_kwargs: "id")
