@@ -325,6 +325,13 @@ def _write_override(scope: Project, images: dict[str, str]) -> None:
         finally:
             os.close(descriptor)
         os.replace(path, scope.override)
+        # Persist the directory entry created by os.replace so a crash after the
+        # completion journal cannot leave a later Compose run on a stale override.
+        directory = os.open(scope.override.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     except BaseException:
         path.unlink(missing_ok=True)
         raise
