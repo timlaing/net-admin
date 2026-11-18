@@ -255,3 +255,42 @@ def test_private_recovery_details_do_not_reach_cli(cohort, tmp_path, monkeypatch
     with pytest.raises(SystemExit):
         update.main()
     assert "synthetic-private" not in capsys.readouterr().err
+
+
+def test_resume_directory_sync_failure_raises_so_journal_stays_recovery_required(
+    tmp_path, monkeypatch
+):
+    """Baseline restore works without directory fsync, but an un-durable restore
+    is reported so the journal stays in recovery-required for operator review."""
+    directory = tmp_path / "project"
+    directory.mkdir()
+    scope = update.Project(directory, "compose.json", "dns", ["dns"])
+    override = scope.override
+    override.write_bytes(b'{"x-netadmin-managed": true}')
+    calls = []
+
+    def compose(*_args, **_kwargs):
+        calls.append(_args)
+        return ""
+
+    monkeypatch.setattr(scope, "compose", compose)
+    monkeypatch.setattr(update, "_healthy", lambda *a, **k: None)
+
+    def failing_fsync(fd):
+        raise OSError("synthetic directory sync failure")
+
+    monkeypatch.setattr(update.os, "fsync", failing_fsync)
+
+    with pytest.raises(update.UpdateRecoveryError):
+        update._resume(
+            [scope],
+            [{"dns": "old-image"}],
+            [scope],
+            {override: b'{"x-netadmin-managed": true}'},
+        )
+
+    # Recovery still wrote the baseline override (works without durable fsync), but
+    # the directory entry could not be synced, so the failure propagates.
+    assert override.exists()
+    assert len(calls) == 1
+    assert calls[0][0] == "up"

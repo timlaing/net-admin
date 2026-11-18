@@ -406,6 +406,17 @@ def _resume(
                     "120",
                 )
                 _healthy(scope, images, baseline=True)
+                # Durably persist the restored baseline override directory entry so a
+                # later Compose run cannot start on a stale override after recovery.
+                # If the directory cannot be synced, the restore is not durable:
+                # record the failure and leave the journal in recovery-required.
+                directory = os.open(
+                    scope.override.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                )
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
             except Exception as error:  # pylint: disable=broad-exception-caught
                 # One project's restore failure must not skip later independent projects.
                 failures[scope.directory] = error
