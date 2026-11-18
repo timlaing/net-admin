@@ -129,12 +129,10 @@ def validated_transaction(
     if changes.keys() - expected.keys():
         raise ConfigurationChanged("Write set is not covered by the safety snapshot")
     _check_originals(expected)
-    candidates: dict[Path, Path] = {}
+    candidates = _write_candidates(changes)
     installed = False
     reload_started = False
     try:
-        for path, content in changes.items():
-            candidates[path] = _write_candidate(path, content)
         current = {path: path.read_bytes() if path.exists() else None for path in changes}
         if current != originals:
             raise ConfigurationChanged("Configuration changed before installation")
@@ -157,6 +155,14 @@ def validated_transaction(
     finally:
         for candidate in candidates.values():
             candidate.unlink(missing_ok=True)
+
+
+def _write_candidates(changes: dict[Path, str]) -> dict[Path, Path]:
+    """Write each candidate file to a temp file in the target's directory."""
+    candidates: dict[Path, Path] = {}
+    for path, content in changes.items():
+        candidates[path] = _write_candidate(path, content)
+    return candidates
 
 
 def _write_candidate(path: Path, content: str) -> Path:
