@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -377,3 +378,297 @@ def test_requested_release_and_project_traversal_are_rejected(tmp_path):
                 ],
             }
         )
+
+
+def test_command_success_path_returns_stdout(monkeypatch):
+    monkeypatch.setattr(
+        update.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="ok"),
+    )
+    assert update.command(["echo", "hi"]) == "ok"
+
+
+def test_projects_validates_each_scope(tmp_path, monkeypatch):
+    monkeypatch.setenv("NETADMIN_OPERATIONS_ROOT", str(tmp_path))
+    # invalid project name / empty services
+    (tmp_path / "proj").mkdir()
+    (tmp_path / "proj" / "compose.json").write_text("{}")
+    with pytest.raises(ValueError, match="Invalid Compose project/service selection"):
+        update.projects(
+            {
+                "root": str(tmp_path),
+                "projects": [
+                    {
+                        "directory": "proj",
+                        "file": "compose.json",
+                        "project": "bad name!",
+                        "services": [],
+                    }
+                ],
+            }
+        )
+    # unknown override file
+    override = tmp_path / "proj" / "netadmin-release.override.json"
+    override.write_text("{}")
+    with pytest.raises(ValueError, match="Refusing to replace"):
+        update.projects(
+            {
+                "root": str(tmp_path),
+                "projects": [
+                    {
+                        "directory": "proj",
+                        "file": "compose.json",
+                        "project": "proj",
+                        "services": ["dns"],
+                    }
+                ],
+            }
+        )
+
+
+def test_projects_requires_unique_nonempty(tmp_path, monkeypatch):
+    monkeypatch.setenv("NETADMIN_OPERATIONS_ROOT", str(tmp_path))
+    with pytest.raises(ValueError, match="Select unique, nonempty Compose projects"):
+        update.projects({"root": str(tmp_path), "projects": []})
+
+
+def test_baseline_errors(monkeypatch):
+    monkeypatch.setattr(
+        update,
+        "command",
+        lambda *a, **k: json.dumps(
+            {
+                "Config": {
+                    "Labels": {
+                        "org.opencontainers.image.version": "2026.11.3",
+                        "org.opencontainers.image.revision": "b" * 40,
+                        "org.netadmin.state-schema": "1",
+                    },
+                    "Healthcheck": {"Test": ["CMD", "health"]},
+                },
+                "RepoDigests": ["ghcr.io/timlaing/netadmin-dns@sha256:" + "b" * 64],
+            }
+        ),
+    )
+    unhealthy = {
+        "State": {"Running": True, "Health": {"Status": "unhealthy"}},
+        "Config": {"Image": "ghcr.io/timlaing/netadmin-dns:latest"},
+        "Labels": {},
+    }
+    running = {
+        "State": {"Running": True, "Health": {"Status": "healthy"}},
+        "Config": {"Image": "ghcr.io/timlaing/netadmin-dns:latest"},
+        "Labels": {
+            "wud.trigger.docker.enabled": "false",
+            "wud.trigger.dockercompose.enabled": "false",
+        },
+    }
+    with pytest.raises(ValueError, match="not healthy"):
+        update._baseline(unhealthy, TARGET, adopt=False)
+    with pytest.raises(ValueError, match="Pause external updaters"):
+        update._baseline(running, TARGET, adopt=False)
+    foreign = dict(running)
+    foreign["Config"] = dict(running["Config"])
+    foreign["Config"]["Image"] = "other.io/netadmin-dns:latest"
+    with pytest.raises(ValueError, match="Only NetAdmin release images"):
+        update._baseline(foreign, TARGET, adopt=True)
+
+
+def test_baseline_rejects_unknown_or_downgrade(monkeypatch):
+    current = {
+        "Id": "dns",
+        "Image": "ghcr.io/timlaing/netadmin-dns@sha256:abc",
+        "State": {"Running": True, "Health": {"Status": "healthy"}},
+        "Config": {
+            "Image": "ghcr.io/timlaing/netadmin-dns@sha256:abc",
+            "Labels": {
+                "wud.trigger.docker.enabled": "false",
+                "wud.trigger.dockercompose.enabled": "false",
+                "org.opencontainers.image.version": "2026.11.2",
+                "org.opencontainers.image.revision": "a" * 40,
+                "org.netadmin.state-schema": "1",
+            },
+        },
+    }
+    monkeypatch.setattr(
+        update,
+        "command",
+        lambda *a, **k: json.dumps(
+            [
+                {
+                    "Config": {
+                        "Labels": {
+                            "org.opencontainers.image.version": "2026.11.3",
+                            "org.opencontainers.image.revision": "b" * 40,
+                            "org.netadmin.state-schema": "1",
+                        },
+                        "Healthcheck": {"Test": ["CMD", "health"]},
+                    },
+                    "RepoDigests": ["ghcr.io/timlaing/netadmin-dns@sha256:" + "b" * 64],
+                }
+            ]
+        ),
+    )
+    # baseline version higher than target -> downgrade rejected
+    older = dict(TARGET)
+    older["version"] = "2026.11.1"
+    older["marker"] = dict(TARGET["marker"])
+    with pytest.raises(ValueError, match="Unknown baseline version or attempted downgrade"):
+        update._baseline(current, older, adopt=True)
+
+
+def test_candidate_requires_health_check(monkeypatch):
+    monkeypatch.setattr(
+        update,
+        "command",
+        lambda *a, **k: json.dumps(
+            [
+                {
+                    "Config": {
+                        "Labels": {
+                            "org.opencontainers.image.version": TARGET["version"],
+                            "org.opencontainers.image.revision": TARGET["commit"],
+                        },
+                        "Healthcheck": {"Test": ["NONE"]},
+                    }
+                }
+            ]
+        ),
+    )
+    with pytest.raises(ValueError, match="Cohort images must have health checks"):
+        update._candidate("ghcr.io/timlaing/netadmin-dns", TARGET)
+
+
+def test_prepare_requires_every_service_deployed(tmp_path, monkeypatch):
+    monkeypatch.setenv("NETADMIN_OPERATIONS_ROOT", str(tmp_path))
+    (tmp_path / "dns").mkdir()
+    (tmp_path / "dns" / "compose.json").write_text("{}")
+    scope = update.Project(tmp_path / "dns", "compose.json", "dns", ["dns"])
+    monkeypatch.setattr(
+        update,
+        "command",
+        lambda *a, **k: json.dumps([]),
+    )
+    with pytest.raises(ValueError, match="Every selected service must already be deployed"):
+        update.prepare([scope], TARGET, adopt=True)
+
+
+def test_digest_requires_immutable_reference():
+    image = {"RepoDigests": ["other.io/x@sha256:" + "a" * 64]}
+    with pytest.raises(ValueError, match="immutable rollback or release reference"):
+        update._digest(image, "ghcr.io/timlaing/netadmin-dns")
+
+
+def test_covered_mounts_rejects_outside_or_unincluded(tmp_path, monkeypatch):
+    monkeypatch.setenv("NETADMIN_OPERATIONS_ROOT", str(tmp_path))
+    root = tmp_path
+    (root / "dns").mkdir()
+    (root / "dns" / "compose.json").write_text("{}")
+    plan = {
+        "root": str(root),
+        "projects": [
+            {
+                "directory": "dns",
+                "file": "compose.json",
+                "project": "dns",
+                "services": ["dns"],
+            }
+        ],
+        "backup_directory": str(tmp_path / "snaps"),
+        "backup_includes": ["dns"],
+    }
+    monkeypatch.setattr(
+        update,
+        "command",
+        lambda *a, **k: json.dumps(
+            [
+                {
+                    "Config": {"Labels": {"com.docker.compose.service": "dns"}},
+                    "Mounts": [
+                        {
+                            "Type": "bind",
+                            "Source": str(tmp_path / "outside"),
+                            "RW": True,
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    with pytest.raises(ValueError, match="outside the declared backup selection"):
+        update._covered_mounts(plan, {root / "dns"})
+
+
+def test_healthy_reports_missing_or_wrong_image(tmp_path, monkeypatch):
+    monkeypatch.setenv("NETADMIN_OPERATIONS_ROOT", str(tmp_path))
+    root = tmp_path / "deployment"
+    root.mkdir()
+    scope = update.Project(root / "dns", "compose.json", "dns", ["dns"])
+    monkeypatch.setattr(
+        update,
+        "command",
+        lambda *a, **k: json.dumps([]),
+    )
+    with pytest.raises(RuntimeError, match="Cohort member is missing after activation"):
+        update._healthy(scope, {"dns": "x"})
+    monkeypatch.setattr(
+        update,
+        "command",
+        lambda *a, **k: json.dumps(
+            [
+                {
+                    "Config": {
+                        "Labels": {"com.docker.compose.service": "dns"},
+                        "Image": "wrong-image",
+                    },
+                    "State": {"Health": {"Status": "healthy"}},
+                }
+            ]
+        ),
+    )
+    with pytest.raises(RuntimeError, match="immutable-image health gate"):
+        update._healthy(scope, {"dns": "right-image"})
+
+
+def test_resume_restores_removed_original(tmp_path, monkeypatch):
+    monkeypatch.setenv("NETADMIN_OPERATIONS_ROOT", str(tmp_path))
+    root = tmp_path / "deployment"
+    root.mkdir()
+    (root / "dns").mkdir()
+    scope = update.Project(root / "dns", "compose.json", "dns", ["dns"])
+    gone = tmp_path / "removed.json"
+    gone.write_bytes(b"old")
+    calls = []
+
+    def command(args, directory=None):
+        calls.append(args)
+        if args[:2] == ["docker", "compose"] and "ps" in args:
+            return "dns"
+        if args[:2] == ["docker", "inspect"]:
+            return json.dumps(
+                [
+                    {
+                        "Config": {
+                            "Labels": {"com.docker.compose.service": "dns"},
+                            "Image": "right-image",
+                        },
+                        "State": {"Health": {"Status": "healthy"}},
+                    }
+                ]
+            )
+        return ""
+
+    monkeypatch.setattr(update, "command", command)
+    monkeypatch.setattr(update, "_write_override", lambda *a, **k: None)
+    update._resume([scope], [{"dns": "right-image"}], [scope], {gone: None})
+    assert not gone.exists()
+
+
+def test_storage_rejects_inside_root_or_world_readable(tmp_path, monkeypatch):
+    backup_dir = tmp_path / "snaps"
+    backup_dir.mkdir()
+    monkeypatch.setenv("NETADMIN_BACKUP_DIRECTORY", str(backup_dir))
+    plan = {"backup_directory": str(backup_dir)}
+    with pytest.raises(ValueError, match="outside the checkpoint root"):
+        update._storage(plan, backup_dir)
