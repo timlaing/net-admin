@@ -64,6 +64,38 @@ def _skip(text: str, position: int) -> int | None:
     return None
 
 
+def include_directives(text: str) -> list[str]:
+    """Return include paths referenced outside of comments and string literals.
+
+    Kea allows ``#``, ``//`` and ``/* */`` comments plus quoted strings. A
+    directive like ``# <?include "/retired.conf"?>`` must be ignored even
+    though a naive regex would still extract ``/retired.conf``. Missing active
+    includes remain errors for ``visit()`` to surface.
+    """
+    includes: list[str] = []
+    position = 0
+    marker = "<?include"
+    while position < len(text):
+        skipped = _skip(text, position)
+        if skipped is not None:
+            position = skipped
+            continue
+        if text.startswith(marker, position):
+            start = text.find('"', position + len(marker))
+            if start < 0:
+                position += 1
+                continue
+            end = text.find('"', start + 1)
+            if end < 0:
+                position += 1
+                continue
+            includes.append(text[start + 1 : end])
+            position = end + 1
+            continue
+        position += 1
+    return includes
+
+
 def _match_block(text: str, opening: int, opener: str, closer: str) -> int:
     """Index after the bracket matching text[opening], ignoring strings/comments."""
     depth = 0
@@ -142,7 +174,7 @@ def discover_files(main: Path) -> list[Path]:
         if resolved in found or not resolved.exists():
             return
         found.append(resolved)
-        for include in INCLUDE.findall(resolved.read_text(encoding="utf-8")):
+        for include in include_directives(resolved.read_text(encoding="utf-8")):
             visit(Path(include) if Path(include).is_absolute() else resolved.parent / include)
 
     visit(main)
@@ -218,9 +250,9 @@ def subnets(text: str) -> list[dict[str, Any]]:
             "network": cidr.split("/", maxsplit=1)[0],
             "netmask": str(ipaddress.ip_network(cidr).netmask),
             "ranges": [
-                list(str(item["pool"]).partition(" - ")[::2])
+                pool_range(str(item["pool"]))
                 for item in _array_items(body, _POOLS_KEY)
-                if isinstance(item, dict) and " - " in str(item.get("pool", ""))
+                if isinstance(item, dict) and "pool" in item
             ],
             "options": {
                 str(item["name"]): str(item["data"])
@@ -228,11 +260,51 @@ def subnets(text: str) -> list[dict[str, Any]]:
                 if isinstance(item, dict) and "name" in item and "data" in item
             },
         }
+        if INCLUDE.search(body):
+            entry["pool_review_supported"] = False
         identifier = _SUBNET_ID.search(body)
         if identifier:
             entry["id"] = int(identifier.group(1))
         result.append(entry)
     return result
+
+
+def pool_range(value: str) -> list[str]:
+    """Normalize Kea interval, singleton and CIDR pools without losing metadata."""
+    if "/" in value:
+        network = ipaddress.IPv4Network(value.strip())
+        return [str(network.network_address), str(network.broadcast_address)]
+    parts = value.split("-", maxsplit=1)
+    start = str(ipaddress.IPv4Address(parts[0].strip()))
+    finish = str(ipaddress.IPv4Address(parts[-1].strip()))
+    return [start, finish]
+
+
+def exclude_address(text: str, network: str, address: str) -> str:
+    """Split the selected pools, carrying every pool-specific setting forward."""
+    target = int(ipaddress.IPv4Address(address))
+    for match in SUBNET_VALUE.finditer(text):
+        if match[1].split("/", maxsplit=1)[0] != network:
+            continue
+        opening, end = _enclosing_object(text, match)
+        body = text[opening:end]
+        pools: list[dict[str, Any]] = []
+        for pool in _array_items(body, _POOLS_KEY):
+            start, finish = (int(ipaddress.IPv4Address(v)) for v in pool_range(pool["pool"]))
+            if start <= target <= finish:
+                pools.extend(
+                    pool
+                    | {"pool": f"{ipaddress.IPv4Address(left)} - {ipaddress.IPv4Address(right)}"}
+                    for left, right in ((start, target - 1), (target + 1, finish))
+                    if left <= right
+                )
+            else:
+                pools.append(pool)
+        updated = _replace_array(body, _POOLS_KEY, json.dumps(pools, indent=2))
+        if updated is None:
+            raise ValueError("Pool definition is not editable")
+        return text[:opening] + updated + text[end:]
+    raise ValueError("Unknown subnet")
 
 
 def _replace_array(body: str, pattern: re.Pattern[str], replacement: str) -> str | None:

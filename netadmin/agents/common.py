@@ -113,6 +113,7 @@ def validated_transaction(
     *,
     allowed_roots: tuple[Path, ...],
     expected_originals: dict[Path, bytes | None] | None = None,
+    verify_applied: Callable[[], None] | None = None,
 ) -> None:
     """Install a group of files with validation and complete rollback on failure."""
     roots = tuple(root.resolve() for root in allowed_roots)
@@ -120,36 +121,86 @@ def validated_transaction(
     # Resolve links before every transaction and reject all paths before any writes.
     changes = {_transaction_path(path, roots): content for path, content in changes.items()}
     originals = {path: path.read_bytes() if path.exists() else None for path in changes}
-    if expected_originals is not None and originals != expected_originals:
-        raise ConfigurationChanged("Configuration changed before staging")
-    candidates: dict[Path, Path] = {}
+    expected = (
+        {path.resolve(): content for path, content in expected_originals.items()}
+        if expected_originals is not None
+        else originals
+    )
+    if changes.keys() - expected.keys():
+        raise ConfigurationChanged("Write set is not covered by the safety snapshot")
+    _check_originals(expected)
+    candidates = _write_candidates(changes)
     installed = False
+    reload_started = False
     try:
-        for path, content in changes.items():
-            descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            candidate = Path(name)
-            candidate.chmod(0o640)
-            candidates[path] = candidate
         current = {path: path.read_bytes() if path.exists() else None for path in changes}
         if current != originals:
             raise ConfigurationChanged("Configuration changed before installation")
+        _check_originals(expected)
         for path, candidate in candidates.items():
             os.replace(candidate, path)
             installed = True
         validate()
         if reload_command:
+            reload_started = True
             subprocess.run(reload_command, check=True, timeout=30)  # noqa: S603
+        if verify_applied is not None:
+            verify_applied()
     except Exception:
         if installed:
             _restore_originals(originals)
+            if reload_started:
+                subprocess.run(reload_command, check=True, timeout=30)  # noqa: S603
         raise
     finally:
         for candidate in candidates.values():
             candidate.unlink(missing_ok=True)
+
+
+def _write_candidates(changes: dict[Path, str]) -> dict[Path, Path]:
+    """Write each candidate file to a temp file in the target's directory.
+
+    If a later candidate fails to stage, every candidate written so far is
+    removed before propagating, so nothing is left staged outside the
+    transaction once this function raises.
+    """
+    candidates: dict[Path, Path] = {}
+    try:
+        for path, content in changes.items():
+            candidates[path] = _write_candidate(path, content)
+    except Exception:
+        for candidate in candidates.values():
+            candidate.unlink(missing_ok=True)
+        raise
+    return candidates
+
+
+def _write_candidate(path: Path, content: str) -> Path:
+    """Render one flushed, fsynced mode-0640 temp candidate and close its descriptor.
+
+    Any failure removes the candidate so nothing is staged outside the transaction.
+    """
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    candidate = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        candidate.chmod(0o640)
+    except Exception:
+        os.close(descriptor)
+        candidate.unlink(missing_ok=True)
+        raise
+    os.close(descriptor)
+    return candidate
+
+
+def _check_originals(expected: dict[Path, bytes | None]) -> None:
+    """Check the complete safety read set, independently of files being written."""
+    current = {path: path.read_bytes() if path.exists() else None for path in expected}
+    if current != expected:
+        raise ConfigurationChanged("Configuration changed before installation")
 
 
 def _restore_originals(originals: dict[Path, bytes | None]) -> None:

@@ -6,18 +6,23 @@ import ipaddress
 import os
 import re
 import subprocess  # nosec B404
+from collections.abc import Callable
+from functools import wraps
 from itertools import pairwise
 from pathlib import Path
 from typing import Any, cast
 
 from flask import Flask, current_app, jsonify
 
+from netadmin.agents import reservation_review
 from netadmin.agents.common import (
+    ConfigurationChanged,
     configured_path,
     create_agent,
     json_object,
     validated_transaction,
 )
+from netadmin.agents.dhcp_state import configuration_lock
 from netadmin.agents.service_logs import register_logs
 from netadmin.services import dhcp_files, kea_files, subnet_files
 from netadmin.services.dhcp_files import kea_export
@@ -26,6 +31,10 @@ HOST_PATTERN = re.compile(r"host\s+([A-Za-z0-9_-]+)\s*\{(.*?)\}", re.DOTALL)
 MAC_PATTERN = re.compile(r"hardware\s+ethernet\s+([0-9A-Fa-f:]{17})\s*;")
 IP_PATTERN = re.compile(r"fixed-address\s+([0-9.]+)\s*;")
 LEASE_PATTERN = re.compile(r"lease\s+([0-9.]+)\s*\{(.*?)\}", re.DOTALL)
+
+
+class LeaseConflict(ValueError):
+    """A different device acquired the address before the reservation took effect."""
 
 
 def _kea() -> bool:
@@ -149,7 +158,10 @@ def _validate_live(main_config: Path) -> None:
 
 
 def _reservation_conflict(
-    entries: list[dict[str, str]], item: dict[str, str], main_config: Path
+    entries: list[dict[str, str]],
+    item: dict[str, str],
+    main_config: Path,
+    originals: dict[Path, bytes | None] | None = None,
 ) -> str | None:
     """Identify address conflicts and MAC conflicts within the backend's scope."""
     for entry in entries:
@@ -168,7 +180,7 @@ def _reservation_conflict(
         if _kea()
         else [
             ipaddress.IPv4Network(f"{subnet['network']}/{subnet['netmask']}")
-            for subnet in _all_subnets(main_config)
+            for subnet in _all_subnets(main_config, originals)
         ]
     )
     target = [network for network in networks if ipaddress.IPv4Address(item["address"]) in network]
@@ -192,7 +204,12 @@ def _reservation_conflict(
     return None
 
 
-def _external_changes(entries: list[dict[str, str]], managed: Path, name: str) -> dict[Path, str]:
+def _external_changes(
+    entries: list[dict[str, str]],
+    managed: Path,
+    name: str,
+    originals: dict[Path, bytes | None] | None = None,
+) -> dict[Path, str]:
     """Removals of the same host from files the managed file does not own."""
     if _kea():
         # Kea mode has a single NetAdmin-owned include file (the migration
@@ -203,7 +220,10 @@ def _external_changes(entries: list[dict[str, str]], managed: Path, name: str) -
         if existing["name"] == name and Path(existing["source"]) != managed.resolve():
             source = Path(existing["source"])
             changes[source] = dhcp_files.remove_reservation(
-                source.read_text(encoding="utf-8"), name
+                _snapshot_text(originals, source)
+                if originals is not None
+                else source.read_text(encoding="utf-8"),
+                name,
             )
     return changes
 
@@ -218,13 +238,31 @@ def _reload() -> list[str]:
     return cast(list[str], current_app.config["DHCP_RELOAD"])
 
 
-def _install_changes(changes: dict[Path, str], main_config: Path) -> None:
+def _configuration_locked(operation: Callable[[], Any]) -> Callable[[], Any]:
+    """Every DHCP writer must lock before reading any configuration used to mutate it."""
+
+    @wraps(operation)
+    def serialized() -> Any:
+        with configuration_lock(_path("DHCP_MAIN")):
+            return operation()
+
+    return serialized
+
+
+def _install_changes(
+    changes: dict[Path, str],
+    main_config: Path,
+    originals: dict[Path, bytes | None] | None = None,
+    verify_applied: Callable[[], None] | None = None,
+) -> None:
     """Allow writes only in explicitly configured service directories."""
     validated_transaction(
         changes,
         lambda: _validate_live(main_config),
         _reload(),
         allowed_roots=(main_config.parent, _path("DHCP_MANAGED").parent),
+        expected_originals=originals,
+        verify_applied=verify_applied,
     )
 
 
@@ -240,17 +278,20 @@ def _lease_list() -> Any:
     return jsonify(parse_leases(_path("DHCP_LEASES").read_text(encoding="utf-8")))
 
 
+@_configuration_locked
 def _save_reservation() -> Any:
+    body = json_object()
     try:
-        item = _validate_item(json_object())
+        item = _validate_item(body)
     except ValueError:
         return jsonify({"error": "Invalid reservation hostname, MAC address or IPv4 address"}), 400
     managed = _path("DHCP_MANAGED")
     main_config = _path("DHCP_MAIN")
-    all_items = _all_reservations(main_config)
-    others = [entry for entry in all_items if entry["name"] != item["name"]]
     try:
-        conflict = _reservation_conflict(others, item, main_config)
+        originals = _configuration_snapshot(main_config, managed)
+        all_items = _snapshot_reservations(originals)
+        others = [entry for entry in all_items if entry["name"] != item["name"]]
+        conflict = _reservation_conflict(others, item, main_config, originals)
     except ValueError:
         return jsonify(
             {
@@ -259,15 +300,185 @@ def _save_reservation() -> Any:
             }
         ), 409
     if conflict:
-        return jsonify({"error": conflict}), 409
-    items = [entry for entry in _current(managed) if entry["name"] != item["name"]]
+        return jsonify(
+            {
+                "error": conflict,
+                "conflicts": [
+                    e for e in others if e["mac"] == item["mac"] or e["address"] == item["address"]
+                ],
+            }
+        ), 409
+    return _review_and_install(item, body, managed, main_config, originals)
+
+
+def _active_lease_conflict(item: dict[str, str]) -> bool:
+    path = _path("DHCP_LEASES")
+    if not path.exists():
+        return False
+    latest: dict[str, dict[str, str]] = {}
+    for lease in _all_leases(path):
+        # The last declaration for an address is the current lease state.
+        latest[lease["address"]] = lease
+    return any(
+        lease["address"] == item["address"]
+        and lease["state"] == "active"
+        and lease["mac"].lower() != item["mac"]
+        for lease in latest.values()
+    )
+
+
+def _all_leases(path: Path) -> list[dict[str, str]]:
+    """Read complete Kea lease state, including rotation/cleanup siblings.
+
+    Kea memfile cleanup moves unexpired records out of the current lease file
+    into a sibling cleanup file. Reading only the current file can miss an
+    active lease, so rotation-consistent reads merge every sibling file.
+    """
+    leases = parse_leases(path.read_text(encoding="utf-8"))
+    if _kea():
+        for sibling in sorted(path.parent.glob(f"{path.name}.cleanup*")):
+            if sibling.is_file():
+                leases.extend(parse_leases(sibling.read_text(encoding="utf-8")))
+    return leases
+
+
+def _verify_reservation_lease(item: dict[str, str]) -> None:
+    if _active_lease_conflict(item):
+        raise LeaseConflict("Lease conflict after reservation activation")
+
+
+def _reservation_preview(
+    item: dict[str, str],
+    subnet: dict[str, Any] | None,
+    ranges: list[list[str]],
+    changed: bool,
+    token: str,
+) -> dict[str, Any]:
+    scope = subnet or {"network": "", "ranges": []}
+    return {
+        "item": item,
+        "network": scope["network"],
+        "before": scope["ranges"],
+        "after": ranges,
+        "pool_change": changed,
+        "token": token,
+    }
+
+
+def _configuration_snapshot(main_config: Path, managed: Path) -> dict[Path, bytes | None]:
+    originals: dict[Path, bytes | None] = {}
+
+    def visit(path: Path) -> None:
+        source = path.resolve()
+        if source in originals:
+            return
+        if source == managed.resolve() and not source.exists():
+            originals[source] = None
+            return
+        content = source.read_bytes()
+        originals[source] = content
+        text = content.decode("utf-8")
+        includes = kea_files.include_directives(text) if _kea() else dhcp_files.include_names(text)
+        for include in includes:
+            child = Path(include)
+            visit(child if child.is_absolute() else source.parent / child)
+
+    visit(main_config)
+    visit(managed)
+    return originals
+
+
+def _snapshot_text(originals: dict[Path, bytes | None], path: Path) -> str:
+    return (originals[path.resolve()] or b"").decode("utf-8")
+
+
+def _snapshot_reservations(originals: dict[Path, bytes | None]) -> list[dict[str, str]]:
+    return [
+        entry
+        for path in originals
+        for entry in _reservations_from(_snapshot_text(originals, path), str(path))
+    ]
+
+
+def _review_and_install(
+    item: dict[str, str],
+    body: dict[str, Any],
+    managed: Path,
+    main_config: Path,
+    originals: dict[Path, bytes | None],
+) -> Any:
+    """Prepare a pool-safe reservation, optionally preview, then atomically install."""
+    try:
+        subnet = reservation_review.select_subnet(
+            _all_subnets(main_config, originals), item["address"], str(body.get("network", ""))
+        )
+        ranges = (
+            reservation_review.adjusted_ranges(subnet["ranges"], item["address"]) if subnet else []
+        )
+        pool_change = bool(subnet and ranges != subnet["ranges"])
+        identity = item | {"network": str(body.get("network", ""))}
+    except ValueError as error:
+        return jsonify({"error": reservation_review.public_validation_message(error)}), 409
+    if _active_lease_conflict(item):
+        return jsonify(
+            {
+                "error": "This IP has an active lease for another device; "
+                "resolve the lease before reserving it"
+            }
+        ), 409
+    if body.get("preview") is True:
+        return jsonify(
+            _reservation_preview(
+                item, subnet, ranges, pool_change, reservation_review.approval(identity, originals)
+            )
+        )
+    if pool_change and (
+        body.get("exclude_from_pools") is not True
+        or not reservation_review.approved(str(body.get("preview_token", "")), identity, originals)
+    ):
+        return jsonify(
+            {
+                "error": "The IP is inside a dynamic pool. Review the reservation "
+                "and approve the pool exclusion before saving."
+            }
+        ), 409
+    items = [
+        entry
+        for entry in parse_reservations(_snapshot_text(originals, managed))
+        if entry["name"] != item["name"]
+    ]
     items.append(item)
     changes = {managed: render_reservations(items)}
-    changes.update(_external_changes(all_items, managed, item["name"]))
-    _install_changes(changes, main_config)
+    changes.update(
+        _external_changes(_snapshot_reservations(originals), managed, item["name"], originals)
+    )
+    try:
+        if pool_change and subnet:
+            source = Path(subnet["source"])
+            text = changes.get(source, _snapshot_text(originals, source))
+            exclude = kea_files.exclude_address if _kea() else dhcp_files.exclude_address
+            changes[source] = exclude(text, subnet["network"], item["address"])
+        _install_changes(changes, main_config, originals, lambda: _verify_reservation_lease(item))
+    except ValueError as error:
+        return jsonify({"error": _installation_error(error)}), 409
     return jsonify(item)
 
 
+def _installation_error(error: ValueError) -> str:
+    if isinstance(error, LeaseConflict):
+        return (
+            "This IP acquired an active lease for another device; "
+            "reservation changes were rolled back."
+        )
+    if isinstance(error, ConfigurationChanged):
+        return "Configuration changed; review the reservation again"
+    return (
+        "Allocation syntax could not be safely installed. "
+        "Use the native editor or review the reservation again; no changes were applied."
+    )
+
+
+@_configuration_locked
 def _delete_reservation() -> Any:
     name = str(json_object().get("name", ""))
     managed = _path("DHCP_MANAGED")
@@ -283,12 +494,20 @@ def _configuration() -> Any:
     return jsonify(_all_subnets(_path("DHCP_MAIN")))
 
 
-def _all_subnets(main_config: Path) -> list[dict[str, Any]]:
+def _all_subnets(
+    main_config: Path, originals: dict[Path, bytes | None] | None = None
+) -> list[dict[str, Any]]:
     """Discover subnet definitions across includes without ambiguous identities."""
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for source in _discover(main_config):
-        for subnet in _subnets(source.read_text(encoding="utf-8")):
+    sources = originals if originals is not None else _discover(main_config)
+    for source in sources:
+        text = (
+            _snapshot_text(originals, source)
+            if originals is not None
+            else source.read_text(encoding="utf-8")
+        )
+        for subnet in _subnets(text):
             network = str(subnet["network"])
             if network in seen:
                 raise ValueError(f"Ambiguous subnet definition: {network}")
@@ -297,6 +516,7 @@ def _all_subnets(main_config: Path) -> list[dict[str, Any]]:
     return result
 
 
+@_configuration_locked
 def _save_configuration() -> Any:
     body = json_object()
     network = str(body.get("network", ""))
@@ -308,12 +528,43 @@ def _save_configuration() -> Any:
     matches = [item for item in _all_subnets(main_config) if item["network"] == network]
     if not matches:
         return jsonify({"error": "Unknown subnet"}), 404
+    if (
+        matches[0].get("pool_review_supported") is False
+        or matches[0].get("pool_edit_supported") is False
+    ):
+        return jsonify(
+            {"error": "Allocation syntax is not safely editable; use the native editor"}
+        ), 409
     source = Path(matches[0]["source"])
     try:
         _validate_pools(f"{network}/{matches[0]['netmask']}", ranges)
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
-    updated = _update_subnet(source.read_text(encoding="utf-8"), network, ranges, options)
+    for reservation in _all_reservations(main_config):
+        address = ipaddress.IPv4Address(reservation["address"])
+        if any(
+            ipaddress.IPv4Address(start) <= address <= ipaddress.IPv4Address(end)
+            for start, end in ranges
+        ):
+            return jsonify(
+                {
+                    "error": f"Pool contains reserved IP {address} ({reservation['name']}); "
+                    "exclude it before saving"
+                }
+            ), 409
+    return _apply_subnet_configuration(source, network, ranges, options, main_config)
+
+
+def _apply_subnet_configuration(
+    source: Path, network: str, ranges: list[list[str]], options: dict[str, str], main_config: Path
+) -> Any:
+    """Install only a candidate whose allocation policy can be preserved safely."""
+    try:
+        updated = _update_subnet(source.read_text(encoding="utf-8"), network, ranges, options)
+    except dhcp_files.PoolScopeEditError:
+        # A cooperating writer is locked, but a native editor may have changed
+        # the source since discovery. Never expose arbitrary native diagnostics.
+        return jsonify({"error": "Pool-scoped allocation policies require the native editor"}), 409
     _install_changes({source: updated}, main_config)
     return jsonify({"network": network})
 
@@ -339,6 +590,7 @@ def _validate_pools(cidr: str, ranges: list[Any]) -> None:
         raise ValueError("Pools cannot overlap")
 
 
+@_configuration_locked
 def _create_subnet() -> Any:
     """Create a subnet through daemon validation without copying existing pools."""
     main_config = _path("DHCP_MAIN")
@@ -364,6 +616,7 @@ def _create_subnet() -> Any:
     return jsonify({"created": str(network)}), 201
 
 
+@_configuration_locked
 def _remove_subnet() -> Any:
     """Stop serving a subnet, preserving the lease database and an original copy."""
     main_config = _path("DHCP_MAIN")
