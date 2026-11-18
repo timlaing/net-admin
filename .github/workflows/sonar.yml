@@ -58,6 +58,45 @@ jobs:
                 p.base.ref === 'main' && p.base.repo.full_name === `${context.repo.owner}/${context.repo.repo}`);
               if (matches.length !== 1) throw new Error('No unique current PR for analysis');
               const pr = matches[0];
+              // A successful PR run alone cannot attest its own test recipe.
+              // Explicit owner dispatch is the recovery path for reviewed recipe changes.
+              const ownerAttested = context.eventName === 'workflow_dispatch' &&
+                context.actor === context.repo.owner && context.sha === run.head_sha &&
+                context.ref === `refs/heads/${pr.head.ref}` &&
+                pr.head.repo.full_name === `${context.repo.owner}/${context.repo.repo}`;
+              if (!ownerAttested) {
+                const { data: comparison } = await github.rest.repos.compareCommitsWithBasehead({
+                  ...context.repo, basehead: `${pr.base.sha}...${run.head_sha}`
+                });
+                const ancestor = comparison.merge_base_commit?.sha;
+                if (!/^[0-9a-f]{40}$/.test(ancestor || '')) throw new Error('No trusted producer ancestor');
+                async function recipe(repository, ref, path) {
+                  try {
+                    const { data } = await github.rest.repos.getContent({ ...repository, ref, path });
+                    if (data.type !== 'file' || data.encoding !== 'base64' || data.size > 65536)
+                      throw new Error('Producer recipe must be a bounded regular file');
+                    return { sha: data.sha, content: Buffer.from(data.content, 'base64').toString('utf8') };
+                  } catch (error) {
+                    if (error.status === 404) return null;
+                    throw error;
+                  }
+                }
+                const pending = [run.path];
+                const verified = new Set();
+                while (pending.length) {
+                  const path = pending.pop();
+                  if (verified.has(path)) continue;
+                  if (!/^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/.test(path) || verified.size >= 16)
+                    throw new Error('Invalid or excessive reusable producer workflows');
+                  verified.add(path);
+                  const baseline = await recipe(context.repo, ancestor, path);
+                  const head = await recipe({ owner: pr.head.repo.owner.login, repo: pr.head.repo.name }, run.head_sha, path);
+                  if (!baseline || !head || baseline.sha !== head.sha)
+                    throw new Error('Coverage producer changed: requires reviewed owner dispatch on the exact PR head');
+                  for (const match of baseline.content.matchAll(/^\s*uses:\s*["']?(\.\/\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml)["']?\s*(?:#.*)?$/gm))
+                    pending.push(match[1].slice(2));
+                }
+              }
               core.setOutput('number', pr.number);
               core.setOutput('branch', pr.head.ref);
               core.setOutput('base', pr.base.ref);
@@ -206,9 +245,16 @@ jobs:
         env:
           RESULT: ${{ job.status }}
           HEAD_SHA: ${{ steps.metadata.outputs.head-sha }}
+          PR_NUMBER: ${{ steps.metadata.outputs.number }}
         with:
           script: |
             const success = process.env.RESULT === 'success';
+            if (success && process.env.PR_NUMBER) {
+              const { data: current } = await github.rest.pulls.get({ ...context.repo,
+                pull_number: Number(process.env.PR_NUMBER) });
+              if (current.state !== 'open' || current.head.sha !== process.env.HEAD_SHA || current.base.ref !== 'main')
+                throw new Error('PR changed during analysis; refusing stale success');
+            }
             await github.rest.repos.createCommitStatus({ ...context.repo,
               sha: process.env.HEAD_SHA, context: 'Analysis passed',
               state: success ? 'success' : 'failure',

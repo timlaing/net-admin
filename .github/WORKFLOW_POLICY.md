@@ -37,3 +37,7 @@ After the harmless PR registration job has registered the workflow, the reposito
 Privileged Sonar workers perform static source/report analysis only, with `sonar.sca.enabled=false` preventing implicit dependency/build-tool execution. Fork-triggered CI never receives the scanner token; the trusted receiver consumes validated source and coverage without running fork-selected commands. Existing dependency audits and Dependabot protection remain independent. Every configured coverage report must be present before scanning.
 
 Settings activation enables replacement workflows first, then verifies successful hosted replacement checks on the explicit reviewed PR head before writing required-check rules. Keep existing protection until that proof exists; failed enablement or missing proof leaves the rules unchanged.
+
+### Coverage producer changes
+
+Automatic PR scans require the producing workflow and any local reusable workflows to match the PR's trusted merge-base definitions. A revision marker separately binds the reports to the source run. Changing a producer requires the repository owner to review the recipe and dispatch SonarQube from that exact same-repository PR branch, with its successful source run ID and head SHA. Dispatches by other writers or from older refs do not attest recipe changes. Final success is refused if the PR closes, changes head or changes its target during analysis.
