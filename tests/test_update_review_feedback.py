@@ -2,6 +2,7 @@
 
 import configparser
 import json
+import stat
 from pathlib import Path
 
 import pytest
@@ -260,8 +261,8 @@ def test_private_recovery_details_do_not_reach_cli(cohort, tmp_path, monkeypatch
 def test_resume_directory_sync_failure_raises_so_journal_stays_recovery_required(
     tmp_path, monkeypatch
 ):
-    """Baseline restore works without directory fsync, but an un-durable restore
-    is reported so the journal stays in recovery-required for operator review."""
+    """Baseline restore writes and restarts the cohort, but an un-durable directory
+    entry is reported so the journal stays in recovery-required for operator review."""
     directory = tmp_path / "project"
     directory.mkdir()
     scope = update.Project(directory, "compose.json", "dns", ["dns"])
@@ -277,7 +278,14 @@ def test_resume_directory_sync_failure_raises_so_journal_stays_recovery_required
     monkeypatch.setattr(update, "_healthy", lambda *a, **k: None)
 
     def failing_fsync(fd):
-        raise OSError("synthetic directory sync failure")
+        """Fail only directory fsyncs: the staged file syncs and replaces before the
+        baseline restart, then the directory entry cannot be persisted."""
+        try:
+            is_directory = stat.S_ISDIR(update.os.fstat(fd).st_mode)
+        except OSError:
+            is_directory = False
+        if is_directory:
+            raise OSError("synthetic directory sync failure")
 
     monkeypatch.setattr(update.os, "fsync", failing_fsync)
 
@@ -289,8 +297,58 @@ def test_resume_directory_sync_failure_raises_so_journal_stays_recovery_required
             {override: b'{"x-netadmin-managed": true}'},
         )
 
-    # Recovery still wrote the baseline override (works without durable fsync), but
-    # the directory entry could not be synced, so the failure propagates.
+    # Recovery still wrote and restarted from the baseline override, but the
+    # directory entry could not be synced, so the failure propagates.
     assert override.exists()
     assert len(calls) == 1
     assert calls[0][0] == "up"
+
+
+def test_resume_preserves_service_settings_while_pin_image(tmp_path, monkeypatch):
+    """Recovery pins previous images but retains each service's original
+    managed-activation settings (trigger opt-outs, labels) instead of replacing
+    them with image-only entries."""
+    directory = tmp_path / "project"
+    directory.mkdir()
+    scope = update.Project(directory, "compose.json", "dns", ["dns"])
+    override = scope.override
+    original = (
+        b'{"x-netadmin-managed": true, "services": {"dns": {"image": "old",'
+        b' "labels": {"wud.trigger.docker.enabled": "false",'
+        b' "wud.trigger.dockercompose.enabled": "false"}}}}'
+    )
+    override.write_bytes(original)
+    calls = []
+
+    def compose(*_args, **_kwargs):
+        calls.append(_args)
+        return ""
+
+    monkeypatch.setattr(scope, "compose", compose)
+    monkeypatch.setattr(update, "_healthy", lambda *a, **k: None)
+    monkeypatch.setattr(update.os, "fsync", lambda fd: None)
+
+    update._resume(
+        [scope],
+        [{"dns": "pinned-image"}],
+        [scope],
+        {override: original},
+    )
+
+    result = json.loads(override.read_text(encoding="utf-8"))
+    assert result["services"]["dns"]["image"] == "pinned-image"
+    assert result["services"]["dns"]["labels"]["wud.trigger.docker.enabled"] == "false"
+    assert result["services"]["dns"]["labels"]["wud.trigger.dockercompose.enabled"] == "false"
+    assert calls == [
+        (
+            "up",
+            "-d",
+            "--no-build",
+            "--no-deps",
+            "--pull",
+            "never",
+            "--wait",
+            "--wait-timeout",
+            "120",
+        )
+    ]
