@@ -41,3 +41,5 @@ Settings activation enables replacement workflows first, then verifies successfu
 ### Coverage producer changes
 
 Automatic PR scans require the producing workflow and any local reusable workflows to match the PR's trusted merge-base definitions. A revision marker separately binds the reports to the source run. Changing a producer requires the repository owner to review the recipe and dispatch SonarQube from that exact same-repository PR branch, with its successful source run ID and head SHA. Dispatches by other writers or from older refs do not attest recipe changes. Final success is refused if the PR closes, changes head or changes its target during analysis.
+
+During activation, serialize repository-settings changes: run one activation at a time and do not edit rulesets concurrently. The updater re-reads protections immediately before writing and aborts if they changed during hosted validation.
