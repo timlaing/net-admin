@@ -2,6 +2,7 @@
 reviews:
   auto_approvals:
     enabled: true
+    allow_author_approval: false
   auto_review:
     enabled: false
     auto_incremental_review: false
